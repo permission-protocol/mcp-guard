@@ -53,4 +53,12 @@ grep -v "receipt:" "$RECEIPTS" || true
 
 rm -f "$RESPONSES" "$RECEIPTS"
 echo ""
+echo "=== Approval Flow ==="
+echo ""
+echo "To try the approval UI, run:"
+echo "  node dist/src/cli.js --config example/pp.config.yaml --approval-port 3100 --agent-id demo-agent -- node dist/example/server.js"
+echo ""
+echo "Then open http://localhost:3100 and send a require_approval tool call."
+echo "The proxy will hold the response until you approve or deny in the UI."
+echo ""
 echo "Done!"

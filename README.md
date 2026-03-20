@@ -126,8 +126,9 @@ mcp-guard [options] -- <server command>
 Options:
   --config <path>     Path to config file (default: ./pp.config.yaml)
   --agent-id <id>     Agent identifier for receipts (default: "unknown")
-  --mode <mode>       enforce or observe (overrides config file)
-  -h, --help          Show help
+  --mode <mode>           enforce or observe (overrides config file)
+  --approval-port <port>  Enable approval UI on this port (e.g. 3100)
+  -h, --help              Show help
 ```
 
 ### Example: Claude Desktop
@@ -157,6 +158,30 @@ With:
   }
 }
 ```
+
+## Approval Flow (v0.1)
+
+When a tool call matches a `require_approval` rule, MCP Guard can hold the request open and wait for human approval via a web UI — instead of rejecting immediately.
+
+```bash
+# Start with approval UI on port 3100
+mcp-guard --config pp.config.yaml --approval-port 3100 -- node my-mcp-server.js
+
+# Open http://localhost:3100 to see pending approvals
+```
+
+**How it works:**
+1. Agent calls a tool that requires approval
+2. MCP Guard holds the JSON-RPC response open (does NOT return an error)
+3. The tool call appears in the approval UI at `http://localhost:<port>`
+4. Human clicks **Approve** → request is forwarded to the server, response returned to the agent
+5. Human clicks **Deny** → JSON-RPC error (-32002) returned to the agent
+
+When `--approval-port` is **not** set, `require_approval` tools return an error immediately (original behavior, no change).
+
+The approval UI auto-refreshes every 3 seconds and shows:
+- Pending tool calls with collapsible arguments
+- Recent decision history (last 20)
 
 ## What This Is NOT
 

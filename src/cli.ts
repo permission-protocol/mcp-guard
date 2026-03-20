@@ -7,6 +7,7 @@ export function main(): void {
   let configPath = './pp.config.yaml';
   let agentId = 'unknown';
   let modeOverride: 'enforce' | 'observe' | undefined;
+  let approvalPort: number | undefined;
   let serverCommand: string[] = [];
 
   const dashDashIndex = args.indexOf('--');
@@ -21,6 +22,12 @@ export function main(): void {
     } else if (cliArgs[i] === '--mode' && cliArgs[i + 1]) {
       const m = cliArgs[++i];
       if (m === 'enforce' || m === 'observe') modeOverride = m;
+    } else if (cliArgs[i] === '--approval-port' && cliArgs[i + 1]) {
+      approvalPort = parseInt(cliArgs[++i], 10);
+      if (isNaN(approvalPort)) {
+        process.stderr.write('[mcp-guard] Error: --approval-port must be a number\n');
+        process.exit(1);
+      }
     } else if (cliArgs[i] === '--help' || cliArgs[i] === '-h') {
       printHelp();
       process.exit(0);
@@ -37,7 +44,7 @@ export function main(): void {
   process.stderr.write(`[mcp-guard] Loaded ${config.rules.length} rules (default: ${config.default_action}, mode: ${config.mode})\n`);
   process.stderr.write(`[mcp-guard] Starting server: ${serverCommand.join(' ')}\n`);
 
-  startProxy(config, agentId, serverCommand);
+  startProxy(config, agentId, serverCommand, approvalPort);
 }
 
 function printHelp(): void {
@@ -48,13 +55,17 @@ Usage:
   mcp-guard [options] -- <server command>
 
 Options:
-  --config <path>     Path to config file (default: ./pp.config.yaml)
-  --agent-id <id>     Agent identifier for receipts (default: "unknown")
-  --mode <mode>       enforce or observe (overrides config; default: enforce)
-  -h, --help          Show this help
+  --config <path>         Path to config file (default: ./pp.config.yaml)
+  --agent-id <id>         Agent identifier for receipts (default: "unknown")
+  --mode <mode>           enforce or observe (overrides config; default: enforce)
+  --approval-port <port>  Enable approval UI on this port (e.g. 3100)
+  -h, --help              Show this help
 
 Example:
   mcp-guard --config pp.config.yaml -- node my-mcp-server.js
+
+  # With approval UI:
+  mcp-guard --config pp.config.yaml --approval-port 3100 -- node my-mcp-server.js
 `.trim();
   console.log(help);
 }
