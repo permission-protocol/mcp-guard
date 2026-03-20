@@ -1,0 +1,14 @@
+default_action: allow
+
+rules:
+  - id: allow-company-email
+    tool: send_email
+    action: allow
+
+  - id: block-delete-user-data
+    tool: delete_user_data
+    action: block
+
+  - id: require-approval-prod-deploy
+    tool: deploy_production
+    action: require_approval

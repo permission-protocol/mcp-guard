@@ -1,0 +1,25 @@
+{
+  "name": "@permissionprotocol/mcp-guard",
+  "version": "0.1.0",
+  "description": "MCP Guard blocks dangerous AI agent actions using a simple YAML config file.",
+  "main": "dist/proxy.js",
+  "bin": {
+    "mcp-guard": "bin/mcp-guard"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/src/tests/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "guard", "proxy", "ai", "safety", "permission-protocol"],
+  "license": "MIT",
+  "dependencies": {
+    "yaml": "^2.7.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.7.0"
+  }
+}
