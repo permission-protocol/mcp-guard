@@ -4,6 +4,8 @@
 
 Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and logs every decision as an audit receipt.
 
+Without MCP Guard, your agent can call any tool. With it, every action is checked.
+
 → **Blocks** unsafe tool calls before they execute
 → **Holds** sensitive actions for human approval
 → **Logs** every decision as an immutable receipt
