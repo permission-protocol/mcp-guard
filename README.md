@@ -1,38 +1,41 @@
 # MCP Guard
 
-**MCP Guard blocks dangerous AI agent actions using a simple YAML config file.**
+**Stop your AI agents from doing dangerous things.**
 
-A lightweight stdio proxy that sits between an MCP client and server, intercepting `tools/call` requests and enforcing policy rules. Every decision is logged as an immutable receipt.
+Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and logs every decision as an audit receipt.
+
+→ **Blocks** unsafe tool calls before they execute
+→ **Holds** sensitive actions for human approval
+→ **Logs** every decision as an immutable receipt
+→ **Observe mode** — audit what would be blocked before enforcing
 
 <p align="center">
   <img src="assets/demo.gif" alt="MCP Guard Demo" width="700">
 </p>
 
-## Quick Start
+## Get Started (2 minutes)
 
 ```bash
-# 1. Install
+# Install
 npm install @permissionprotocol/mcp-guard
 
-# 2. Create a policy file (pp.config.yaml)
+# Create a policy file
 cat > pp.config.yaml << 'EOF'
 default_action: allow
-mode: enforce  # or "observe" for dry-run
 rules:
-  - id: block-dangerous-delete
+  - id: block-delete
     tool: delete_user_data
     action: block
-  - id: hold-production-deploy
+  - id: hold-deploy
     tool: deploy_production
     action: require_approval
 EOF
 
-# 3. Run your MCP server through the guard
+# Run your MCP server through the guard
 mcp-guard --config pp.config.yaml -- node my-mcp-server.js
-
-# 4. Point your MCP client at mcp-guard instead of the server directly
-# 5. Check pp-receipts.jsonl for audit trail
 ```
+
+That's it. Your agent can no longer delete user data. Production deploys require approval. Everything is logged to `pp-receipts.jsonl`.
 
 ## Architecture
 
