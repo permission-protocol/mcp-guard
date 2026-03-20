@@ -4,6 +4,10 @@
 
 A lightweight stdio proxy that sits between an MCP client and server, intercepting `tools/call` requests and enforcing policy rules. Every decision is logged as an immutable receipt.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="MCP Guard Demo" width="700">
+</p>
+
 ## Quick Start
 
 ```bash
