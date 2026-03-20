@@ -118,6 +118,8 @@ Receipts are written to:
 
 The `request_payload_hash` is a SHA-256 of the full request params, so you can verify what was sent without storing sensitive arguments.
 
+**[→ Visualize your receipts](https://permission-protocol.github.io/mcp-guard/)** — paste a receipt or upload `pp-receipts.jsonl` to see a visual summary.
+
 ## CLI
 
 ```
