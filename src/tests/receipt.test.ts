@@ -24,6 +24,8 @@ describe('Receipt Emitter', () => {
     assert.equal(receipt.rule_id, 'block-delete');
     assert.equal(typeof receipt.request_payload_hash, 'string');
     assert.equal(receipt.request_payload_hash.length, 64, 'SHA-256 hex is 64 chars');
+    assert.equal(receipt.target_server, 'unknown');
+    assert.equal(receipt.mode, 'enforce');
   });
 
   it('hashes different payloads differently', () => {

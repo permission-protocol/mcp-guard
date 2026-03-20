@@ -13,6 +13,7 @@ npm install @permissionprotocol/mcp-guard
 # 2. Create a policy file (pp.config.yaml)
 cat > pp.config.yaml << 'EOF'
 default_action: allow
+mode: enforce  # or "observe" for dry-run
 rules:
   - id: block-dangerous-delete
     tool: delete_user_data
@@ -58,12 +59,22 @@ All other JSON-RPC methods pass through transparently.
 ```yaml
 # pp.config.yaml
 default_action: allow  # "allow" or "block" — applies when no rule matches
+mode: enforce          # "enforce" (default) or "observe" (log only, never block)
 
 rules:
   - id: unique-rule-id        # Human-readable identifier
     tool: tool_name            # Exact match on MCP tool name
     action: allow              # allow | block | require_approval
 ```
+
+### Modes
+
+| Mode | Behavior |
+|------|----------|
+| `enforce` | Block/hold tool calls per rules (default) |
+| `observe` | Log decisions + emit receipts, but always forward (dry-run) |
+
+Use `observe` mode to audit what *would* be blocked before turning enforcement on. Switch via config or CLI: `--mode observe`.
 
 ### Actions
 
@@ -86,7 +97,9 @@ Every `tools/call` decision generates an immutable receipt:
   "decision": "blocked",
   "reason": "Matched rule \"block-dangerous-delete\"",
   "rule_id": "block-dangerous-delete",
-  "request_payload_hash": "sha256-hex-string"
+  "request_payload_hash": "sha256-hex-string",
+  "target_server": "node my-mcp-server.js",
+  "mode": "enforce"
 }
 ```
 
@@ -104,6 +117,7 @@ mcp-guard [options] -- <server command>
 Options:
   --config <path>     Path to config file (default: ./pp.config.yaml)
   --agent-id <id>     Agent identifier for receipts (default: "unknown")
+  --mode <mode>       enforce or observe (overrides config file)
   -h, --help          Show help
 ```
 

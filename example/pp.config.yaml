@@ -1,4 +1,5 @@
 default_action: allow
+mode: enforce  # or "observe" to log decisions without blocking
 
 rules:
   - id: allow-company-email

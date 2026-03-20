@@ -12,7 +12,7 @@ const ACTION_TO_DECISION = {
   require_approval: 'held_for_approval',
 } as const;
 
-export function evaluate(toolName: string, config: Config): Decision {
+export function evaluate(toolName: string, _toolArgs: Record<string, unknown> | undefined, config: Config): Decision {
   for (const rule of config.rules) {
     if (rule.tool === toolName) {
       return {

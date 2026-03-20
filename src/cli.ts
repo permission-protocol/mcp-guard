@@ -6,6 +6,7 @@ export function main(): void {
 
   let configPath = './pp.config.yaml';
   let agentId = 'unknown';
+  let modeOverride: 'enforce' | 'observe' | undefined;
   let serverCommand: string[] = [];
 
   const dashDashIndex = args.indexOf('--');
@@ -17,6 +18,9 @@ export function main(): void {
       configPath = cliArgs[++i];
     } else if (cliArgs[i] === '--agent-id' && cliArgs[i + 1]) {
       agentId = cliArgs[++i];
+    } else if (cliArgs[i] === '--mode' && cliArgs[i + 1]) {
+      const m = cliArgs[++i];
+      if (m === 'enforce' || m === 'observe') modeOverride = m;
     } else if (cliArgs[i] === '--help' || cliArgs[i] === '-h') {
       printHelp();
       process.exit(0);
@@ -29,7 +33,8 @@ export function main(): void {
   }
 
   const config = loadConfig(configPath);
-  process.stderr.write(`[mcp-guard] Loaded ${config.rules.length} rules (default: ${config.default_action})\n`);
+  if (modeOverride) config.mode = modeOverride;
+  process.stderr.write(`[mcp-guard] Loaded ${config.rules.length} rules (default: ${config.default_action}, mode: ${config.mode})\n`);
   process.stderr.write(`[mcp-guard] Starting server: ${serverCommand.join(' ')}\n`);
 
   startProxy(config, agentId, serverCommand);
@@ -45,6 +50,7 @@ Usage:
 Options:
   --config <path>     Path to config file (default: ./pp.config.yaml)
   --agent-id <id>     Agent identifier for receipts (default: "unknown")
+  --mode <mode>       enforce or observe (overrides config; default: enforce)
   -h, --help          Show this help
 
 Example:

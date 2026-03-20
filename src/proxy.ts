@@ -62,11 +62,19 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
 
     if (msg.method === 'tools/call') {
       const toolName: string = msg.params?.name ?? 'unknown';
-      const decision = evaluate(toolName, config);
-      const receipt = createReceipt(agentId, toolName, decision, msg.params);
+      const toolArgs: Record<string, unknown> | undefined = msg.params?.arguments;
+      const decision = evaluate(toolName, toolArgs, config);
+      const serverName = serverCommand.join(' ');
+      const receipt = createReceipt(agentId, toolName, decision, msg.params, serverName, config.mode);
       emitReceipt(receipt);
 
-      if (decision.decision === 'allowed') {
+      // In observe mode, always forward (log only, don't block)
+      if (config.mode === 'observe') {
+        if (decision.decision !== 'allowed') {
+          process.stderr.write(`[mcp-guard] OBSERVE: would ${decision.decision === 'blocked' ? 'block' : 'hold'} "${toolName}" but forwarding (observe mode)\n`);
+        }
+        child.stdin!.write(line + '\n');
+      } else if (decision.decision === 'allowed') {
         child.stdin!.write(line + '\n');
       } else if (decision.decision === 'blocked') {
         const errResp: JsonRpcError = {

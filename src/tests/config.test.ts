@@ -26,6 +26,7 @@ rules:
     assert.equal(config.rules[0].tool, 'delete_user_data');
     assert.equal(config.rules[0].action, 'block');
     assert.equal(config.rules[1].action, 'require_approval');
+    assert.equal(config.mode, 'enforce'); // default
     unlinkSync(path);
   });
 

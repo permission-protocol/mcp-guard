@@ -9,8 +9,11 @@ export interface Rule {
   action: Action;
 }
 
+export type Mode = 'enforce' | 'observe';
+
 export interface Config {
   default_action: Action;
+  mode: Mode;
   rules: Rule[];
 }
 
@@ -34,6 +37,12 @@ export function loadConfig(configPath: string): Config {
     throw new Error(`Invalid default_action: "${parsed.default_action}". Must be one of: ${VALID_ACTIONS.join(', ')}`);
   }
 
+  const VALID_MODES: Mode[] = ['enforce', 'observe'];
+  const mode: Mode = parsed.mode ?? 'enforce';
+  if (!VALID_MODES.includes(mode)) {
+    throw new Error(`Invalid mode: "${parsed.mode}". Must be one of: ${VALID_MODES.join(', ')}`);
+  }
+
   if (!Array.isArray(parsed.rules)) {
     throw new Error('Config must include a "rules" array');
   }
@@ -53,6 +62,7 @@ export function loadConfig(configPath: string): Config {
 
   return {
     default_action: parsed.default_action as Action,
+    mode,
     rules,
   };
 }

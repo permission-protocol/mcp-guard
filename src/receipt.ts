@@ -12,6 +12,8 @@ export interface Receipt {
   reason: string;
   rule_id: string | null;
   request_payload_hash: string;
+  target_server: string;
+  mode: 'enforce' | 'observe';
 }
 
 export function createReceipt(
@@ -19,6 +21,8 @@ export function createReceipt(
   toolName: string,
   decision: Decision,
   requestPayload: unknown,
+  targetServer: string = 'unknown',
+  mode: 'enforce' | 'observe' = 'enforce',
 ): Receipt {
   const payloadStr = JSON.stringify(requestPayload ?? {});
   const hash = createHash('sha256').update(payloadStr).digest('hex');
@@ -32,6 +36,8 @@ export function createReceipt(
     reason: decision.reason,
     rule_id: decision.rule_id,
     request_payload_hash: hash,
+    target_server: targetServer,
+    mode,
   };
 }
 
