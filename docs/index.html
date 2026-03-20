@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MCP Guard — Receipt Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --text-subtle: #6e7681;
+      --green: #2ea043;
+      --green-bg: #0f2c1a;
+      --green-text: #3fb950;
+      --red: #da3633;
+      --red-bg: #2c0f0f;
+      --red-text: #f85149;
+      --yellow: #9e6a03;
+      --yellow-bg: #2c1f08;
+      --yellow-text: #e3b341;
+      --blue: #1f6feb;
+      --blue-bg: #0d1d32;
+      --blue-text: #58a6ff;
+      --accent: #58a6ff;
+      --radius: 8px;
+      --radius-sm: 4px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(12px);
+      z-index: 100;
+    }
+
+    .header-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #1f6feb, #58a6ff);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    header h1 span {
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .header-spacer { flex: 1; }
+
+    .header-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 20px;
+      background: var(--blue-bg);
+      color: var(--blue-text);
+      border: 1px solid rgba(88, 166, 255, 0.2);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    /* ── Main layout ── */
+    main {
+      flex: 1;
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    /* ── Input section ── */
+    .input-section {
+      margin-bottom: 32px;
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    @media (max-width: 600px) {
+      .input-row { grid-template-columns: 1fr; }
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      padding: 12px 14px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea::placeholder { color: var(--text-subtle); }
+    textarea:focus { border-color: var(--accent); }
+
+    .side-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 120px;
+    }
+
+    /* ── Drop zone ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 20px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s;
+      color: var(--text-muted);
+      font-size: 13px;
+      background: var(--card-bg);
+      position: relative;
+    }
+
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--blue-bg);
+      color: var(--blue-text);
+    }
+
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .drop-icon { font-size: 22px; margin-bottom: 4px; }
+    .drop-text { font-size: 12px; line-height: 1.4; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+      white-space: nowrap;
+      width: 100%;
+    }
+
+    .btn-primary {
+      background: #238636;
+      border-color: #2ea043;
+      color: #fff;
+    }
+    .btn-primary:hover { background: #2ea043; }
+
+    .btn-secondary {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--text-muted);
+    }
+    .btn-secondary:hover {
+      border-color: var(--text-muted);
+      color: var(--text);
+    }
+
+    /* ── Parse error ── */
+    .parse-error {
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: var(--red-bg);
+      border: 1px solid rgba(248, 81, 73, 0.3);
+      border-radius: var(--radius-sm);
+      color: var(--red-text);
+      font-size: 13px;
+      display: none;
+    }
+
+    /* ── Results ── */
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .results-count {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .results-count strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* ── Receipt card ── */
+    .receipt-list {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .receipt-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      border-left-width: 4px;
+      overflow: hidden;
+      transition: transform 0.1s;
+    }
+
+    .receipt-card:hover { transform: translateY(-1px); }
+
+    .receipt-card.decision-allowed  { border-left-color: var(--green); }
+    .receipt-card.decision-blocked  { border-left-color: var(--red); }
+    .receipt-card.decision-held_for_approval { border-left-color: var(--yellow); }
+    .receipt-card.decision-unknown  { border-left-color: var(--border); }
+
+    .card-header {
+      padding: 16px 20px 12px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tool-name {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      letter-spacing: -0.02em;
+      word-break: break-all;
+    }
+
+    .badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .badge-allowed  { background: var(--green-bg); color: var(--green-text); border: 1px solid rgba(46, 160, 67, 0.3); }
+    .badge-blocked  { background: var(--red-bg);   color: var(--red-text);   border: 1px solid rgba(218, 54, 51, 0.3); }
+    .badge-held_for_approval { background: var(--yellow-bg); color: var(--yellow-text); border: 1px solid rgba(158, 106, 3, 0.3); }
+    .badge-unknown  { background: #1c2128; color: var(--text-muted); border: 1px solid var(--border); }
+    .badge-dryrun   { background: #1c2128; color: var(--yellow-text); border: 1px solid rgba(227, 179, 65, 0.3); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+    .card-body {
+      padding: 0 20px 16px;
+    }
+
+    .why-box {
+      padding: 10px 14px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 14px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .why-box .why-label {
+      font-weight: 600;
+      color: var(--accent);
+      margin-right: 6px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px 20px;
+      margin-bottom: 14px;
+    }
+
+    .meta-item {}
+
+    .meta-key {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-subtle);
+      margin-bottom: 2px;
+    }
+
+    .meta-value {
+      font-size: 13px;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    .meta-value.mono {
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      font-size: 12px;
+    }
+
+    /* ── Collapsible raw JSON ── */
+    .raw-toggle {
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 7px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .raw-toggle:hover {
+      border-color: var(--text-muted);
+      color: var(--text);
+    }
+
+    .raw-toggle .arrow {
+      margin-left: auto;
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+
+    .raw-toggle.open .arrow { transform: rotate(180deg); }
+
+    .raw-json {
+      display: none;
+      margin-top: 8px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      overflow-x: auto;
+      white-space: pre;
+      line-height: 1.6;
+    }
+
+    .raw-json.open { display: block; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+    }
+
+    .empty-state .empty-icon { font-size: 40px; margin-bottom: 12px; }
+    .empty-state p { font-size: 14px; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 20px 24px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-subtle);
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-icon">🛡️</div>
+  <h1>MCP Guard <span>— Receipt Viewer</span></h1>
+  <div class="header-spacer"></div>
+  <span class="header-badge">v0.1</span>
+</header>
+
+<main>
+  <div class="input-section">
+    <div class="section-label">Paste or upload receipts</div>
+    <div class="input-row">
+      <textarea id="pasteArea"
+        placeholder='Paste a JSON receipt or JSONL (one receipt per line)&#10;&#10;{"receipt_id": "...", "tool_name": "...", "decision": "allowed", ...}'
+      ></textarea>
+      <div class="side-controls">
+        <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" accept=".jsonl,.json,.txt" />
+          <div class="drop-icon">📂</div>
+          <div class="drop-text">Drop file<br/><em>pp-receipts.jsonl</em></div>
+        </div>
+        <button class="btn btn-primary" id="renderBtn">▶ Render</button>
+        <button class="btn btn-secondary" id="clearBtn">✕ Clear</button>
+      </div>
+    </div>
+    <div class="parse-error" id="parseError"></div>
+  </div>
+
+  <div id="resultsSection" style="display:none">
+    <div class="results-header">
+      <div class="results-count" id="resultsCount"></div>
+    </div>
+    <div class="receipt-list" id="receiptList"></div>
+  </div>
+
+  <div id="emptyState" class="empty-state" style="display:none">
+    <div class="empty-icon">📭</div>
+    <p>No receipts to display. Paste JSON above and click Render.</p>
+  </div>
+</main>
+
+<footer>
+  <a href="https://github.com/permission-protocol/mcp-guard" target="_blank" rel="noopener">
+    permission-protocol/mcp-guard
+  </a>
+  &nbsp;·&nbsp; MCP Guard Receipt Viewer
+</footer>
+
+<script>
+  // ── Example receipt ──────────────────────────────────────────────────────
+  const EXAMPLE = {
+    "receipt_id": "a3f8c2d1-7b4e-4f9a-b8c3-2d1e5f6a7b8c",
+    "timestamp": "2026-03-20T15:30:00.000Z",
+    "agent_id": "claude-desktop",
+    "tool_name": "delete_user_data",
+    "decision": "blocked",
+    "reason": "Matched rule \"block-delete-user-data\"",
+    "rule_id": "block-delete-user-data",
+    "request_payload_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "target_server": "node my-mcp-server.js",
+    "mode": "enforce"
+  };
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+  const pasteArea     = document.getElementById('pasteArea');
+  const fileInput     = document.getElementById('fileInput');
+  const dropZone      = document.getElementById('dropZone');
+  const renderBtn     = document.getElementById('renderBtn');
+  const clearBtn      = document.getElementById('clearBtn');
+  const parseError    = document.getElementById('parseError');
+  const resultsSection= document.getElementById('resultsSection');
+  const resultsCount  = document.getElementById('resultsCount');
+  const receiptList   = document.getElementById('receiptList');
+  const emptyState    = document.getElementById('emptyState');
+
+  // ── Parse ─────────────────────────────────────────────────────────────────
+  function parseInput(raw) {
+    const text = raw.trim();
+    if (!text) return { receipts: [], errors: [] };
+
+    const receipts = [];
+    const errors = [];
+
+    // Try single JSON object first
+    if (text.startsWith('{')) {
+      try {
+        const obj = JSON.parse(text);
+        if (Array.isArray(obj)) {
+          obj.forEach((r, i) => receipts.push(r));
+        } else {
+          receipts.push(obj);
+        }
+        return { receipts, errors };
+      } catch (e) {
+        // Fall through to JSONL
+      }
+    }
+
+    // Try JSON array
+    if (text.startsWith('[')) {
+      try {
+        const arr = JSON.parse(text);
+        arr.forEach(r => receipts.push(r));
+        return { receipts, errors };
+      } catch (e) {
+        errors.push('Invalid JSON array: ' + e.message);
+        return { receipts, errors };
+      }
+    }
+
+    // JSONL — one JSON object per line
+    const lines = text.split('\n');
+    lines.forEach((line, idx) => {
+      const l = line.trim();
+      if (!l) return;
+      try {
+        const obj = JSON.parse(l);
+        receipts.push(obj);
+      } catch (e) {
+        errors.push(`Line ${idx + 1}: ${e.message}`);
+      }
+    });
+
+    return { receipts, errors };
+  }
+
+  // ── Decision meta ─────────────────────────────────────────────────────────
+  function decisionMeta(decision) {
+    switch ((decision || '').toLowerCase()) {
+      case 'allowed':           return { cls: 'allowed',           icon: '🟢', label: 'Allowed' };
+      case 'blocked':           return { cls: 'blocked',           icon: '🔴', label: 'Blocked' };
+      case 'held_for_approval': return { cls: 'held_for_approval', icon: '🟡', label: 'Held for Approval' };
+      default:                  return { cls: 'unknown',           icon: '⚪', label: decision || 'Unknown' };
+    }
+  }
+
+  // ── Format date ───────────────────────────────────────────────────────────
+  function formatDate(ts) {
+    if (!ts) return '—';
+    try {
+      const d = new Date(ts);
+      if (isNaN(d)) return ts;
+      return d.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZoneName: 'short'
+      });
+    } catch { return ts; }
+  }
+
+  // ── Escape HTML ───────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s ?? '—')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── Build card ────────────────────────────────────────────────────────────
+  function buildCard(receipt, idx) {
+    const dm = decisionMeta(receipt.decision);
+    const isDryRun = (receipt.mode || '').toLowerCase() === 'observe';
+
+    // Why explanation
+    let why;
+    if (receipt.rule_id) {
+      why = `Matched rule: <strong>${esc(receipt.rule_id)}</strong>`;
+    } else {
+      why = 'No matching rule; default action applied';
+    }
+
+    // Rule display
+    const ruleDisplay = receipt.rule_id || 'default action';
+
+    // Hash truncation
+    const hash = receipt.request_payload_hash || '';
+    const hashShort = hash.length > 16 ? hash.slice(0, 8) + '…' + hash.slice(-8) : (hash || '—');
+
+    const rawJson = JSON.stringify(receipt, null, 2);
+
+    const card = document.createElement('div');
+    card.className = `receipt-card decision-${dm.cls}`;
+    card.innerHTML = `
+      <div class="card-header">
+        <div class="tool-name">${esc(receipt.tool_name || 'unknown_tool')}</div>
+        <div class="badges">
+          <span class="badge badge-${dm.cls}">${dm.icon} ${dm.label}</span>
+          ${isDryRun ? '<span class="badge badge-dryrun">🔬 DRY RUN</span>' : ''}
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="why-box">
+          <span class="why-label">Why?</span>${why}
+        </div>
+        <div class="meta-grid">
+          <div class="meta-item">
+            <div class="meta-key">Timestamp</div>
+            <div class="meta-value">${esc(formatDate(receipt.timestamp))}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">Agent ID</div>
+            <div class="meta-value mono">${esc(receipt.agent_id)}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">Target Server</div>
+            <div class="meta-value mono">${esc(receipt.target_server)}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">Mode</div>
+            <div class="meta-value">${esc(receipt.mode || '—')}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">Rule Matched</div>
+            <div class="meta-value mono">${esc(ruleDisplay)}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-key">Payload Hash</div>
+            <div class="meta-value mono" title="${esc(hash)}">${esc(hashShort)}</div>
+          </div>
+          ${receipt.receipt_id ? `
+          <div class="meta-item">
+            <div class="meta-key">Receipt ID</div>
+            <div class="meta-value mono">${esc(receipt.receipt_id)}</div>
+          </div>` : ''}
+        </div>
+        <button class="raw-toggle" id="toggle-${idx}" onclick="toggleRaw(${idx})">
+          <span>{ }</span> Raw JSON
+          <span class="arrow">▾</span>
+        </button>
+        <pre class="raw-json" id="raw-${idx}">${esc(rawJson)}</pre>
+      </div>
+    `;
+    return card;
+  }
+
+  // ── Toggle raw JSON ───────────────────────────────────────────────────────
+  function toggleRaw(idx) {
+    const btn = document.getElementById('toggle-' + idx);
+    const pre = document.getElementById('raw-' + idx);
+    btn.classList.toggle('open');
+    pre.classList.toggle('open');
+  }
+
+  // ── Render receipts ───────────────────────────────────────────────────────
+  function render(receipts, errors) {
+    parseError.style.display = 'none';
+    receiptList.innerHTML = '';
+
+    if (errors.length) {
+      parseError.textContent = errors.slice(0, 3).join(' | ') + (errors.length > 3 ? ` (+${errors.length - 3} more)` : '');
+      parseError.style.display = 'block';
+    }
+
+    if (receipts.length === 0) {
+      resultsSection.style.display = 'none';
+      emptyState.style.display = errors.length ? 'none' : 'block';
+      return;
+    }
+
+    emptyState.style.display = 'none';
+    resultsSection.style.display = 'block';
+
+    const plural = receipts.length === 1 ? 'receipt' : 'receipts';
+    resultsCount.innerHTML = `Showing <strong>${receipts.length}</strong> ${plural}${errors.length ? ` <span style="color:var(--red-text)">(${errors.length} parse error${errors.length > 1 ? 's' : ''})</span>` : ''}`;
+
+    receipts.forEach((r, i) => {
+      receiptList.appendChild(buildCard(r, i));
+    });
+  }
+
+  // ── Events ────────────────────────────────────────────────────────────────
+  renderBtn.addEventListener('click', () => {
+    const { receipts, errors } = parseInput(pasteArea.value);
+    render(receipts, errors);
+  });
+
+  pasteArea.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') renderBtn.click();
+  });
+
+  clearBtn.addEventListener('click', () => {
+    pasteArea.value = '';
+    parseError.style.display = 'none';
+    resultsSection.style.display = 'none';
+    emptyState.style.display = 'none';
+    receiptList.innerHTML = '';
+    fileInput.value = '';
+  });
+
+  // File upload
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      pasteArea.value = e.target.result;
+      const { receipts, errors } = parseInput(e.target.result);
+      render(receipts, errors);
+    };
+    reader.readAsText(file);
+  }
+
+  fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+  // Drag and drop
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+
+  // ── Load example on startup ───────────────────────────────────────────────
+  (function init() {
+    render([EXAMPLE], []);
+  })();
+</script>
+</body>
+</html>
