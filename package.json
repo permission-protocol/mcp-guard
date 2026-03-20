@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/src/tests/*.test.js",
+    "demo": "npm run build && bash example/test.sh",
     "prepublishOnly": "npm run build"
   },
   "keywords": ["mcp", "guard", "proxy", "ai", "safety", "permission-protocol"],

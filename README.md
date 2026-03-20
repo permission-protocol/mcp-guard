@@ -2,9 +2,11 @@
 
 **Stop your AI agents from doing dangerous things.**
 
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is how AI agents call tools — like APIs, databases, or deployments. MCP has no built-in access control. MCP Guard adds that layer.
+
 Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and logs every decision as an audit receipt.
 
-Without MCP Guard, your agent can call any tool. With it, every action is checked.
+Without MCP Guard, your agent can call any tool. With it, every action is checked. **MCP Guard does not just log — it blocks execution before it happens.**
 
 → **Blocks** unsafe tool calls before they execute
 → **Holds** sensitive actions for human approval
@@ -38,6 +40,17 @@ mcp-guard --config pp.config.yaml -- node my-mcp-server.js
 ```
 
 That's it. Your agent can no longer delete user data. Production deploys require approval. Everything is logged to `pp-receipts.jsonl`.
+
+## 60-Second Demo (no MCP server needed)
+
+```bash
+git clone https://github.com/permission-protocol/mcp-guard
+cd mcp-guard
+npm install
+npm run demo
+```
+
+Sends three tool calls through the guard and shows: one allowed, one blocked, one held. No setup required.
 
 ## Architecture
 
@@ -185,27 +198,26 @@ The approval UI auto-refreshes every 3 seconds and shows:
 - Pending tool calls with collapsible arguments
 - Recent decision history (last 20)
 
+## Why not just use X?
+
+| Approach | Why MCP Guard is different |
+|----------|---------------------------|
+| API gateway | MCP operates at the tool-call layer, not HTTP. MCP Guard understands tool names and MCP's JSON-RPC protocol. |
+| RBAC / IAM | Those gate *users*. MCP Guard gates *agent actions* — the agent is already authenticated, the question is what it's allowed to *do*. |
+| "Just code it" | You could. MCP Guard gives you a declarative config, audit receipts, observe mode, and an approval UI — without changing your server code. |
+
 ## What This Is NOT
 
 - **Not a dashboard.** It's a proxy. It sits in the data path and enforces rules.
 - **Not a scanner.** It doesn't analyze your code or model outputs. It gates tool calls.
-- **Not compliance theater.** Every decision has a cryptographic receipt. No hand-waving.
+- **Not compliance theater.** Every decision has a cryptographic receipt.
 - **Not a replacement for good architecture.** It's one layer in a defense-in-depth strategy.
 
-## Try the Demo
-
-```bash
-git clone https://github.com/permission-protocol/mcp-guard
-cd mcp-guard
-npm install && npm run build
-bash example/test.sh
-```
-
-See [example/README.md](example/README.md) for details.
+Agents shouldn't be able to execute arbitrary actions without an explicit decision point.
 
 ## Part of Permission Protocol
 
-MCP Guard is a building block of the [Permission Protocol](https://github.com/permission-protocol) governance framework — explicit authority for autonomous AI systems.
+MCP Guard is a building block of the [Permission Protocol](https://github.com/permission-protocol) — explicit authority for autonomous AI systems.
 
 ## License
 
