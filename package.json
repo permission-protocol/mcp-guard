@@ -2,6 +2,9 @@
   "name": "@permissionprotocol/mcp-guard",
   "version": "0.1.0",
   "description": "MCP Guard blocks dangerous AI agent actions using a simple YAML config file.",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/proxy.js",
   "bin": {
     "mcp-guard": "bin/mcp-guard"
