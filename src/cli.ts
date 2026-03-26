@@ -1,8 +1,19 @@
 import { loadConfig } from './config.js';
 import { startProxy } from './proxy.js';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 
 export function main(): void {
   const args = process.argv.slice(2);
+
+  if (args[0] === 'demo') {
+    // When running via npx @permission-protocol/mcp-guard demo
+    const scriptPath = join(__dirname, '../../example/test.sh');
+    const result = spawnSync('bash', [scriptPath], { stdio: 'inherit' });
+    process.exit(result.status ?? 0);
+  }
 
   let configPath = './pp.config.yaml';
   let agentId = 'unknown';
