@@ -43,14 +43,11 @@ That's it. Your agent can no longer delete user data. Production deploys require
 
 ## 60-Second Demo (no MCP server needed)
 
-```bash
-git clone https://github.com/permission-protocol/mcp-guard
-cd mcp-guard
-npm install
-npm run demo
-```
+See MCP Guard block dangerous tool calls in real-time, no setup required:
 
-Sends three tool calls through the guard and shows: one allowed, one blocked, one held. No setup required.
+```bash
+npx @permission-protocol/mcp-guard demo
+```
 
 ## Architecture
 
