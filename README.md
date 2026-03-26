@@ -21,7 +21,7 @@ Without MCP Guard, your agent can call any tool. With it, every action is checke
 
 ```bash
 # Install
-npm install @permission-protocol/mcp-guard
+npm install @permissionprotocol/mcp-guard
 
 # Create a policy file
 cat > pp.config.yaml << 'EOF'

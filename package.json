@@ -1,5 +1,5 @@
 {
-  "name": "@permission-protocol/mcp-guard",
+  "name": "@permissionprotocol/mcp-guard",
   "version": "0.1.0",
   "description": "MCP Guard blocks dangerous AI agent actions using a simple YAML config file.",
   "publishConfig": {
