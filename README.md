@@ -39,7 +39,7 @@ EOF
 mcp-guard --config pp.config.yaml -- node my-mcp-server.js
 ```
 
-That's it. Your agent can no longer delete user data. Production deploys require approval. Everything is logged to `pp-receipts.jsonl`.
+That's it. Your agent can no longer delete user data. Production deploys require approval. Everything is logged to `pp-receipts.jsonl`, and each decision gets a shareable receipt URL.
 
 ## 60-Second Demo (no MCP server needed)
 
@@ -72,7 +72,7 @@ MCP Guard intercepts JSON-RPC messages on stdin/stdout. When it sees a `tools/ca
 2. If **allowed** → forwards to the real server
 3. If **blocked** → returns a JSON-RPC error (`-32001`) directly
 4. If **held for approval** → returns a JSON-RPC error (`-32002`) directly
-5. Emits a receipt for every decision (stderr + jsonl file)
+5. Emits a receipt for every decision (stderr + jsonl file + viewer URL)
 
 All other JSON-RPC methods pass through transparently.
 
@@ -112,7 +112,13 @@ Every `tools/call` decision generates an immutable receipt:
 
 ```json
 {
-  "receipt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "receipt_id": "rcpt_dg_mba0m6u7_4e2d7dfbf913",
+  "status": "DENIED",
+  "action": "delete_user_data",
+  "actor": "my-agent",
+  "policy": "block-dangerous-delete",
+  "risk_tier": "critical",
+  "summary": "AI summary: MCP Guard blocked \"delete_user_data\" because matched rule \"block-dangerous-delete\".",
   "timestamp": "2026-03-20T15:30:00.000Z",
   "agent_id": "my-agent",
   "tool_name": "delete_user_data",
@@ -121,17 +127,26 @@ Every `tools/call` decision generates an immutable receipt:
   "rule_id": "block-dangerous-delete",
   "request_payload_hash": "sha256-hex-string",
   "target_server": "node my-mcp-server.js",
-  "mode": "enforce"
+  "mode": "enforce",
+  "viewer_url": "https://app.permissionprotocol.com/r/rcpt_dg_mba0m6u7_4e2d7dfbf913"
 }
 ```
 
 Receipts are written to:
 - **stderr** — for real-time monitoring
 - **pp-receipts.jsonl** — append-only audit file
+- **`$PP_SHARED_RECEIPTS_PATH`** — optional shared JSONL file for PP/backend ingestion
+
+Optional publishing:
+- Set `PP_RECEIPT_ENDPOINT` to POST each receipt to a backend that stores public receipts
+- Set `PP_RECEIPT_TOKEN` if that endpoint expects bearer auth
+- Set `PP_VIEWER_BASE_URL` to override the default `https://app.permissionprotocol.com/r`
 
 The `request_payload_hash` is a SHA-256 of the full request params, so you can verify what was sent without storing sensitive arguments.
 
-**[→ Visualize your receipts](https://permission-protocol.github.io/mcp-guard/)** — paste a receipt or upload `pp-receipts.jsonl` to see a visual summary.
+The emitted receipt now carries PP-style viewer fields (`summary`, `risk_tier`, `enrichmentSnapshot`, `diff`, `policy_details`) so the same JSON object can be stored or forwarded for the hosted receipt viewer.
+
+Each decision also logs a direct link like `https://app.permissionprotocol.com/r/<receipt_id>` so the user can inspect the decision in the Permission Protocol viewer once the receipt is available to the backend.
 
 ## CLI
 

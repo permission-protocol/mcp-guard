@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 
 export interface PendingAction {
   id: string;
@@ -28,7 +28,7 @@ export function addPending(
   resolve: (responseLine: string) => void,
 ): PendingAction {
   const action: PendingAction = {
-    id: uuidv4(),
+    id: randomUUID(),
     timestamp: new Date().toISOString(),
     tool_name: toolName,
     tool_args: toolArgs,
