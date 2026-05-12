@@ -1,4 +1,4 @@
-export function getApprovalHTML(): string {
+export function getApprovalHTML(approvalToken: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -77,6 +77,8 @@ export function getApprovalHTML(): string {
 <div id="receipts"></div>
 
 <script>
+const authHeaders = { 'X-MCP-Guard-Approval-Token': ${JSON.stringify(approvalToken)} };
+
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function toggleArgs(btn) {
@@ -89,7 +91,7 @@ async function act(id, action) {
   const btns = document.querySelectorAll('[data-id="'+id+'"]');
   btns.forEach(b => b.disabled = true);
   try {
-    const r = await fetch('/api/' + action + '/' + id, { method: 'POST' });
+    const r = await fetch('/api/' + action + '/' + id, { method: 'POST', headers: authHeaders });
     if (!r.ok) { const e = await r.text(); alert('Error: ' + e); }
   } catch(e) { alert('Network error'); }
   refresh();
@@ -98,7 +100,8 @@ async function act(id, action) {
 async function refresh() {
   try {
     const [pRes, rRes] = await Promise.all([
-      fetch('/api/pending'), fetch('/api/receipts')
+      fetch('/api/pending', { headers: authHeaders }),
+      fetch('/api/receipts', { headers: authHeaders })
     ]);
     const pending = await pRes.json();
     const receipts = await rRes.json();

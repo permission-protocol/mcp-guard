@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { Config } from './config.js';
 import { evaluate } from './engine.js';
@@ -29,10 +30,11 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
   }
 
   const approvalEnabled = approvalPort !== undefined;
+  const approvalToken = approvalEnabled ? randomBytes(32).toString('base64url') : undefined;
 
   // Start approval server if enabled
   if (approvalEnabled) {
-    startApprovalServer(approvalPort);
+    startApprovalServer(approvalPort, approvalToken!);
   }
 
   const child: ChildProcess = spawn(serverCommand[0], serverCommand.slice(1), {

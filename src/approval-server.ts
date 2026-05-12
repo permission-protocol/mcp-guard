@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { getPending, getAction, resolveAction, recentResolved } from './pending.js';
 import { getApprovalHTML } from './approval-ui.js';
 import type { Receipt } from './receipt.js';
@@ -32,7 +32,6 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(body);
 }
@@ -42,17 +41,24 @@ function text(res: ServerResponse, status: number, msg: string): void {
   res.end(msg);
 }
 
-export function startApprovalServer(port: number): void {
+function isApiPath(url: string): boolean {
+  return url === '/api' || url.startsWith('/api/');
+}
+
+function hasValidApprovalToken(req: IncomingMessage, approvalToken: string): boolean {
+  return req.headers['x-mcp-guard-approval-token'] === approvalToken;
+}
+
+export function startApprovalServer(port: number, approvalToken: string): Server {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
 
-    // CORS preflight
+    // Same-origin UI calls do not need CORS. Avoid advertising cross-origin API access.
     if (method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, X-MCP-Guard-Approval-Token',
       });
       res.end();
       return;
@@ -62,7 +68,12 @@ export function startApprovalServer(port: number): void {
       // GET / — Approval UI
       if (method === 'GET' && url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(getApprovalHTML());
+        res.end(getApprovalHTML(approvalToken));
+        return;
+      }
+
+      if (isApiPath(url) && !hasValidApprovalToken(req, approvalToken)) {
+        json(res, 401, { error: 'Unauthorized' });
         return;
       }
 
@@ -130,7 +141,11 @@ export function startApprovalServer(port: number): void {
     }
   });
 
-  server.listen(port, () => {
-    process.stderr.write(`[mcp-guard] Approval UI: http://localhost:${port}\n`);
+  server.listen(port, '127.0.0.1', () => {
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : port;
+    process.stderr.write(`[mcp-guard] Approval UI: http://127.0.0.1:${actualPort}\n`);
   });
+
+  return server;
 }
