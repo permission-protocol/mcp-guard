@@ -1,4 +1,5 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { getPending, getAction, resolveAction, recentResolved } from './pending.js';
 import { getApprovalHTML } from './approval-ui.js';
 import type { Receipt } from './receipt.js';
@@ -32,7 +33,6 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(body);
 }
@@ -42,18 +42,32 @@ function text(res: ServerResponse, status: number, msg: string): void {
   res.end(msg);
 }
 
-export function startApprovalServer(port: number): void {
+export function startApprovalServer(port: number): Server {
+  const approvalToken = randomBytes(32).toString('base64url');
+
+  function isAuthorized(req: IncomingMessage): boolean {
+    const header = req.headers['x-mcp-guard-approval-token'];
+    const value = Array.isArray(header) ? header[0] : header;
+    if (typeof value !== 'string') return false;
+
+    const expected = Buffer.from(approvalToken);
+    const received = Buffer.from(value);
+    return received.length === expected.length && timingSafeEqual(received, expected);
+  }
+
+  function requireAuthorized(req: IncomingMessage, res: ServerResponse): boolean {
+    if (isAuthorized(req)) return true;
+    json(res, 403, { error: 'Forbidden' });
+    return false;
+  }
+
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
 
     // CORS preflight
     if (method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
+      res.writeHead(204);
       res.end();
       return;
     }
@@ -62,12 +76,13 @@ export function startApprovalServer(port: number): void {
       // GET / — Approval UI
       if (method === 'GET' && url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(getApprovalHTML());
+        res.end(getApprovalHTML(approvalToken));
         return;
       }
 
       // GET /api/pending
       if (method === 'GET' && url === '/api/pending') {
+        if (!requireAuthorized(req, res)) return;
         const pending = getPending().map(p => ({
           id: p.id,
           timestamp: p.timestamp,
@@ -84,6 +99,7 @@ export function startApprovalServer(port: number): void {
       // POST /api/approve/:id
       const approveMatch = url.match(/^\/api\/approve\/([a-f0-9-]+)$/);
       if (method === 'POST' && approveMatch) {
+        if (!requireAuthorized(req, res)) return;
         const id = approveMatch[1];
         const action = resolveAction(id, 'approved');
         if (!action) {
@@ -100,6 +116,7 @@ export function startApprovalServer(port: number): void {
       // POST /api/deny/:id
       const denyMatch = url.match(/^\/api\/deny\/([a-f0-9-]+)$/);
       if (method === 'POST' && denyMatch) {
+        if (!requireAuthorized(req, res)) return;
         const id = denyMatch[1];
         const action = resolveAction(id, 'denied');
         if (!action) {
@@ -120,6 +137,7 @@ export function startApprovalServer(port: number): void {
 
       // GET /api/receipts
       if (method === 'GET' && url === '/api/receipts') {
+        if (!requireAuthorized(req, res)) return;
         json(res, 200, recentReceipts.slice(-50).reverse());
         return;
       }
@@ -130,7 +148,11 @@ export function startApprovalServer(port: number): void {
     }
   });
 
-  server.listen(port, () => {
-    process.stderr.write(`[mcp-guard] Approval UI: http://localhost:${port}\n`);
+  server.listen(port, '127.0.0.1', () => {
+    const address = server.address();
+    const resolvedPort = typeof address === 'object' && address ? address.port : port;
+    process.stderr.write(`[mcp-guard] Approval UI: http://127.0.0.1:${resolvedPort}\n`);
   });
+
+  return server;
 }
