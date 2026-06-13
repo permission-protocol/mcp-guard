@@ -1,0 +1,40 @@
+# pp.config.yaml — Permission Deck Slice 2 policy for the Infra-MCP
+#
+# This config is consumed by `mcp-guard` (the stdio proxy), NOT by the
+# Infra-MCP server itself. The Infra-MCP just executes; the guard does all
+# classification and enforcement upstream.
+#
+# Slice 2 reuses the Slice-1 rules-based schema: reversibility (and any
+# countdown) live ON each rule. There is no separate `tools:` block — the
+# axis is reversibility per the slice spec §d.
+#
+# NOTE: run_sql_migration is a UNIFORM irreversible hard stop for Slice 2 —
+# we deliberately do NOT split it into env-conditional staging/prod rules.
+
+default_action: allow        # only the three known tools are exposed; allow them through to the guard's per-rule decisions
+mode: enforce                # "observe" to dry-run (log decisions, never block)
+
+# ---------------------------------------------------------------------------
+# Rules (read by mcp-guard). Reversibility / countdown live on each rule.
+# ---------------------------------------------------------------------------
+rules:
+  # merge_pr is reversible (a merge can be reverted) → Decide, optional countdown.
+  - id: merge-pr
+    tool: merge_pr
+    action: require_approval
+    reversibility: reversible
+    countdown_seconds: 0             # default hard-hold; raise for low-risk repos
+
+  # run_sql_migration is irreversible (schema change) → HARD STOP, never auto-clears.
+  # Uniform for Slice 2 — not env-conditional.
+  - id: run-sql-migration
+    tool: run_sql_migration
+    action: require_approval
+    reversibility: irreversible
+
+  # deploy is reversible (a rollback exists) → Decide.
+  - id: deploy
+    tool: deploy
+    action: require_approval
+    reversibility: reversible
+    countdown_seconds: 0

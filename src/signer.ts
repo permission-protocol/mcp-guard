@@ -27,6 +27,16 @@ const KEYS_DIR = process.env.PP_KEYS_DIR || join(process.cwd(), '.keys');
 const PRIVATE_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.private.pem`);
 const PUBLIC_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.public.pem`);
 
+/**
+ * Permission Deck Slice 2 — the stable, published public-key path.
+ *
+ * The offline verifier and CI receipt-gate read the dev public key from here. It is a
+ * world-readable `.pub.pem` (0644) distinct from the signer's working `.public.pem`,
+ * so "the published key" is an explicit, distributable artifact (the dev analogue of
+ * `GET /api/v1/keys/current`). Only the PRIVATE key is secret.
+ */
+export const PUBLISHED_PUBLIC_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.pub.pem`);
+
 let cachedPrivate: KeyObject | null = null;
 let cachedPublic: KeyObject | null = null;
 
@@ -73,6 +83,24 @@ export function signBytes(data: string | Buffer): string {
 export function getPublicKeyPem(): string {
   const { publicKey } = ensureKeypair();
   return publicKey.export({ type: 'spki', format: 'pem' }).toString();
+}
+
+/**
+ * Permission Deck Slice 2 — write the dev public key to the stable published path
+ * (`.keys/pp-dev-1.pub.pem`, 0644) and return that path. Idempotent: re-publishes the
+ * current key each call so the file always matches the live signer. The verifier/CLI
+ * read this path. Never writes the private key.
+ */
+export function publishPublicKey(): string {
+  const pem = getPublicKeyPem();
+  mkdirSync(dirname(PUBLISHED_PUBLIC_KEY_PATH), { recursive: true });
+  writeFileSync(PUBLISHED_PUBLIC_KEY_PATH, pem, { mode: 0o644 });
+  try {
+    chmodSync(PUBLISHED_PUBLIC_KEY_PATH, 0o644);
+  } catch {
+    // best effort on platforms without chmod semantics
+  }
+  return PUBLISHED_PUBLIC_KEY_PATH;
 }
 
 export interface ReceiptSignature {

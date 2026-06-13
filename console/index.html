@@ -79,6 +79,8 @@
   .kind.tweet{background:#1d2630;color:#6ab0d6}
   .kind.deploy{background:var(--red-soft);color:var(--red)}
   .kind.spend{background:var(--brass-soft);color:var(--amber)}
+  .kind.merge{background:var(--violet-soft);color:var(--violet)}
+  .kind.migration{background:var(--red-soft);color:var(--red)}
   .kind.generic{background:var(--panel-3);color:var(--ink-dim)}
   .rtag{font-size:9px;letter-spacing:.4px;padding:2px 7px;border-radius:5px;font-weight:600;display:flex;align-items:center;gap:4px}
   .rtag.irrev{background:var(--red-soft);color:var(--red)}
@@ -92,6 +94,29 @@
   .wire{display:flex;align-items:baseline;gap:8px;margin-bottom:10px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;padding:9px 11px}
   .wire .amt{font-size:20px;font-weight:700;color:#fff;letter-spacing:.3px}
   .wire .payee{color:var(--ink-dim);font-size:11px}
+
+  /* ---- Slice 2: code/infra artifacts ---- */
+  /* repo/PR + env/service meta row above the artifact */
+  .meta-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:8px;font-size:10.5px}
+  .meta-row .mtag{display:inline-flex;align-items:center;gap:4px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:6px;padding:3px 8px;color:var(--ink)}
+  .meta-row .mtag .ml{color:var(--ink-faint);text-transform:uppercase;letter-spacing:.5px;font-size:9px}
+  .meta-row .mtag.pr{color:var(--violet)}
+  .meta-row .mtag.env{font-weight:600}
+  .meta-row .mtag.env.prod{background:var(--red-soft);border-color:#3a2422;color:var(--red)}
+  .meta-row .mtag.env.safe{background:var(--green-soft);border-color:#264a34;color:var(--green)}
+  /* diffstat artifact (merge_pr) */
+  .diffstat{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;padding:8px 10px;margin-bottom:10px;font-size:11px}
+  .diffstat .dl{display:flex;align-items:center;gap:8px;padding:1px 0}
+  .diffstat .dl .f{color:var(--ink);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .diffstat .dl .ch{color:var(--ink-faint);font-size:10px;white-space:nowrap}
+  .diffstat .dl .add{color:var(--green)} .diffstat .dl .del{color:var(--red)}
+  .diffstat .sum{margin-top:5px;padding-top:5px;border-top:1px solid var(--line-soft);color:var(--ink-dim);font-size:10px}
+  .diffstat .sum .add{color:var(--green)} .diffstat .sum .del{color:var(--red)}
+  /* SQL migration artifact — literal statement, monospace, danger when prod */
+  .sql{background:#10130f;border:1px solid #2e353d;border-left:3px solid var(--ink-faint);border-radius:7px;padding:9px 11px;margin-bottom:10px;font-size:11.5px;line-height:1.55;color:#cfe0cf;white-space:pre-wrap;word-break:break-word;max-height:160px;overflow:auto}
+  .sql.prod{border-left-color:var(--red);background:#160f0f;color:#f0d6d3}
+  .sql .kw{color:var(--brass);font-weight:600}
+  .sql.prod .kw{color:var(--amber)}
   .actions{display:flex;gap:6px}
   .btn{flex:1;text-align:center;padding:7px 0;border-radius:7px;font-size:11px;font-weight:600;border:1px solid transparent;cursor:pointer;font-family:inherit}
   .btn:disabled{opacity:.5;cursor:default}
@@ -265,9 +290,60 @@ function kindFor(tool){
   const t = (tool || "").toLowerCase();
   if (t.includes("mail")) return { cls:"email", label:"Email" };
   if (t.includes("post") || t.includes("tweet") || t.includes("_x")) return { cls:"tweet", label:"Post" };
+  if (t.includes("merge") || t.includes("_pr")) return { cls:"merge", label:"Merge PR" };
+  if (t.includes("migration") || t.includes("migrate") || t.includes("sql")) return { cls:"migration", label:"SQL Migration" };
   if (t.includes("deploy") || t.includes("ship")) return { cls:"deploy", label:"Deploy" };
   if (t.includes("spend") || t.includes("pay") || t.includes("charge")) return { cls:"spend", label:"Spend" };
   return { cls:"generic", label:(tool || "Action") };
+}
+
+// ---------- Slice 2: tool-aware artifact formatters ----------
+// merge_pr: args_preview carries repo / PR # / title / diffstat.
+// Accepts either an object or a string blob; renders a diffstat-style block.
+function parseArgs(ap){
+  if (ap == null) return null;
+  if (typeof ap === "object") return ap;
+  // tolerate a JSON string
+  if (typeof ap === "string"){
+    const s = ap.trim();
+    if (s[0] === "{" || s[0] === "["){
+      try { return JSON.parse(s); } catch (e){ /* fall through to raw */ }
+    }
+  }
+  return null; // not structured — caller falls back to the raw preview block
+}
+
+function diffstatHtml(args){
+  const files = Array.isArray(args.files) ? args.files : [];
+  let totAdd = 0, totDel = 0;
+  const rows = files.map(f => {
+    const add = +f.additions || 0, del = +f.deletions || 0;
+    totAdd += add; totDel += del;
+    // a compact +/- bar, capped so a huge file doesn't blow the layout
+    const n = Math.min(add + del, 24);
+    const ga = add + del ? Math.round(n * add / (add + del)) : 0;
+    const bar = "+".repeat(ga) + "-".repeat(Math.max(0, n - ga));
+    return `<div class="dl"><span class="f">${esc(f.path)}</span>`
+      + `<span class="ch"><span class="add">+${add}</span> <span class="del">−${del}</span> `
+      + `<span class="add">${"+".repeat(ga)}</span><span class="del">${"-".repeat(Math.max(0, n-ga))}</span></span></div>`;
+  }).join("");
+  const fileN = args.changed_files != null ? args.changed_files : files.length;
+  return `<div class="diffstat">${rows}`
+    + `<div class="sum">${esc(fileN)} file${fileN===1?"":"s"} changed · `
+    + `<span class="add">+${totAdd}</span> / <span class="del">−${totDel}</span></div></div>`;
+}
+
+// run_sql_migration: render the literal SQL statement, lightly keyword-highlighted.
+function sqlHtml(sql, isProd){
+  const safe = esc(sql);
+  const hl = safe.replace(
+    /\b(ALTER|CREATE|DROP|TABLE|COLUMN|ADD|RENAME|INDEX|INSERT|UPDATE|DELETE|SET|NOT NULL|DEFAULT|PRIMARY KEY|FOREIGN KEY|CONSTRAINT|BEGIN|COMMIT)\b/gi,
+    '<span class="kw">$1</span>');
+  return `<div class="sql${isProd ? " prod" : ""}">${hl}</div>`;
+}
+
+function metaTag(label, value, cls){
+  return `<span class="mtag ${cls||""}"><span class="ml">${esc(label)}</span> ${esc(value)}</span>`;
 }
 
 function whenFromIso(iso){
@@ -352,11 +428,58 @@ function render(){
   bindActions();
 }
 
+// Build the artifact block (+ optional meta row) for a card, tool-aware.
+// Falls back to the Slice-1 generic literal preview when the tool isn't a
+// code/infra tool or args_preview isn't structured.
+function artifactFor(it){
+  const tool = (it.tool_name || "").toLowerCase();
+  const args = parseArgs(it.args_preview);
+
+  // merge_pr → repo / PR # meta + diffstat artifact
+  if ((tool.includes("merge") || tool.includes("_pr")) && args){
+    let meta = "";
+    if (args.repo) meta += metaTag("repo", args.repo, "pr");
+    if (args.pr_number != null) meta += metaTag("PR", "#" + args.pr_number, "pr");
+    if (args.base) meta += metaTag("→", args.base, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const title = args.title ? `<div class="preview artifact">${esc(args.title)}</div>` : "";
+    return metaRow + title + diffstatHtml(args);
+  }
+
+  // run_sql_migration → env chip + literal SQL statement
+  if ((tool.includes("migration") || tool.includes("migrate") || tool.includes("sql")) && args){
+    const env = (args.env || "").toString();
+    const isProd = /prod/i.test(env);
+    let meta = "";
+    if (env) meta += metaTag("env", env, "env " + (isProd ? "prod" : "safe"));
+    if (args.database) meta += metaTag("db", args.database, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const sql = args.sql || args.statement || "";
+    return metaRow + sqlHtml(sql, isProd);
+  }
+
+  // deploy → env + service meta (preview optional)
+  if ((tool.includes("deploy") || tool.includes("ship")) && args){
+    const env = (args.env || "").toString();
+    const isProd = /prod/i.test(env);
+    let meta = "";
+    if (env) meta += metaTag("env", env, "env " + (isProd ? "prod" : "safe"));
+    if (args.service) meta += metaTag("service", args.service, "");
+    if (args.version) meta += metaTag("version", args.version, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const note = args.note ? `<div class="preview artifact">${esc(args.note)}</div>` : "";
+    return metaRow + note;
+  }
+
+  // Slice-1 default: literal text preview
+  return it.args_preview != null && typeof it.args_preview !== "object"
+    ? `<div class="preview artifact">${esc(it.args_preview)}</div>` : "";
+}
+
 function cardHtml(it){
   const k = kindFor(it.tool_name);
   const when = whenFromIso(it.created_at);
-  const artifact = it.args_preview
-    ? `<div class="preview artifact">${esc(it.args_preview)}</div>` : "";
+  const artifact = artifactFor(it);
 
   if (it.lane === "decide"){
     if (it.reversibility === "irreversible"){
@@ -376,11 +499,20 @@ function cardHtml(it){
         </div>
       </div>`;
     }
-    // reversible — green tag + LIVE countdown + hold/deny
+    // reversible — green tag + hold/deny. Countdown only when the contract
+    // actually carries one (comms cards auto-send); code/infra reversible cards
+    // (merge_pr/deploy) are hard-holds with no auto-send, so no countdown.
+    const hasCountdown = it.countdown_remaining != null || it.countdown_seconds != null;
     const remaining = localCountdown[it.id] != null ? localCountdown[it.id]
                     : (it.countdown_remaining != null ? it.countdown_remaining : 0);
     const total = it.countdown_seconds || it.countdown_remaining || remaining || 1;
     const pct = Math.max(0, Math.min(100, (remaining / total) * 100));
+    const countdown = hasCountdown ? `
+      <div class="countdown" data-cd>
+        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — undo anytime</span>
+        <span class="bar"><i data-fill style="width:${pct}%"></i></span>
+      </div>` : "";
+    const approveLabel = hasCountdown ? "Send now" : "Approve";
     return `
     <div class="card rev" data-id="${esc(it.id)}">
       <div class="card-top">
@@ -390,12 +522,9 @@ function cardHtml(it){
       </div>
       <div class="impact">${esc(it.summary)}</div>
       ${artifact}
-      <div class="countdown" data-cd>
-        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — undo anytime</span>
-        <span class="bar"><i data-fill style="width:${pct}%"></i></span>
-      </div>
+      ${countdown}
       <div class="actions">
-        <button class="btn approve" data-act="approve">Send now</button>
+        <button class="btn approve" data-act="approve">${approveLabel}</button>
         <button class="btn hold" data-act="hold">Hold</button>
         <button class="btn deny" data-act="deny">Deny</button>
       </div>
@@ -626,6 +755,48 @@ function mockItems(){
       rule_id: "cold-email",
       status: "pending",
       created_at: ago(6)
+    },
+    {
+      // Slice 2 — merge_pr: Decide / reversible, diffstat artifact, no countdown
+      id: "mock-merge-1",
+      tool_name: "merge_pr",
+      lane: "decide",
+      reversibility: "reversible",
+      summary: "Merge permissionprotocol/mcp-guard #214 · feat(brain): widen corpus to strategy + specs",
+      args_preview: {
+        repo: "permissionprotocol/mcp-guard",
+        pr_number: 214,
+        title: "feat(brain): widen corpus to strategy, specs, and decision files",
+        base: "main",
+        changed_files: 4,
+        files: [
+          { path: "src/brain/corpus.ts",        additions: 86, deletions: 12 },
+          { path: "src/brain/retrieve.ts",      additions: 31, deletions: 8 },
+          { path: "scripts/build-corpus.sh",    additions: 14, deletions: 0 },
+          { path: "test/brain/retrieve.test.ts", additions: 47, deletions: 3 }
+        ]
+      },
+      agent_id: "builder",
+      rule_id: "merge-pr",
+      status: "pending",
+      created_at: ago(9)
+    },
+    {
+      // Slice 2 — run_sql_migration env:production: Decide / IRREVERSIBLE hard stop, no countdown
+      id: "mock-sql-1",
+      tool_name: "run_sql_migration",
+      lane: "decide",
+      reversibility: "irreversible",
+      summary: "Schema migration on production · adds NOT NULL receipt_id to approvals",
+      args_preview: {
+        env: "production",
+        database: "pp_prod",
+        sql: "ALTER TABLE approvals\n  ADD COLUMN receipt_id TEXT NOT NULL DEFAULT '';\nCREATE INDEX idx_approvals_receipt ON approvals (receipt_id);"
+      },
+      agent_id: "infra",
+      rule_id: "sql-migrate-prod",
+      status: "pending",
+      created_at: ago(3)
     },
     {
       id: "mock-unblock-1",

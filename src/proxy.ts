@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import type { Config } from './config.js';
 import { evaluate, type Decision } from './engine.js';
-import { createReceipt, emitReceipt, signReceipt } from './receipt.js';
+import { createReceipt, emitReceipt, signReceipt, type ScopeBinding } from './receipt.js';
 import {
   addPending,
   surfaceActed,
@@ -69,6 +69,58 @@ export function buildEnrichment(
     summary,
     args_preview,
   };
+}
+
+/**
+ * Permission Deck Slice 2 — derive a receipt scope binding from the tool + args.
+ *
+ * Maps the code/infra tools to the scope vocabulary the offline receipt-gate verifies:
+ *   - merge_pr           -> scope `github:merge`, scope_ref `refs/pull/<n>/merge`, scope_sha from args
+ *   - run_sql_migration  -> scope `sql:migrate:<env>`
+ *   - deploy             -> scope `deploy:<env>`
+ *
+ * Comms/spend tools (send_email, post_x, spend, …) return undefined — no scope, so their
+ * receipts stay Slice-1 back-compatible and verify with the original signing bytes.
+ */
+export function deriveScope(
+  toolName: string,
+  toolArgs: Record<string, unknown> | undefined,
+): ScopeBinding | undefined {
+  const args = (toolArgs ?? {}) as Record<string, any>;
+  const str = (v: unknown): string | undefined =>
+    v === undefined || v === null ? undefined : String(v);
+
+  switch (toolName) {
+    case 'merge_pr': {
+      const prNumber = str(args.pr_number ?? args.pr ?? args.number);
+      const scopeRef =
+        str(args.scope_ref) ??
+        (prNumber !== undefined ? `refs/pull/${prNumber}/merge` : undefined);
+      return {
+        scope: 'github:merge',
+        scope_ref: scopeRef,
+        scope_sha: str(args.scope_sha ?? args.merge_commit_sha ?? args.sha),
+      };
+    }
+    case 'run_sql_migration': {
+      const env = str(args.env ?? args.environment) ?? 'unknown';
+      return {
+        scope: `sql:migrate:${env}`,
+        scope_ref: str(args.scope_ref ?? args.migration ?? args.migration_id),
+        scope_sha: str(args.scope_sha ?? args.sha),
+      };
+    }
+    case 'deploy': {
+      const env = str(args.env ?? args.environment) ?? 'unknown';
+      return {
+        scope: `deploy:${env}`,
+        scope_ref: str(args.scope_ref ?? args.ref),
+        scope_sha: str(args.scope_sha ?? args.sha),
+      };
+    }
+    default:
+      return undefined;
+  }
 }
 
 interface JsonRpcRequest {
@@ -145,7 +197,8 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     const serverName = serverCommand.join(' ');
     // Re-evaluate to get a Decision for the receipt; force outcome to allowed via sign.
     const decision = evaluate(action.tool_name, action.tool_args, config);
-    const receipt = createReceipt(action.agent_id, action.tool_name, decision, action.tool_args, serverName, config.mode);
+    const scopeBinding = deriveScope(action.tool_name, action.tool_args);
+    const receipt = createReceipt(action.agent_id, action.tool_name, decision, action.tool_args, serverName, config.mode, scopeBinding);
     signReceipt(receipt, approvedBy);
     action.receipt_id = receipt.receipt_id;
     emitReceipt(receipt);
@@ -202,7 +255,8 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
       const toolArgs: Record<string, unknown> | undefined = msg.params?.arguments;
       const decision = evaluate(toolName, toolArgs, config);
       const serverName = serverCommand.join(' ');
-      const receipt = createReceipt(agentId, toolName, decision, msg.params, serverName, config.mode);
+      const scopeBinding = deriveScope(toolName, toolArgs);
+      const receipt = createReceipt(agentId, toolName, decision, msg.params, serverName, config.mode, scopeBinding);
       emitReceipt(receipt);
       if (approvalEnabled) pushReceipt(receipt);
 

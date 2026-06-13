@@ -37,11 +37,32 @@ export interface ReceiptDiffFile {
   previousFilename: null;
 }
 
+/**
+ * Permission Deck Slice 2 — scope binding for code/infra receipts.
+ *
+ * Optional. Comms/spend receipts (Slice 1) carry no scope and remain back-compatible.
+ * When present, scope is folded into the signed payload so the Ed25519 signature
+ * covers it — a receipt for the wrong `scope_sha` cannot be replayed against a
+ * different merge/migration/deploy.
+ *
+ *  - `scope`     — the action class, e.g. `github:merge`, `sql:migrate:production`, `deploy:staging`.
+ *  - `scope_ref` — the git/logical ref, e.g. `refs/pull/16/merge`.
+ *  - `scope_sha` — the exact commit/merge SHA the authority is bound to.
+ */
+export interface ScopeBinding {
+  scope?: string;
+  scope_ref?: string;
+  scope_sha?: string;
+}
+
 export interface Receipt {
   receipt_id: string;
   status: 'AUTHORIZED' | 'DENIED' | 'AWAITING_APPROVAL';
   action: string;
   resource: string;
+  scope: string | null;
+  scope_ref: string | null;
+  scope_sha: string | null;
   actor: string;
   approved_by: string | null;
   approved_by_avatar: string | null;
@@ -157,6 +178,24 @@ function buildArgsPatch(toolName: string, requestPayload: unknown): string {
   return `diff --git a/arguments.json b/arguments.json\n--- a/arguments.json\n+++ b/arguments.json\n@@ -0,0 +1,${rendered.split('\n').length} @@\n+${JSON.stringify({ tool: toolName, request: requestPayload ?? {} }, null, 2).split('\n').join('\n+')}`;
 }
 
+/**
+ * Permission Deck Slice 2 — the canonical signing bytes for a receipt.
+ *
+ * Binds the receipt to its id, its request payload hash, AND (when present) its scope.
+ * The scope fields are appended deterministically so the same input always produces the
+ * same bytes, and so the offline verifier can reconstruct them from the receipt alone.
+ * Slice-1 (no-scope) receipts produce the original `<id>.<hash>` bytes unchanged, keeping
+ * old signatures valid and back-compatible.
+ */
+export function buildSigningBytes(receipt: Pick<Receipt, 'receipt_id' | 'request_payload_hash' | 'scope' | 'scope_ref' | 'scope_sha'>): string {
+  let bytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
+  const hasScope = receipt.scope || receipt.scope_ref || receipt.scope_sha;
+  if (hasScope) {
+    bytes += `.scope=${receipt.scope ?? ''}.scope_ref=${receipt.scope_ref ?? ''}.scope_sha=${receipt.scope_sha ?? ''}`;
+  }
+  return bytes;
+}
+
 export function createReceipt(
   agentId: string,
   toolName: string,
@@ -164,6 +203,7 @@ export function createReceipt(
   requestPayload: unknown,
   targetServer: string = 'unknown',
   mode: 'enforce' | 'observe' = 'enforce',
+  scopeBinding?: ScopeBinding,
 ): Receipt {
   const payloadStr = JSON.stringify(requestPayload ?? {});
   const hash = createHash('sha256').update(payloadStr).digest('hex');
@@ -201,6 +241,11 @@ export function createReceipt(
       tool: toolName,
       argsHash: hash,
       argumentKeys: Object.keys((requestPayload as Record<string, unknown> | null) ?? {}),
+    },
+    scopeBinding: {
+      scope: scopeBinding?.scope ?? null,
+      scope_ref: scopeBinding?.scope_ref ?? null,
+      scope_sha: scopeBinding?.scope_sha ?? null,
     },
     metadata: {
       receiptKind: 'mcp_guard',
@@ -254,6 +299,9 @@ export function createReceipt(
     status: publicStatus,
     action: toolName,
     resource: targetServer,
+    scope: scopeBinding?.scope ?? null,
+    scope_ref: scopeBinding?.scope_ref ?? null,
+    scope_sha: scopeBinding?.scope_sha ?? null,
     actor: agentId,
     approved_by: null,
     approved_by_avatar: null,
@@ -335,7 +383,7 @@ export function signReceipt(
   receipt: Receipt,
   approvedBy: string = 'permission-deck',
 ): Receipt {
-  const signingBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
+  const signingBytes = buildSigningBytes(receipt);
   const sig = signReceiptPayload(signingBytes);
   receipt.signature = {
     algorithm: sig.algorithm,

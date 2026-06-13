@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { verify as edVerify } from 'node:crypto';
-import { createReceipt, signReceipt } from '../receipt.js';
+import { createReceipt, signReceipt, buildSigningBytes } from '../receipt.js';
 import { getPublicKeyPem, DEV_KEY_ID, SIGN_ALGORITHM } from '../signer.js';
 import type { Decision } from '../engine.js';
 
@@ -56,5 +56,37 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
       Buffer.from(receipt.signature.value!, 'hex'),
     );
     assert.equal(ok, false, 'tampered payload must not verify');
+  });
+
+  it('Slice 2: a no-scope receipt signs over the original <id>.<hash> bytes (back-compat)', () => {
+    const receipt = createReceipt('agent-1', 'send_email', heldDecision, { body: 'draft' }, 'actions-mcp', 'enforce');
+    assert.equal(buildSigningBytes(receipt), `${receipt.receipt_id}.${receipt.request_payload_hash}`);
+  });
+
+  it('Slice 2: a scoped receipt folds scope into the signed bytes, and the signature covers it', () => {
+    const receipt = createReceipt(
+      'agent-1',
+      'merge_pr',
+      heldDecision,
+      { pr_number: 16 },
+      'infra-mcp',
+      'enforce',
+      { scope: 'github:merge', scope_ref: 'refs/pull/16/merge', scope_sha: 'abc123' },
+    );
+    const expectedBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}.scope=github:merge.scope_ref=refs/pull/16/merge.scope_sha=abc123`;
+    assert.equal(buildSigningBytes(receipt), expectedBytes);
+
+    signReceipt(receipt);
+    // The real (scope-covering) bytes verify.
+    assert.equal(
+      edVerify(null, Buffer.from(expectedBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
+      true,
+    );
+    // The old (scope-less) bytes do NOT — proving scope is bound into the signature.
+    const scopelessBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
+    assert.equal(
+      edVerify(null, Buffer.from(scopelessBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
+      false,
+    );
   });
 });
