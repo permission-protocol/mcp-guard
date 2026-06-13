@@ -1,0 +1,43 @@
+# Permission Deck — self-gating receipt check.
+#
+# This repo gates its OWN merges. A PR cannot go green unless a scoped, signed
+# Permission Deck receipt exists at .pp/merge-receipt.json and verifies OFFLINE
+# against the committed public key (.pp/pp-dev-1.pub.pem). No receipt, or a receipt
+# scoped to a different PR, fails closed. No receipt = No merge. This is intentional.
+#
+# The receipt is produced by a human approving the merge_pr in the Permission Deck
+# console; approval issues an Ed25519 receipt scoped github:merge -> refs/pull/<n>/merge.
+
+name: Permission Deck Receipt Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  receipt-gate:
+    name: Permission Deck Receipt Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Verify Permission Deck receipt (offline, fail-closed)
+        run: |
+          echo "Gating merge of PR #${{ github.event.pull_request.number }}"
+          node scripts/verify-receipt.mjs \
+            --receipt-file .pp/merge-receipt.json \
+            --pubkey .pp/pp-dev-1.pub.pem \
+            --scope "github:merge" \
+            --scope-ref "refs/pull/${{ github.event.pull_request.number }}/merge"
+        # Exit 0 -> green -> merge allowed. Non-zero -> "No receipt = No merge" -> blocked.
