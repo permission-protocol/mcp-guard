@@ -133,13 +133,14 @@ async function refresh() {
       rEl.innerHTML = '<div class="empty">No recent decisions</div>';
     } else {
       rEl.innerHTML = \`<table>
-        <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Agent</th><th>Rule</th></tr></thead>
+        <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Agent</th><th>Rule</th><th>Viewer</th></tr></thead>
         <tbody>\${receipts.map(r => \`<tr>
           <td>\${esc(new Date(r.timestamp).toLocaleTimeString())}</td>
           <td><strong>\${esc(r.tool_name)}</strong></td>
           <td><span class="badge badge-\${r.decision}">\${esc(r.decision)}</span></td>
           <td>\${esc(r.agent_id)}</td>
           <td>\${esc(r.rule_id || '—')}</td>
+          <td>\${r.viewer_url ? \`<a href="\${esc(r.viewer_url)}" target="_blank" rel="noreferrer">Open</a>\` : '—'}</td>
         </tr>\`).join('')}</tbody>
       </table>\`;
     }

@@ -13,17 +13,27 @@
     "build": "tsc",
     "test": "node --test dist/src/tests/*.test.js",
     "demo": "npm run build && bash example/test.sh",
+    "deck": "npm run build && node scripts/deck.mjs",
+    "slice1": "npm run build && node scripts/demo-slice1.mjs",
+    "slice2": "npm run build && node scripts/demo-slice2.mjs",
+    "slice25": "npm run build && node scripts/demo-slice25.mjs",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["mcp", "guard", "proxy", "ai", "safety", "permission-protocol"],
+  "keywords": [
+    "mcp",
+    "guard",
+    "proxy",
+    "ai",
+    "safety",
+    "permission-protocol"
+  ],
   "license": "MIT",
   "dependencies": {
-    "yaml": "^2.7.0",
-    "uuid": "^11.1.0"
+    "fast-json-stable-stringify": "^2.1.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/uuid": "^10.0.0",
-    "typescript": "^5.7.0"
+    "@types/node": "^22.19.15",
+    "typescript": "^5.9.3"
   }
 }

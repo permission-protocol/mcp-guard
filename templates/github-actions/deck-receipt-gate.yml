@@ -1,0 +1,64 @@
+# Permission Deck Slice 2 — receipt-gate (reference, not run as-is).
+#
+# Fail-closed merge gate: a PR cannot merge unless a scoped, signed Permission Deck
+# receipt exists and verifies OFFLINE against the published public key. No receipt =
+# No deploy. This is intentional.
+#
+# How it works:
+#   1. The Deck operator approves the `merge_pr` in the console -> mcp-guard issues a
+#      signed receipt scoped `github:merge` to this PR's refs/pull/<n>/merge + merge SHA.
+#   2. This job runs `verify-receipt.mjs` with the PR's exact scope_ref/scope_sha.
+#   3. verify-receipt.mjs verifies the Ed25519 signature against the published key,
+#      checks status AUTHORIZED + expiry, and requires an EXACT scope match.
+#   4. A wrong scope_sha (or no receipt) -> exit 1 -> required check stays red ->
+#      branch protection blocks the merge.
+#
+# Wire-up:
+#   - Make "Permission Deck Receipt Gate" a required status check in branch protection.
+#   - Supply the receipt: either commit/publish pp-receipts.jsonl, fetch it as an
+#     artifact, or pass PP_RECEIPT_ID via the Deck. The published public key
+#     (.keys/pp-dev-1.pub.pem) is committable-safe; the PRIVATE key never is.
+
+name: Permission Deck Receipt Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+jobs:
+  receipt-gate:
+    name: Permission Deck Receipt Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install + build mcp-guard
+        run: |
+          npm ci
+          npm run build
+
+      # The receipt store (pp-receipts.jsonl) and the published public key
+      # (.keys/pp-dev-1.pub.pem) must be present in the workspace. In a real
+      # deployment these are produced by the Deck and fetched here (artifact,
+      # checkout of a receipts repo, or an API pull). For the reference flow we
+      # assume they are checked in / restored before this step.
+
+      - name: Verify Permission Deck receipt (offline, fail-closed)
+        env:
+          # The Deck stamps the approved merge's receipt id onto the PR; surface it here.
+          PP_RECEIPT_ID: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node scripts/verify-receipt.mjs \
+            --receipt-id "${PP_RECEIPT_ID}" \
+            --pubkey .keys/pp-dev-1.pub.pem \
+            --scope "github:merge" \
+            --scope-ref "refs/pull/${{ github.event.pull_request.number }}/merge" \
+            --scope-sha "${{ github.event.pull_request.merge_commit_sha }}"
+        # Exit 0 -> gate green -> merge allowed.
+        # Exit non-zero -> ::error:: "No receipt = No deploy" -> required check red -> merge blocked.

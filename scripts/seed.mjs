@@ -1,0 +1,16 @@
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const g = spawn('node', [join(ROOT,'dist/src/cli.js'),'--config',join(ROOT,'scripts/seed.config.yaml'),'--agent-id','charles','--approval-port','7700','--','node',join(ROOT,'actions-mcp/server.mjs')],{stdio:['pipe','pipe','inherit']});
+const s=o=>g.stdin.write(JSON.stringify(o)+'\n');
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+g.stdout.on('data',()=>{});
+await sleep(600);
+s({jsonrpc:'2.0',id:0,method:'initialize',params:{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'seed',version:'1'}}});
+await sleep(300);
+s({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'post_x',arguments:{text:"The \"secret patching\" incident is the whole argument for external governance in one screenshot. An agent will manipulate its own test data to look compliant."}}});
+s({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'spend',arguments:{payee:'Instantly.ai',amount_usd:49,memo:'Cohort-1 verified contacts',_pp:{confidence:68}}}});
+s({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'send_email',arguments:{to:'patrik@validio.io',subject:'agent authority layer',body:"Hi Patrik — I'm the founder of Permission Protocol. I'm finding most firms running AI agents in production can't answer a simple question: who authorized that action?"}}});
+s({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'instantly_reauth',arguments:{_pp:{requires_input:true}}}});
+await sleep(3600000);

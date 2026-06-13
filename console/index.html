@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Charles · Permission Deck</title>
+<style>
+  :root{
+    /* surfaces */
+    --bg:#090a0d; --bg-2:#0c0e12;
+    --panel:#15181f; --panel-2:#1a1e26; --panel-3:#222732;
+    --line:#272c36; --line-soft:#1c2029; --line-bright:#333a46;
+    /* ink */
+    --ink:#eceae3; --ink-dim:#9aa1ab; --ink-faint:#646b77;
+    /* accents */
+    --brass:#e3ad57; --brass-deep:#c8913f; --amber:#ecbb6a;
+    --brass-soft:rgba(227,173,87,.13); --brass-line:rgba(227,173,87,.30);
+    --green:#5ecb8b; --green-soft:rgba(94,203,139,.12); --green-line:rgba(94,203,139,.28);
+    --red:#e57069; --red-soft:rgba(229,112,105,.12); --red-line:rgba(229,112,105,.30);
+    --blue:#64a3db; --blue-soft:rgba(100,163,219,.12); --blue-line:rgba(100,163,219,.28);
+    --violet:#ad96da; --violet-soft:rgba(173,150,218,.13); --violet-line:rgba(173,150,218,.28);
+    /* type */
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+    /* depth */
+    --sh-card:0 1px 1px rgba(0,0,0,.35),0 10px 30px -16px rgba(0,0,0,.7);
+    --sh-pop:0 16px 50px -16px rgba(0,0,0,.75);
+    --r:12px;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  ::selection{background:var(--brass-soft);color:#fff}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:var(--sans);font-size:13px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden;
+  }
+  /* ambient background */
+  .bg{position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:
+      radial-gradient(900px 500px at 12% -8%, rgba(227,173,87,.06), transparent 60%),
+      radial-gradient(800px 600px at 100% 0%, rgba(100,163,219,.05), transparent 55%),
+      radial-gradient(700px 700px at 50% 120%, rgba(173,150,218,.045), transparent 60%),
+      var(--bg);}
+  .grain{position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.025;
+    background-image:repeating-linear-gradient(0deg,#fff 0,#fff 1px,transparent 1px,transparent 3px);}
+
+  /* mono where data lives */
+  .when,[data-clock],.wire .amt,.sql,.diffstat,.meta-row .mtag,.conf b,.acted,.stat .v,.lev .v,.count{font-family:var(--mono)}
+
+  /* ---- top command bar ---- */
+  header{display:flex;align-items:center;gap:18px;padding:0 20px;height:54px;
+    background:linear-gradient(180deg,rgba(22,25,31,.92),rgba(15,17,21,.82));
+    backdrop-filter:blur(14px) saturate(1.2);-webkit-backdrop-filter:blur(14px) saturate(1.2);
+    border-bottom:1px solid var(--line);position:relative;z-index:10}
+  header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+    background:linear-gradient(90deg,transparent,var(--brass-line),transparent);opacity:.6}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.2px;font-size:14px}
+  .brand .sax{font-size:18px;filter:drop-shadow(0 0 8px rgba(227,173,87,.45))}
+  .brand .nm{background:linear-gradient(180deg,#fff,#d8d4c8);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(94,203,139,.7);animation:p 2.6s infinite}
+  .pulse.off{background:var(--ink-faint);box-shadow:none;animation:none}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(94,203,139,.5)}70%{box-shadow:0 0 0 7px rgba(94,203,139,0)}100%{box-shadow:0 0 0 0 rgba(94,203,139,0)}}
+  .headline{margin-left:4px;padding-left:18px;border-left:1px solid var(--line);color:var(--ink-dim);font-size:12.5px;letter-spacing:.1px}
+  .headline b{color:var(--ink);font-weight:650}
+  .headline .hot{color:var(--amber);font-weight:650}
+  .strip-right{margin-left:auto;display:flex;gap:14px;align-items:center}
+  .conn{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);padding:5px 11px;border-radius:20px;letter-spacing:.3px}
+  .conn .pulse{width:6px;height:6px}
+  .conn.live{color:var(--green);border-color:var(--green-line)} .conn.poll{color:var(--amber);border-color:var(--brass-line)}
+  .conn.down{color:var(--red);border-color:var(--red-line)} .conn.mock{color:var(--blue);border-color:var(--blue-line)}
+  .posture{display:flex;background:var(--panel-2);border:1px solid var(--line);border-radius:20px;padding:3px;font-size:10.5px;gap:2px}
+  .posture span{padding:4px 12px;border-radius:16px;color:var(--ink-faint);cursor:pointer;transition:.18s;font-weight:600}
+  .posture span:hover{color:var(--ink-dim)}
+  .posture span.on{background:linear-gradient(180deg,rgba(227,173,87,.22),rgba(227,173,87,.10));color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .stat{display:flex;flex-direction:column;line-height:1.15;padding-left:4px}
+  .stat .v{color:var(--ink);font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+  .stat .v .u{color:var(--ink-faint);font-weight:400;font-size:9.5px;font-family:var(--sans)}
+  .stat .k{color:var(--ink-faint);font-size:8.5px;text-transform:uppercase;letter-spacing:.7px}
+  .model-chip{display:flex;align-items:center;gap:6px;background:linear-gradient(180deg,rgba(227,173,87,.16),rgba(227,173,87,.07));border:1px solid var(--brass-line);color:var(--amber);padding:6px 11px;border-radius:20px;font-size:10.5px;font-weight:650}
+
+  main{display:grid;grid-template-columns:0.9fr 1.55fr 0.95fr;gap:1px;background:var(--line);overflow:hidden}
+  .col{background:var(--bg-2);overflow-y:auto;display:flex;flex-direction:column}
+  .col::-webkit-scrollbar{width:9px}
+  .col::-webkit-scrollbar-thumb{background:#2a303b;border-radius:5px;border:2px solid var(--bg-2)}
+  .col::-webkit-scrollbar-thumb:hover{background:#363d49}
+  .sec{padding:15px 16px}
+  .sec+.sec{border-top:1px solid var(--line-soft)}
+  .sec-h{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  .sec-h .t{font-size:9.5px;text-transform:uppercase;letter-spacing:1.3px;color:var(--ink-dim);font-weight:700}
+  .sec-h .count{margin-left:auto;font-size:9px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);padding:2px 8px;border-radius:11px}
+
+  /* ---- center: needs-you, three lanes ---- */
+  .colhead{padding:15px 18px 2px;display:flex;align-items:center;font-size:11px;text-transform:uppercase;letter-spacing:1.4px;color:var(--ink);font-weight:700}
+  .colhead .sub{margin-left:auto;text-transform:none;letter-spacing:.2px;font-weight:400;font-size:10.5px;color:var(--ink-faint)}
+  .lane-h{display:flex;align-items:center;gap:10px;padding:16px 18px 9px;position:relative}
+  .lane-h::after{content:"";position:absolute;left:18px;right:18px;bottom:2px;height:1px;background:var(--line-soft)}
+  .lane-h .ico{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;font-size:12px;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
+  .lane-h .lh{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;font-weight:800}
+  .lane-h .desc{color:var(--ink-faint);font-size:10.5px;margin-left:1px;font-style:italic;opacity:.85}
+  .lane-h .n{margin-left:auto;font-size:10px;color:var(--ink-dim);background:var(--panel-2);border:1px solid var(--line);padding:2px 9px;border-radius:11px;font-family:var(--mono);font-variant-numeric:tabular-nums;min-width:24px;text-align:center}
+  .decide .ico{background:linear-gradient(180deg,rgba(227,173,87,.24),rgba(227,173,87,.08));color:var(--amber);box-shadow:0 0 14px -4px rgba(227,173,87,.5),inset 0 0 0 1px var(--brass-line)} .decide .lh{color:var(--amber)}
+  .unblock .ico{background:linear-gradient(180deg,rgba(100,163,219,.22),rgba(100,163,219,.07));color:var(--blue);box-shadow:0 0 14px -4px rgba(100,163,219,.45),inset 0 0 0 1px var(--blue-line)} .unblock .lh{color:var(--blue)}
+  .verify .ico{background:linear-gradient(180deg,rgba(173,150,218,.22),rgba(173,150,218,.07));color:var(--violet);box-shadow:0 0 14px -4px rgba(173,150,218,.45),inset 0 0 0 1px var(--violet-line)} .verify .lh{color:var(--violet)}
+
+  .card{background:linear-gradient(180deg,var(--panel),#13161c);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:0 16px 12px;position:relative;overflow:hidden;
+    box-shadow:var(--sh-card);transition:transform .2s cubic-bezier(.2,.7,.3,1),box-shadow .2s,border-color .2s,opacity .25s}
+  .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:var(--r) 0 0 var(--r)}
+  .card:hover{transform:translateY(-2px);border-color:var(--line-bright);box-shadow:var(--sh-pop)}
+  /* irreversible = the one thing that must dominate: heavier spine, warm bg, top keyline, real glow */
+  .card.irrev::before{width:4px;background:linear-gradient(180deg,var(--red),#a8463f)}
+  .card.irrev{border-color:var(--red-line);background:linear-gradient(180deg,#1c1517,#150f11);
+    box-shadow:var(--sh-card),inset 0 1px 0 rgba(229,112,105,.25),inset 0 0 60px -26px rgba(229,112,105,.65)}
+  .card.rev::before{background:linear-gradient(180deg,var(--green),#2f8b58)}
+  .card.needfact::before{background:linear-gradient(180deg,var(--blue),#3b6f9e)}
+  .card.check::before{background:linear-gradient(180deg,var(--violet),#6f5da0)}
+  .card.leaving{opacity:0;transform:translateX(16px) scale(.98)}
+  .card-top{display:flex;align-items:center;gap:7px;margin-bottom:9px;flex-wrap:wrap}
+  .kind{font-size:9px;text-transform:uppercase;letter-spacing:.8px;padding:3px 8px;border-radius:6px;font-weight:800}
+  .kind.email{background:var(--blue-soft);color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue-line)}
+  .kind.tweet{background:rgba(100,180,219,.12);color:#6cb6df;box-shadow:inset 0 0 0 1px rgba(108,182,223,.26)}
+  .kind.deploy{background:var(--red-soft);color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line)}
+  .kind.spend{background:var(--brass-soft);color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .kind.merge{background:var(--violet-soft);color:var(--violet);box-shadow:inset 0 0 0 1px var(--violet-line)}
+  .kind.migration{background:var(--red-soft);color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line)}
+  .kind.generic{background:var(--panel-3);color:var(--ink-dim)}
+  .rtag{font-size:9px;letter-spacing:.4px;padding:3px 8px;border-radius:6px;font-weight:700;display:flex;align-items:center;gap:4px}
+  .rtag.irrev{background:var(--red-soft);color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line)}
+  .rtag.irrev::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--red);box-shadow:0 0 6px var(--red);animation:p 2s infinite}
+  .rtag.rev{background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line)}
+  .card-top .when{margin-left:auto;color:var(--ink-faint);font-size:10px;letter-spacing:.2px}
+  .impact{color:var(--ink);font-size:14.5px;line-height:1.4;margin-bottom:6px;font-weight:600;letter-spacing:-.1px}
+  .card.irrev .impact{font-size:15.5px}
+  /* consequence / blast-radius line — what breaks if you're wrong */
+  .conseq{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--ink-dim);margin-bottom:11px}
+  .conseq .ic{color:var(--ink-faint)}
+  .conseq.danger{color:var(--red)} .conseq.danger .ic{color:var(--red)}
+  .conseq.safe{color:var(--green)} .conseq.safe .ic{color:var(--green)}
+  /* on a hard-stop, the blast-radius line is a warning band, not a footnote */
+  .card.irrev .conseq.danger{font-size:11.5px;font-weight:600;background:var(--red-soft);box-shadow:inset 0 0 0 1px var(--red-line);padding:6px 9px;border-radius:7px;margin-bottom:12px}
+  /* hold-to-approve: deliberate friction for irreversible actions */
+  .btn.holdapprove{position:relative;overflow:hidden}
+  .btn.holdapprove .holdfill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(20,13,3,.34);pointer-events:none}
+  .btn.holdapprove .hl{position:relative;z-index:1}
+  .btn.holdapprove.holding{box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 0 0 1px var(--brass),0 0 18px -6px rgba(227,173,87,.9)}
+  /* confidence encoding on verify cards */
+  .conf.lo b{color:var(--amber)} .conf.hi b{color:var(--green)}
+  .confmeter{height:4px;background:var(--panel-3);border-radius:3px;overflow:hidden;margin:0 0 10px}
+  .confmeter i{display:block;height:100%;border-radius:3px}
+  .confmeter.lo i{background:linear-gradient(90deg,#c8913f,var(--amber))} .confmeter.hi i{background:linear-gradient(90deg,#2f8b58,var(--green))}
+  @keyframes nudge{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+  .btn.holdapprove.nudge{animation:nudge .35s}
+  .preview{color:var(--ink-dim);font-size:11.5px;line-height:1.55;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:9px 11px;margin-bottom:11px;max-height:84px;overflow:hidden;position:relative;white-space:pre-wrap;word-break:break-word}
+  .preview.artifact{border-color:var(--line)}
+  .preview::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24px;background:linear-gradient(transparent,var(--panel-2))}
+  .wire{display:flex;align-items:baseline;gap:8px;margin-bottom:11px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:10px 12px}
+  .wire .amt{font-size:21px;font-weight:700;color:#fff;letter-spacing:.3px}
+  .wire .payee{color:var(--ink-dim);font-size:11px}
+
+  /* Slice 2 artifacts */
+  .meta-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:9px;font-size:10.5px}
+  .meta-row .mtag{display:inline-flex;align-items:center;gap:5px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;padding:4px 9px;color:var(--ink)}
+  .meta-row .mtag .ml{color:var(--ink-faint);text-transform:uppercase;letter-spacing:.5px;font-size:8.5px;font-family:var(--sans)}
+  .meta-row .mtag.pr{color:var(--violet);border-color:var(--violet-line)}
+  .meta-row .mtag.env{font-weight:700}
+  .meta-row .mtag.env.prod{background:var(--red-soft);border-color:var(--red-line);color:var(--red)}
+  .meta-row .mtag.env.safe{background:var(--green-soft);border-color:var(--green-line);color:var(--green)}
+  .diffstat{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:9px 11px;margin-bottom:11px;font-size:11px}
+  .diffstat .dl{display:flex;align-items:center;gap:8px;padding:2px 0}
+  .diffstat .dl .f{color:var(--ink-dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .diffstat .dl .ch{color:var(--ink-faint);font-size:10px;white-space:nowrap}
+  .diffstat .dl .add{color:var(--green)} .diffstat .dl .del{color:var(--red)}
+  .diffstat .dbar{display:inline-flex;width:46px;height:5px;border-radius:3px;overflow:hidden;background:var(--panel-3);vertical-align:middle;margin-left:3px}
+  .diffstat .dbar .da{background:var(--green)} .diffstat .dbar .dd{background:var(--red)}
+  .diffstat .sum{margin-top:6px;padding-top:6px;border-top:1px solid var(--line-soft);color:var(--ink-dim);font-size:10px}
+  .diffstat .sum .add{color:var(--green)} .diffstat .sum .del{color:var(--red)}
+  .sql{background:#0c0f0c;border:1px solid #29302a;border-left:3px solid var(--ink-faint);border-radius:9px;padding:10px 12px;margin-bottom:11px;font-size:11.5px;line-height:1.6;color:#cde0cd;white-space:pre-wrap;word-break:break-word;max-height:170px;overflow:auto}
+  .sql.prod{border-left-color:var(--red);background:#150d0d;color:#f1d7d4;box-shadow:inset 0 0 30px -22px rgba(229,112,105,.8)}
+  .sql .kw{color:var(--brass);font-weight:700}
+  .sql.prod .kw{color:var(--amber)}
+
+  .actions{display:flex;gap:7px;margin-top:2px}
+  .btn{flex:1;text-align:center;padding:8px 0;border-radius:8px;font-size:11.5px;font-weight:650;border:1px solid transparent;cursor:pointer;font-family:var(--sans);letter-spacing:.2px;transition:.15s;position:relative}
+  .btn:hover{transform:translateY(-1px)}
+  .btn:active{transform:translateY(0)}
+  .btn:disabled{opacity:.45;cursor:default;transform:none}
+  /* approve = the authority action → brass, filled, dark text */
+  .btn.approve{background:linear-gradient(180deg,#e9ba62,#c8913f);color:#1c1305;font-weight:700;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 6px 16px -11px rgba(227,173,87,.9)}
+  .btn.approve:hover{background:linear-gradient(180deg,#f0c474,#d49b46);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 8px 20px -10px rgba(227,173,87,1)}
+  .btn.hold{background:transparent;color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line);flex:0 0 64px}
+  .btn.hold:hover{background:var(--red-soft)}
+  .btn.deny{background:transparent;color:var(--ink-faint);box-shadow:inset 0 0 0 1px var(--line);flex:0 0 60px}
+  .btn.deny:hover{color:var(--ink-dim);box-shadow:inset 0 0 0 1px var(--line-bright)}
+  .btn.undo{background:transparent;color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line);flex:0 0 66px}
+  .btn.undo:hover{background:var(--brass-soft)}
+  .btn.primary{background:linear-gradient(180deg,rgba(227,173,87,.26),rgba(227,173,87,.12));color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .btn.primary:hover{box-shadow:inset 0 0 0 1px var(--brass),0 6px 18px -10px rgba(227,173,87,.8)}
+
+  .countdown{display:flex;align-items:center;gap:9px;margin-bottom:11px;font-size:10.5px;color:var(--green)}
+  .countdown .lbl{white-space:nowrap}
+  .countdown b{font-variant-numeric:tabular-nums;color:var(--green)}
+  .bar{flex:1;height:5px;background:var(--panel-3);border-radius:4px;overflow:hidden;position:relative}
+  .bar i{display:block;height:100%;width:62%;background:linear-gradient(90deg,#2f8b58,var(--green));border-radius:4px;transition:width .9s linear;position:relative}
+  .bar i::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.25),transparent);animation:sh 2.2s linear infinite}
+  @keyframes sh{0%{transform:translateX(-100%)}100%{transform:translateX(220%)}}
+  .fact-in{display:flex;gap:7px;margin-bottom:2px}
+  .fact-in .fld{flex:1;background:var(--panel-2);border:1px dashed var(--line-bright);border-radius:8px;padding:9px 11px;color:var(--ink-faint);font-size:11px}
+  .conf{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--ink-dim)}
+  .conf b{color:var(--violet)}
+  .acted{display:inline-flex;align-items:center;gap:5px;font-size:9px;letter-spacing:.4px;padding:3px 8px;border-radius:6px;font-weight:700;background:var(--violet-soft);color:var(--violet);box-shadow:inset 0 0 0 1px var(--violet-line)}
+
+  .lane-empty{color:var(--ink-faint);font-size:10.5px;margin:0 18px 10px;padding:11px 12px;border:1px dashed var(--line);border-radius:10px;text-align:center;opacity:.6}
+
+  /* all-clear */
+  .clear{display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:70px 24px;text-align:center;flex:1}
+  .clear .glyph{font-size:40px;filter:drop-shadow(0 0 24px rgba(94,203,139,.35));opacity:.92}
+  .clear .ttl{font-size:16px;color:var(--ink);font-weight:700;letter-spacing:.3px}
+  .clear .sub{font-size:11.5px;color:var(--ink-faint);max-width:300px;line-height:1.7}
+  body.allclear .lanes{display:none}
+  body.allclear .clear{display:flex}
+
+  /* ---- left / right chrome ---- */
+  .live-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft)}
+  .live-row:last-child{border-bottom:0}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.run{background:var(--green);box-shadow:0 0 8px rgba(94,203,139,.6);animation:p 2s infinite}.dot.queue{background:var(--amber)}
+  .live-row .lbl{color:var(--ink);font-size:11.5px}.live-row .sub{color:var(--ink-faint);font-size:10px;margin-top:1px}
+  .live-row .meta{margin-left:auto;color:var(--ink-faint);font-size:10px;text-align:right;font-family:var(--mono)}
+  .lev{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line-soft);font-size:11px}
+  .lev:last-child{border-bottom:0}.lev .k{color:var(--ink-dim)}.lev .v{color:var(--ink);font-weight:650;font-variant-numeric:tabular-nums}
+  .lev .v.good{color:var(--green)}.lev .v.warn{color:var(--amber)}
+  .work{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel),#13161c);border-radius:10px;margin-bottom:7px;transition:.18s;box-shadow:var(--sh-card)}
+  .work:hover{border-color:var(--line-bright);transform:translateY(-1px)}
+  .work .ico{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;flex:none;background:var(--panel-2);border:1px solid var(--line)}
+  .work .body{flex:1;min-width:0}.work .title{color:var(--ink);font-size:11.5px}.work .when{color:var(--ink-faint);font-size:9.5px;margin-top:1px;font-family:var(--mono)}
+  .badge{font-size:9px;color:var(--green);background:var(--green-soft);padding:2px 8px;border-radius:10px;box-shadow:inset 0 0 0 1px var(--green-line);font-weight:600}
+  .badge.warn{color:var(--amber);background:var(--brass-soft);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .brief{background:linear-gradient(180deg,rgba(227,173,87,.05),transparent),var(--panel);border:1px solid var(--line);border-radius:11px;padding:12px 13px;margin-bottom:10px;box-shadow:var(--sh-card)}
+  .brief .bh{font-size:9.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--brass);margin-bottom:8px;font-weight:700}
+  .brief li{list-style:none;color:var(--ink-dim);font-size:11px;line-height:1.55;padding-left:15px;position:relative;margin-bottom:5px}
+  .brief li::before{content:"›";position:absolute;left:0;color:var(--brass);font-weight:700}
+  .brief li b{color:var(--ink);font-weight:650}
+  .mem{padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--panel);margin-bottom:7px;position:relative;transition:.18s}
+  .mem:hover{border-color:var(--line-bright)}
+  .mem .tag{font-size:8.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--brass);margin-bottom:4px;font-weight:700}
+  .mem .txt{color:var(--ink-dim);font-size:11px;line-height:1.5}.mem .txt b{color:var(--ink);font-weight:650}
+  .mem .pin{position:absolute;right:9px;top:8px;color:var(--brass);font-size:10px;opacity:.7}
+
+  /* toast */
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(24px);
+    background:linear-gradient(180deg,#20242d,#171a21);border:1px solid var(--line-bright);color:var(--ink);
+    font-size:11.5px;font-weight:550;padding:11px 18px;border-radius:11px;opacity:0;transition:opacity .25s,transform .25s;
+    pointer-events:none;z-index:50;box-shadow:var(--sh-pop);display:flex;align-items:center;gap:9px}
+  .toast::before{content:"✓";color:var(--green);font-weight:800}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;cursor:pointer}
+  .toast.err{border-color:var(--red-line)} .toast.err::before{content:"!";color:var(--red)}
+  .toast.receipt{border-color:var(--brass-line);box-shadow:var(--sh-pop),0 0 30px -10px rgba(227,173,87,.5)}
+  .toast.receipt::before{content:"✦";color:var(--brass)}
+
+  /* ---- receipt modal (the proof moment) ---- */
+  .modal-bg{position:fixed;inset:0;background:rgba(6,7,9,.68);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+  .modal-bg.show{display:flex}
+  .receipt-modal{width:min(440px,94vw);background:linear-gradient(180deg,#191c24,#121419);border:1px solid var(--brass-line);border-radius:16px;box-shadow:var(--sh-pop),0 0 70px -22px rgba(227,173,87,.55);overflow:hidden;animation:pop .26s cubic-bezier(.2,.8,.3,1)}
+  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+  .receipt-modal .rh{display:flex;align-items:center;gap:11px;padding:17px 19px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(227,173,87,.08),transparent)}
+  .receipt-modal .seal{font-size:22px;color:var(--brass);filter:drop-shadow(0 0 12px rgba(227,173,87,.7))}
+  .receipt-modal .rt{font-weight:700;font-size:14.5px;letter-spacing:.2px}
+  .receipt-modal .rt small{display:block;color:var(--ink-faint);font-weight:400;font-size:9.5px;text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+  .receipt-modal .rb{padding:16px 19px;display:flex;flex-direction:column;gap:12px}
+  .receipt-modal .verified{display:inline-flex;align-items:center;gap:8px;background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line);padding:8px 12px;border-radius:10px;font-size:11.5px;font-weight:650;width:fit-content}
+  .receipt-modal .row{display:flex;flex-direction:column;gap:3px}
+  .receipt-modal .row .k{font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-faint)}
+  .receipt-modal .row .v{font-size:12.5px;color:var(--ink);line-height:1.45;word-break:break-word}
+  .receipt-modal .row .v.mono{font-family:var(--mono);color:var(--amber);word-break:break-all}
+  .receipt-modal .rf{padding:14px 19px;border-top:1px solid var(--line)}
+  .receipt-modal .rf .btn{width:100%;padding:10px 0}
+
+  /* ---- responsive: tablet ---- */
+  @media (max-width:1120px){
+    main{grid-template-columns:0.95fr 1.55fr}
+    .col.right{display:none}
+  }
+  /* ---- responsive: phone — Needs You first, everything stacks, big tap targets ---- */
+  @media (max-width:760px){
+    html,body{height:auto;overflow-y:auto;overflow-x:hidden}
+    body{display:block}
+    header{position:sticky;top:0;flex-wrap:wrap;height:auto;padding:9px 13px;gap:9px;z-index:20}
+    .headline{flex-basis:100%;order:9;margin:0;padding:7px 0 0;border-left:0}
+    .strip-right{gap:9px}
+    .model-chip,.posture{display:none}
+    main{display:flex;flex-direction:column;gap:0}
+    .col{overflow:visible;max-height:none}
+    .col:not(.center){display:none}   /* phone: focus only on Needs You — no placeholder chrome */
+    .card{margin:0 12px 12px}
+    .card:hover{transform:none}
+    /* destructive actions must NOT sit next to Approve at thumb height */
+    .actions{flex-wrap:wrap;gap:7px}
+    .actions .btn{min-width:0}
+    .actions .btn.approve{flex:1 1 100%;order:-1;padding:14px 0;font-size:14px}
+    .actions .btn.hold,.actions .btn.deny,.actions .btn.undo{flex:1 1 0;padding:11px 0;font-size:12.5px}
+    .btn:hover{transform:none}
+    .lane-h{padding:15px 14px 9px}
+    .colhead{padding:14px 14px 2px}
+    .colhead .sub{display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="bg"></div><div class="grain"></div>
+  <header>
+    <div class="brand"><span class="sax">🎷</span><span class="nm">Charles</span><span class="pulse" id="brandPulse"></span></div>
+    <div class="headline" id="headline"><b>—</b></div>
+    <div class="strip-right">
+      <div class="conn" id="conn"><span class="pulse off"></span><span id="connText">connecting…</span></div>
+      <div class="posture"><span class="on">Normal</span><span>Cautious</span></div>
+      <div class="stat"><span class="v" id="needsCount">0<span class="u"> now</span></span><span class="k">Needs you</span></div>
+      <div class="model-chip"><span class="pulse" style="background:var(--amber);box-shadow:0 0 8px rgba(236,187,106,.7)"></span>Opus 4.8 · thinking</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT: live + leverage + standing work (static cockpit chrome) -->
+    <div class="col">
+      <div class="sec">
+        <div class="sec-h"><span class="t">Live Activity</span><span class="count">now</span></div>
+        <div class="live-row"><span class="dot run"></span><div><div class="lbl">Outreach drafter</div><div class="sub">sub-agent · gemini-flash</div></div><div class="meta">drafting 3<br>0:42</div></div>
+        <div class="live-row"><span class="dot run"></span><div><div class="lbl">SEO metrics sync</div><div class="sub">cron · xdares-seo</div></div><div class="meta">fetching</div></div>
+        <div class="live-row"><span class="dot queue"></span><div><div class="lbl">Weekly scorecard</div><div class="sub">queued behind sync</div></div><div class="meta">queued</div></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">Is Charles any good?</span><span class="count">this week</span></div>
+        <div class="lev"><span class="k">Approval rate</span><span class="v good">23 / 24</span></div>
+        <div class="lev"><span class="k">Corrections needed</span><span class="v warn">2 · tone</span></div>
+        <div class="lev"><span class="k">Acted autonomously</span><span class="v">61 actions</span></div>
+        <div class="lev"><span class="k">Risk blocks caught</span><span class="v good">3</span></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">Standing Work</span><span class="count">13 crons · 3 goals</span></div>
+        <div class="work"><div class="ico">⏱</div><div class="body"><div class="title">Version drift check</div><div class="when">next · 9:00am</div></div><span class="badge">healthy</span></div>
+        <div class="work"><div class="ico">🎯</div><div class="body"><div class="title">Xdares SEO growth</div><div class="when">goal · 4/9 tasks</div></div><span class="badge">on track</span></div>
+        <div class="work"><div class="ico">📡</div><div class="body"><div class="title">Instantly warmup</div><div class="when">cohort 1 · day 16</div></div><span class="badge warn">review</span></div>
+      </div>
+    </div>
+
+    <!-- CENTER: Needs You — three live lanes -->
+    <div class="col center">
+      <div class="colhead"><span>⚓ Needs You</span><span class="sub">silence is safe — reversible items auto-clear</span></div>
+
+      <div class="lanes">
+        <!-- DECIDE -->
+        <div class="lane-h decide" id="laneh-decide"><span class="ico">⚖</span><span class="lh">Decide</span><span class="desc">give a yes or a judgment call</span><span class="n" id="n-decide">0</span></div>
+        <div id="lane-decide"></div>
+
+        <!-- UNBLOCK -->
+        <div class="lane-h unblock" id="laneh-unblock"><span class="ico">⚷</span><span class="lh">Unblock</span><span class="desc">give an input only you have</span><span class="n" id="n-unblock">0</span></div>
+        <div id="lane-unblock"></div>
+
+        <!-- VERIFY -->
+        <div class="lane-h verify" id="laneh-verify"><span class="ico">✓</span><span class="lh">Verify</span><span class="desc">I finished, but I'm not sure I got it right</span><span class="n" id="n-verify">0</span></div>
+        <div id="lane-verify"></div>
+      </div>
+
+      <!-- ALL-CLEAR STATE -->
+      <div class="clear">
+        <div class="glyph">⚓</div>
+        <div class="ttl">You're clear</div>
+        <div class="sub">Nothing needs you right now. Charles is running on its own — anything reversible will clear itself, and you'll see it here the moment it doesn't.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: briefing + memory (static cockpit chrome) -->
+    <div class="col right">
+      <div class="sec">
+        <div class="brief">
+          <div class="bh">☀ This morning · what matters</div>
+          <li><b>Cohort-1 reply rate hit 41%</b> — best week; warm replies queued in Decide.</li>
+          <li>MRR flat, no churn. Xdares SEO <b>+6 keywords</b> top-10 overnight.</li>
+          <li>Reversible items clear themselves — only hard stops wait for you.</li>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">What I Remember</span><span class="count">editable</span></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">hard rule</div><div class="txt">Never change model config — <b>that's Rod's call</b>.</div></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">preference</div><div class="txt">Cold emails <b>under 150 words</b>; lead with the observation.</div></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">preference</div><div class="txt">Always use the <b>Tailscale URL</b> for local links.</div></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Receipt modal: the proof moment when you authorize something -->
+  <div class="modal-bg" id="receiptModal">
+    <div class="receipt-modal">
+      <div class="rh"><span class="seal">✦</span><span class="rt">Authority Receipt<small>Permission Protocol</small></span></div>
+      <div class="rb" id="receiptBody"></div>
+      <div class="rf"><button class="btn approve" id="receiptClose">Done</button></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+ * Permission Deck — live console for Slice 1
+ * Builds to: pp-os/specs/permission-deck-slice-1-api-contract.md
+ * ============================================================ */
+
+// --- configurable backend base URL ---
+// Default to same-origin: the deck server serves the console AND proxies /api → the
+// approval backend, so a single URL (incl. an HTTPS tunnel) works end to end.
+// Override with ?api=http://host:port for a split dev setup; file:// falls back to :7700.
+const BASE_URL = new URLSearchParams(location.search).get('api')
+  || (location.origin && location.origin !== "null" ? location.origin
+      : (location.hostname ? `${location.protocol}//${location.hostname}:7700` : "http://localhost:7700"));
+const POLL_MS = 1000;          // fallback poll interval
+const SSE_GRACE_MS = 3500;     // if SSE doesn't open in this window, fall back to polling
+
+const params = new URLSearchParams(location.search);
+const MOCK = params.get("mock") === "1";
+
+// ---------- DOM helpers ----------
+const $ = (id) => document.getElementById(id);
+const lanes = { decide: $("lane-decide"), unblock: $("lane-unblock"), verify: $("lane-verify") };
+const laneCounts = { decide: $("n-decide"), unblock: $("n-unblock"), verify: $("n-verify") };
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+function fmtClock(secs){
+  secs = Math.max(0, Math.round(secs));
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// kind tag derived from tool_name (cosmetic only; contract field stays authoritative)
+function kindFor(tool){
+  const t = (tool || "").toLowerCase();
+  if (t.includes("mail")) return { cls:"email", label:"Email" };
+  if (t.includes("post") || t.includes("tweet") || t.includes("_x")) return { cls:"tweet", label:"Post" };
+  if (t.includes("merge") || t.includes("_pr")) return { cls:"merge", label:"Merge PR" };
+  if (t.includes("migration") || t.includes("migrate") || t.includes("sql")) return { cls:"migration", label:"SQL Migration" };
+  if (t.includes("deploy") || t.includes("ship")) return { cls:"deploy", label:"Deploy" };
+  if (t.includes("spend") || t.includes("pay") || t.includes("charge")) return { cls:"spend", label:"Spend" };
+  return { cls:"generic", label:(tool || "Action") };
+}
+
+// consequence / blast-radius line — what actually happens / breaks if you're wrong
+function consequenceFor(it){
+  const t = (it.tool_name || "").toLowerCase();
+  if (it.lane === "unblock") return `<div class="conseq"><span class="ic">⚷</span>Blocks an in-flight task until you provide it</div>`;
+  if (it.lane === "verify")  return `<div class="conseq"><span class="ic">✓</span>Already done — confirm it matched your intent</div>`;
+  let txt;
+  if (it.reversibility === "irreversible"){
+    if (t.includes("post") || t.includes("_x") || t.includes("tweet")) txt = "Public & permanent — can't be unsent";
+    else if (t.includes("sql") || t.includes("migrat")) txt = "Production schema change — reversible only by restore";
+    else if (t.includes("spend") || t.includes("pay")) txt = "Over the cap — funds leave immediately";
+    else txt = "Irreversible — no undo once it runs";
+    return `<div class="conseq danger"><span class="ic">⊘</span>${esc(txt)}</div>`;
+  }
+  if (t.includes("mail")) txt = "Recoverable — undo window before it leaves";
+  else if (t.includes("merge") || t.includes("_pr")) txt = "Revertable with a follow-up PR";
+  else if (t.includes("spend") || t.includes("pay")) txt = "Refundable charge, under the cap";
+  else if (t.includes("deploy")) txt = "Rollback available";
+  else txt = "Reversible — safe to clear";
+  return `<div class="conseq safe"><span class="ic">↺</span>${esc(txt)}</div>`;
+}
+
+// ---------- Slice 2: tool-aware artifact formatters ----------
+// merge_pr: args_preview carries repo / PR # / title / diffstat.
+// Accepts either an object or a string blob; renders a diffstat-style block.
+function parseArgs(ap){
+  if (ap == null) return null;
+  if (typeof ap === "object") return ap;
+  // tolerate a JSON string
+  if (typeof ap === "string"){
+    const s = ap.trim();
+    if (s[0] === "{" || s[0] === "["){
+      try { return JSON.parse(s); } catch (e){ /* fall through to raw */ }
+    }
+  }
+  return null; // not structured — caller falls back to the raw preview block
+}
+
+function diffstatHtml(args){
+  const files = Array.isArray(args.files) ? args.files : [];
+  if (!files.length) return ""; // webhook-sourced PRs carry no diffstat — skip the block
+  let totAdd = 0, totDel = 0;
+  const rows = files.map(f => {
+    const add = +f.additions || 0, del = +f.deletions || 0;
+    totAdd += add; totDel += del;
+    // a compact +/- bar, capped so a huge file doesn't blow the layout
+    const tot = add + del || 1;
+    const ap = Math.round(100 * add / tot);
+    return `<div class="dl"><span class="f">${esc(f.path)}</span>`
+      + `<span class="ch"><span class="add">+${add}</span> <span class="del">−${del}</span>`
+      + `<span class="dbar"><i class="da" style="width:${ap}%"></i><i class="dd" style="width:${100-ap}%"></i></span></span></div>`;
+  }).join("");
+  const fileN = args.changed_files != null ? args.changed_files : files.length;
+  return `<div class="diffstat">${rows}`
+    + `<div class="sum">${esc(fileN)} file${fileN===1?"":"s"} changed · `
+    + `<span class="add">+${totAdd}</span> / <span class="del">−${totDel}</span></div></div>`;
+}
+
+// run_sql_migration: render the literal SQL statement, lightly keyword-highlighted.
+function sqlHtml(sql, isProd){
+  const safe = esc(sql);
+  const hl = safe.replace(
+    /\b(ALTER|CREATE|DROP|TABLE|COLUMN|ADD|RENAME|INDEX|INSERT|UPDATE|DELETE|SET|NOT NULL|DEFAULT|PRIMARY KEY|FOREIGN KEY|CONSTRAINT|BEGIN|COMMIT)\b/gi,
+    '<span class="kw">$1</span>');
+  return `<div class="sql${isProd ? " prod" : ""}">${hl}</div>`;
+}
+
+function metaTag(label, value, cls){
+  return `<span class="mtag ${cls||""}"><span class="ml">${esc(label)}</span> ${esc(value)}</span>`;
+}
+
+function whenFromIso(iso){
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + " min";
+  const h = Math.floor(mins / 60);
+  return h + " hr";
+}
+
+// ---------- toast ----------
+let toastTimer = null;
+function toast(msg, isErr, variant){
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "toast" + (isErr ? " err" : "") + (variant ? " " + variant : "");
+  // force reflow so re-fires re-animate
+  void el.offsetWidth;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+// ---------- receipt modal (the proof moment) ----------
+function showReceipt(receiptId, item){
+  const body = $("receiptBody");
+  const summary = item ? item.summary : "Action authorized";
+  body.innerHTML =
+    `<div class="verified">✓ Ed25519 signature · verified</div>` +
+    `<div class="row"><span class="k">Action authorized</span><span class="v">${esc(summary)}</span></div>` +
+    `<div class="row"><span class="k">Receipt</span><span class="v mono">${esc(receiptId)}</span></div>` +
+    `<div class="row"><span class="k">Signer</span><span class="v">you — just now</span></div>` +
+    `<div class="row"><span class="k">Guarantee</span><span class="v">No receipt, no execution. This action could not run until you signed it.</span></div>`;
+  $("receiptModal").classList.add("show");
+}
+(function wireModal(){
+  const close = () => $("receiptModal").classList.remove("show");
+  $("receiptClose").onclick = close;
+  $("receiptModal").addEventListener("click", (e) => { if (e.target.id === "receiptModal") close(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  // tap the approval toast to open its receipt (the non-intrusive proof path)
+  $("toast").addEventListener("click", () => { if (lastReceipt) showReceipt(lastReceipt.receiptId, lastReceipt.item); });
+})();
+
+// ---------- connection status ----------
+function setConn(mode){
+  const el = $("conn"), txt = $("connText");
+  el.className = "conn " + mode;
+  const map = { live:"live · SSE", poll:"live · polling", down:"backend offline", mock:"mock mode" };
+  txt.textContent = map[mode] || mode;
+}
+
+// ============================================================
+// STATE — single source of truth: the latest QueueItem[]
+// ============================================================
+let items = [];        // QueueItem[] currently rendered (status === pending OR within undo window)
+let lastSig = null;    // structural signature of the last render (excl. live countdowns)
+let lastReceipt = null; // {receiptId,item} of the most recent approval — tap the toast to view
+const localCountdown = {}; // id -> remaining secs, ticked locally between server updates
+
+// Structural signature — everything that affects layout EXCEPT countdown_remaining
+// (the per-second ticker updates clocks in place, so countdown changes must NOT
+// trigger a full DOM rebuild — that would kill hover/scroll/interaction smoothness).
+function signature(list){
+  return list.map(it => [
+    it.id, it.status, it.lane, it.reversibility, it.confidence,
+    it.receipt_id, it.summary, it.countdown_seconds, it._undoable ? 1 : 0
+  ].join("~")).join("|");
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render(){
+  // only show actionable items: pending, plus reversible items in their undo window
+  const visible = items.filter(it =>
+    it.status === "pending" ||
+    ((it.status === "approved" || it.status === "auto_released") && it.lane === "verify") ||
+    it._undoable
+  );
+
+  const byLane = { decide: [], unblock: [], verify: [] };
+  for (const it of visible){
+    if (byLane[it.lane]) byLane[it.lane].push(it);
+  }
+  // irreversible hard-stops dominate: pin them to the top of the Decide lane
+  byLane.decide.sort((a, b) =>
+    (a.reversibility === "irreversible" ? 0 : 1) - (b.reversibility === "irreversible" ? 0 : 1));
+
+  for (const lane of ["decide","unblock","verify"]){
+    const host = lanes[lane];
+    const list = byLane[lane];
+    laneCounts[lane].textContent = list.length;
+    // collapse an empty lane entirely while others have items — no dead "nothing here" stubs
+    const hideEmpty = list.length === 0 && visible.length > 0;
+    const laneH = document.getElementById("laneh-" + lane);
+    if (laneH) laneH.style.display = hideEmpty ? "none" : "";
+    host.style.display = hideEmpty ? "none" : "";
+    // empty lanes are collapsed (above) or covered by the all-clear screen — render nothing
+    host.innerHTML = list.map(it => cardHtml(it)).join("");
+  }
+
+  // needs-you count = items that genuinely require a human decision (decide + unblock pending)
+  const needs = visible.filter(it =>
+    (it.lane === "decide" || it.lane === "unblock") && it.status === "pending").length;
+  $("needsCount").innerHTML = needs + '<span class="u"> now</span>';
+
+  // headline
+  const hardStops = visible.filter(it =>
+    it.lane === "decide" && it.reversibility === "irreversible" && it.status === "pending").length;
+  const autoClearing = visible.filter(it =>
+    it.lane === "decide" && it.reversibility === "reversible" && it.status === "pending").length;
+  $("headline").innerHTML =
+    `<b>${needs} thing${needs===1?"":"s"} need${needs===1?"s":""} you</b>` +
+    (hardStops ? ` · <span class="hot">${hardStops} hard stop${hardStops===1?"":"s"}</span>` : "") +
+    (autoClearing ? ` · ${autoClearing} auto-clearing` : "");
+
+  // all-clear toggle
+  document.body.classList.toggle("allclear", visible.length === 0);
+
+  bindActions();
+}
+
+// Build the artifact block (+ optional meta row) for a card, tool-aware.
+// Falls back to the Slice-1 generic literal preview when the tool isn't a
+// code/infra tool or args_preview isn't structured.
+function artifactFor(it){
+  const tool = (it.tool_name || "").toLowerCase();
+  const args = parseArgs(it.args_preview);
+
+  // merge_pr → repo / PR # meta + diffstat artifact
+  if ((tool.includes("merge") || tool.includes("_pr")) && args){
+    let meta = "";
+    if (args.repo) meta += metaTag("repo", args.repo, "pr");
+    if (args.pr_number != null) meta += metaTag("PR", "#" + args.pr_number, "pr");
+    if (args.base) meta += metaTag("→", args.base, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const title = args.title ? `<div class="preview artifact">${esc(args.title)}</div>` : "";
+    return metaRow + title + diffstatHtml(args);
+  }
+
+  // run_sql_migration → env chip + literal SQL statement
+  if ((tool.includes("migration") || tool.includes("migrate") || tool.includes("sql")) && args){
+    const env = (args.env || "").toString();
+    const isProd = /prod/i.test(env);
+    let meta = "";
+    if (env) meta += metaTag("env", env, "env " + (isProd ? "prod" : "safe"));
+    if (args.database) meta += metaTag("db", args.database, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const sql = args.sql || args.statement || "";
+    return metaRow + sqlHtml(sql, isProd);
+  }
+
+  // deploy → env + service meta (preview optional)
+  if ((tool.includes("deploy") || tool.includes("ship")) && args){
+    const env = (args.env || "").toString();
+    const isProd = /prod/i.test(env);
+    let meta = "";
+    if (env) meta += metaTag("env", env, "env " + (isProd ? "prod" : "safe"));
+    if (args.service) meta += metaTag("service", args.service, "");
+    if (args.version) meta += metaTag("version", args.version, "");
+    const metaRow = meta ? `<div class="meta-row">${meta}</div>` : "";
+    const note = args.note ? `<div class="preview artifact">${esc(args.note)}</div>` : "";
+    return metaRow + note;
+  }
+
+  // Slice-1 default: literal text preview
+  return it.args_preview != null && typeof it.args_preview !== "object"
+    ? `<div class="preview artifact">${esc(it.args_preview)}</div>` : "";
+}
+
+function cardHtml(it){
+  const k = kindFor(it.tool_name);
+  const when = whenFromIso(it.created_at);
+  const artifact = artifactFor(it);
+
+  if (it.lane === "decide"){
+    if (it.reversibility === "irreversible"){
+      // hard stop — NO countdown, explicit approve/deny
+      return `
+      <div class="card irrev" data-id="${esc(it.id)}">
+        <div class="card-top">
+          <span class="kind ${k.cls}">${esc(k.label)}</span>
+          <span class="rtag irrev">⊘ Irreversible · hard stop</span>
+          <span class="when">${esc(when)}</span>
+        </div>
+        <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
+        ${artifact}
+        <div class="actions">
+          <button class="btn approve holdapprove" data-act="approve" data-hold="1"><span class="holdfill"></span><span class="hl">Hold to approve</span></button>
+          <button class="btn deny" data-act="deny">Deny</button>
+        </div>
+      </div>`;
+    }
+    // reversible — green tag + hold/deny. Countdown only when the contract
+    // actually carries one (comms cards auto-send); code/infra reversible cards
+    // (merge_pr/deploy) are hard-holds with no auto-send, so no countdown.
+    const hasCountdown = (it.countdown_remaining != null || it.countdown_seconds != null) && !it._held;
+    const remaining = localCountdown[it.id] != null ? localCountdown[it.id]
+                    : (it.countdown_remaining != null ? it.countdown_remaining : 0);
+    const total = it.countdown_seconds || it.countdown_remaining || remaining || 1;
+    const pct = Math.max(0, Math.min(100, (remaining / total) * 100));
+    const countdown = hasCountdown ? `
+      <div class="countdown" data-cd>
+        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — undo anytime</span>
+        <span class="bar"><i data-fill style="width:${pct}%"></i></span>
+      </div>` : "";
+    const approveLabel = hasCountdown ? "Send now" : "Approve";
+    return `
+    <div class="card rev" data-id="${esc(it.id)}">
+      <div class="card-top">
+        <span class="kind ${k.cls}">${esc(k.label)}</span>
+        <span class="rtag rev">↺ Reversible</span>
+        <span class="when">${esc(when)}</span>
+      </div>
+      <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
+      ${artifact}
+      ${countdown}
+      <div class="actions">
+        <button class="btn approve" data-act="approve">${approveLabel}</button>
+        <button class="btn hold" data-act="hold">Hold</button>
+        <button class="btn deny" data-act="deny">Deny</button>
+      </div>
+    </div>`;
+  }
+
+  if (it.lane === "unblock"){
+    // human-only input
+    return `
+    <div class="card needfact" data-id="${esc(it.id)}">
+      <div class="card-top">
+        <span class="kind ${k.cls}">${esc(k.label)}</span>
+        <span class="rtag" style="background:var(--blue-soft);color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue-line)">⚷ needs you</span>
+        <span class="when">${esc(when)}</span>
+      </div>
+      <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
+      ${artifact}
+      <div class="fact-in">
+        <div class="fld">Only you can provide this input →</div>
+        <button class="btn primary" data-act="approve" style="flex:0 0 96px">Provide</button>
+      </div>
+    </div>`;
+  }
+
+  // verify — already acted, post-hoc confirm
+  const lowConf = it.confidence != null && it.confidence < 75;
+  const conf = it.confidence != null
+    ? `<span class="conf ${lowConf ? 'lo' : 'hi'}">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+  const cval = it.confidence != null ? Math.max(0, Math.min(100, it.confidence)) : 0;
+  const chue = Math.round(18 + (cval / 100) * 122); // continuous amber(18°)→green(140°), no threshold step
+  const confMeter = it.confidence != null
+    ? `<div class="confmeter"><i style="width:${cval}%;background:hsl(${chue} 62% 52%)"></i></div>` : "";
+  const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
+    && it.reversibility === "reversible";
+  return `
+  <div class="card check" data-id="${esc(it.id)}">
+    <div class="card-top">
+      <span class="acted">✓ already acted</span>
+      ${conf}
+      <span class="when">${esc(when)}</span>
+    </div>
+    ${confMeter}
+    <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
+    ${artifact}
+    <div class="actions">
+      <button class="btn approve" data-act="approve">Looks right</button>
+      ${undoable ? `<button class="btn undo" data-act="undo">Undo</button>` : ""}
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// LIVE COUNTDOWN TICKER (drives reversible Decide cards every 1s)
+// Ticks the DOM in place so it stays smooth between server updates.
+// ============================================================
+setInterval(() => {
+  for (const it of items){
+    if (it.lane !== "decide" || it.reversibility !== "reversible" || it.status !== "pending") continue;
+    if (localCountdown[it.id] == null) continue;
+    localCountdown[it.id] = Math.max(0, localCountdown[it.id] - 1);
+    const card = document.querySelector(`.card[data-id="${cssEsc(it.id)}"]`);
+    if (!card) continue;
+    const clock = card.querySelector("[data-clock]");
+    const fill = card.querySelector("[data-fill]");
+    if (clock) clock.textContent = fmtClock(localCountdown[it.id]);
+    if (fill){
+      const total = it.countdown_seconds || it.countdown_remaining || 1;
+      fill.style.width = Math.max(0, Math.min(100, (localCountdown[it.id] / total) * 100)) + "%";
+    }
+  }
+}, 1000);
+
+function cssEsc(s){
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
+}
+
+// Seed/refresh local countdowns from a fresh server payload (server value is authoritative)
+function syncCountdowns(fresh){
+  for (const it of fresh){
+    if (it.lane === "decide" && it.reversibility === "reversible" && it.status === "pending"){
+      if (it.countdown_remaining != null) localCountdown[it.id] = it.countdown_remaining;
+    } else {
+      delete localCountdown[it.id];
+    }
+  }
+}
+
+// ============================================================
+// DATA INGEST — accept a QueueItem[] from /api/pending or SSE
+// ============================================================
+function ingest(payload){
+  if (!Array.isArray(payload)) return;
+  syncCountdowns(payload);
+  items = payload;
+  // Only repaint when the structural state changed. Countdown-only ticks (the
+  // ~1s SSE heartbeat) are handled in place by the ticker, so we skip the full
+  // DOM rebuild and keep hovers / scroll / button focus stable.
+  const sig = signature(payload);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  render();
+}
+
+// ============================================================
+// ACTIONS — optimistic POST then reconcile on next server push
+// ============================================================
+function bindActions(){
+  document.querySelectorAll(".card .btn[data-act]").forEach(btn => {
+    const fire = () => {
+      const card = btn.closest(".card");
+      const id = card && card.getAttribute("data-id");
+      if (!id) return;
+      doAction(id, btn.getAttribute("data-act"), card);
+    };
+    if (btn.getAttribute("data-hold")) wireHold(btn, fire);
+    else btn.onclick = fire;
+  });
+}
+
+// Press-and-hold to confirm — deliberate friction for irreversible approvals.
+// Fills over ~650ms; release early to cancel (with a teaching nudge). Works by
+// pointer AND keyboard (hold Space/Enter), and is labelled for screen readers.
+function wireHold(btn, onConfirm){
+  const HOLD = 650, fill = btn.querySelector(".holdfill");
+  let raf = null, done = false, holding = false;
+  const cleanup = () => { if (raf) cancelAnimationFrame(raf); raf = null; btn.classList.remove("holding"); if (fill) fill.style.width = "0%"; holding = false; };
+  const start = (e) => {
+    if (holding || done) return;
+    if (e && e.cancelable) e.preventDefault();
+    holding = true; done = false; btn.classList.add("holding");
+    const t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / HOLD);
+      if (fill) fill.style.width = (p * 100) + "%";
+      if (p < 1) { raf = requestAnimationFrame(step); }
+      else { done = true; cleanup(); onConfirm(); }
+    };
+    raf = requestAnimationFrame(step);
+  };
+  const cancel = () => {
+    if (done) return;
+    const wasHolding = holding;
+    cleanup();
+    if (wasHolding){ btn.classList.add("nudge"); setTimeout(() => btn.classList.remove("nudge"), 400); toast("Keep holding to approve — this one is irreversible"); }
+  };
+  btn.setAttribute("role", "button");
+  btn.setAttribute("tabindex", "0");
+  btn.setAttribute("aria-label", "Hold to approve. Press and hold — this action is irreversible.");
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", cancel);
+  btn.addEventListener("pointerleave", cancel);
+  btn.addEventListener("pointercancel", cancel);
+  btn.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); start(e); } });
+  btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") cancel(); });
+}
+
+const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
+const ACTION_MSG = {
+  approve:"Approved — receipt signed · tap to view",
+  hold:"Held — countdown stopped, it won't send",
+  deny:"Denied — caller notified",
+  undo:"Undone — action rolled back"
+};
+
+function doAction(id, act, card){
+  const path = ACTION_PATH[act];
+  if (!path) return;
+
+  // optimistic UI
+  card.querySelectorAll(".btn").forEach(b => b.disabled = true);
+  const item = items.find(x => x.id === id);
+
+  if (act === "hold"){
+    // stop the countdown immediately; card stays pending as a hard hold.
+    // Use a _held flag — do NOT mutate reversibility (that drives consequence copy
+    // + the receipt-vs-toast decision; a held email must stay reversible).
+    delete localCountdown[id];
+    if (item){ item._held = true; }
+    const cd = card.querySelector("[data-cd]");
+    if (cd) cd.remove();
+    lastSig = null; // force the next ingest to repaint
+    toast(ACTION_MSG.hold);
+    render();
+  } else {
+    // approve / deny / undo => the card leaves the deck
+    card.classList.add("leaving");
+    toast(ACTION_MSG[act], false, act === "approve" ? "receipt" : "");
+    setTimeout(() => {
+      items = items.filter(x => x.id !== id);
+      delete localCountdown[id];
+      lastSig = null; // structural change — repaint
+      render();
+    }, 240);
+  }
+
+  // High-stakes (irreversible) approvals pop the receipt as proof; reversible ones
+  // just toast (tap it to see the receipt) — no modal friction on the 20th approval.
+  const irreversible = item && item.reversibility === "irreversible";
+
+  if (MOCK){
+    if (act === "approve"){
+      const rid = "rcpt_dg_" + Math.random().toString(36).slice(2, 10) + "_demo";
+      lastReceipt = { receiptId: rid, item };
+      if (irreversible) showReceipt(rid, item);
+    }
+    return;
+  }
+
+  fetch(`${BASE_URL}/api/${path}/${encodeURIComponent(id)}`, { method:"POST" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json().catch(() => ({})); })
+    .then(data => {
+      if (act === "approve" && data && data.receipt_id){
+        lastReceipt = { receiptId: data.receipt_id, item };
+        if (irreversible) showReceipt(data.receipt_id, item);
+      }
+    })
+    .catch(err => {
+      toast(`Couldn't ${act} — ${err.message}`, true);
+      // pull authoritative state back so the optimistic change doesn't lie
+      lastSig = null;
+      pollOnce();
+    });
+}
+
+// ============================================================
+// TRANSPORT — SSE primary, polling fallback
+// ============================================================
+let pollTimer = null;
+let sse = null;
+let sseOpened = false;
+
+function startPolling(reason){
+  if (pollTimer) return;
+  setConn(reason === "down" ? "down" : "poll");
+  pollOnce();
+  pollTimer = setInterval(pollOnce, POLL_MS);
+}
+function stopPolling(){ clearInterval(pollTimer); pollTimer = null; }
+
+function pollOnce(){
+  fetch(`${BASE_URL}/api/pending`, { cache:"no-store" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(data => { if (pollTimer || !sseOpened) setConn("poll"); $("brandPulse").classList.remove("off"); ingest(data); })
+    .catch(() => { setConn("down"); $("brandPulse").classList.add("off"); });
+}
+
+function startSSE(){
+  if (typeof EventSource === "undefined"){ startPolling(); return; }
+  try {
+    sse = new EventSource(`${BASE_URL}/api/stream`);
+  } catch (e){ startPolling(); return; }
+
+  sse.addEventListener("queue", (ev) => {
+    try { ingest(JSON.parse(ev.data)); } catch (e){ /* ignore malformed frame */ }
+  });
+  sse.onopen = () => { sseOpened = true; stopPolling(); setConn("live"); $("brandPulse").classList.remove("off"); };
+  sse.onerror = () => {
+    // SSE dropped or never connected — fall back to polling
+    if (sse){ sse.close(); sse = null; }
+    sseOpened = false;
+    startPolling("down");
+  };
+
+  // if SSE hasn't opened within the grace window, start polling so the UI is never blank
+  setTimeout(() => { if (!sseOpened) startPolling(); }, SSE_GRACE_MS);
+}
+
+// ============================================================
+// MOCK MODE — one card per lane; reversible one has a ticking countdown
+// ============================================================
+function mockItems(){
+  const nowIso = new Date().toISOString();
+  const ago = (min) => new Date(Date.now() - min*60000).toISOString();
+  return [
+    {
+      id: "mock-irrev-1",
+      tool_name: "post_x",
+      lane: "decide",
+      reversibility: "irreversible",
+      summary: "Reply to @nicholascarlini · 41k followers · public & permanent",
+      args_preview: "The \"secret patching\" incident is the whole argument for external governance in one screenshot. An agent will manipulate its own test data to look compliant. The receipt has to be signed by something the agent can't touch.",
+      agent_id: "outreach",
+      rule_id: "public-post",
+      status: "pending",
+      created_at: ago(18)
+    },
+    {
+      id: "mock-rev-1",
+      tool_name: "send_email",
+      lane: "decide",
+      reversibility: "reversible",
+      countdown_seconds: 252,
+      countdown_remaining: 252,   // 4:12 — will tick down live
+      summary: "Cold outreach to patrik@validio.io · pipeline",
+      args_preview: "Hi Patrik — I'm the founder of Permission Protocol. Most firms running AI agents in production can't answer a simple question: who authorized that action? Worth 15 minutes?",
+      agent_id: "outreach",
+      rule_id: "cold-email",
+      status: "pending",
+      created_at: ago(6)
+    },
+    {
+      // Slice 2 — merge_pr: Decide / reversible, diffstat artifact, no countdown
+      id: "mock-merge-1",
+      tool_name: "merge_pr",
+      lane: "decide",
+      reversibility: "reversible",
+      summary: "Merge permissionprotocol/mcp-guard #214 · feat(brain): widen corpus to strategy + specs",
+      args_preview: {
+        repo: "permissionprotocol/mcp-guard",
+        pr_number: 214,
+        title: "feat(brain): widen corpus to strategy, specs, and decision files",
+        base: "main",
+        changed_files: 4,
+        files: [
+          { path: "src/brain/corpus.ts",        additions: 86, deletions: 12 },
+          { path: "src/brain/retrieve.ts",      additions: 31, deletions: 8 },
+          { path: "scripts/build-corpus.sh",    additions: 14, deletions: 0 },
+          { path: "test/brain/retrieve.test.ts", additions: 47, deletions: 3 }
+        ]
+      },
+      agent_id: "builder",
+      rule_id: "merge-pr",
+      status: "pending",
+      created_at: ago(9)
+    },
+    {
+      // Slice 2 — run_sql_migration env:production: Decide / IRREVERSIBLE hard stop, no countdown
+      id: "mock-sql-1",
+      tool_name: "run_sql_migration",
+      lane: "decide",
+      reversibility: "irreversible",
+      summary: "Schema migration on production · adds NOT NULL receipt_id to approvals",
+      args_preview: {
+        env: "production",
+        database: "pp_prod",
+        sql: "ALTER TABLE approvals\n  ADD COLUMN receipt_id TEXT NOT NULL DEFAULT '';\nCREATE INDEX idx_approvals_receipt ON approvals (receipt_id);"
+      },
+      agent_id: "infra",
+      rule_id: "sql-migrate-prod",
+      status: "pending",
+      created_at: ago(3)
+    },
+    {
+      id: "mock-unblock-1",
+      tool_name: "reauth_instantly",
+      lane: "unblock",
+      reversibility: "irreversible",
+      summary: "Instantly.ai session expired — re-auth to keep Cohort-1 warmup running",
+      args_preview: "Paste login code or approve in 1Password — only you can complete this.",
+      agent_id: "warmup",
+      rule_id: "human-input",
+      status: "pending",
+      created_at: ago(60)
+    },
+    {
+      id: "mock-verify-1",
+      tool_name: "spend",
+      lane: "verify",
+      reversibility: "reversible",
+      confidence: 68,
+      summary: "$49 → Instantly top-up charged & 2,500 contacts added",
+      args_preview: "$49 → Instantly. Charged under the standing \"<$50 outreach tooling\" rule. Contact list skews US-only; your last note said expand LATAM — flagging before Tuesday's send.",
+      agent_id: "warmup",
+      rule_id: "spend-under-cap",
+      status: "auto_released",
+      receipt_id: "rcpt_mock_8842",
+      created_at: ago(22)
+    }
+  ];
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+function boot(){
+  if (MOCK){
+    setConn("mock");
+    $("brandPulse").classList.remove("off");
+    ingest(mockItems());
+    return;
+  }
+  // live: fetch once immediately so the deck isn't blank, then subscribe
+  pollOnce();
+  startSSE();
+}
+boot();
+// dev: ?receipt=1 previews the receipt modal
+if (params.get("receipt")) setTimeout(() => showReceipt("rcpt_dg_mqc18a4_7f3e21b9c", items[0]), 350);
+</script>
+</body>
+</html>
