@@ -8,7 +8,7 @@
 // Approve / Hold / Deny / Undo all work live; approvals issue signed receipts.
 
 import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
@@ -29,9 +29,20 @@ const guard = spawn(
 guard.stdout.on('data', () => {}); // drain
 const send = (o) => guard.stdin.write(JSON.stringify(o) + '\n');
 
-// 2) Tiny static server for the console.
+// 2) Single-origin server: serve the console AND reverse-proxy /api → backend,
+//    so one URL (incl. an HTTPS tunnel) drives the whole deck. SSE streams through.
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
+function proxyApi(req, res) {
+  const preq = httpRequest(
+    { hostname: 'localhost', port: API_PORT, path: req.url, method: req.method,
+      headers: { ...req.headers, host: `localhost:${API_PORT}` } },
+    (pres) => { res.writeHead(pres.statusCode, pres.headers); pres.pipe(res); },
+  );
+  preq.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('deck backend unreachable'); });
+  req.pipe(preq);
+}
 createServer((req, res) => {
+  if (req.url.startsWith('/api')) return proxyApi(req, res);
   const rel = (req.url === '/' || req.url.startsWith('/?')) ? '/index.html' : req.url.split('?')[0];
   const file = join(ROOT, 'console', rel);
   if (!file.startsWith(join(ROOT, 'console')) || !existsSync(file)) { res.writeHead(404); return res.end('not found'); }

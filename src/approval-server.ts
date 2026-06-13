@@ -15,6 +15,7 @@ import type { Reversibility } from './config.js';
 import { getApprovalHTML } from './approval-ui.js';
 import { createReceipt, signReceipt, emitReceipt, type Receipt } from './receipt.js';
 import { verifyGithubSignature, parsePrEvent, shouldGate, scopeForPr } from './webhook.js';
+import { postCommitStatus, authorizedStatus } from './github-status.js';
 
 /** Recent receipts store (ring buffer) */
 const recentReceipts: Receipt[] = [];
@@ -151,6 +152,25 @@ export interface ApprovalServerHandle {
 }
 
 export function startApprovalServer(port: number): ApprovalServerHandle {
+  // Close the webhook loop: when a GitHub-sourced merge is approved, post a green
+  // commit status back to GitHub so the PR's required check passes. Opt-in via token.
+  if (process.env.PP_GITHUB_TOKEN && !onExternalApprove) {
+    setOnExternalApprove(async (action, receipt) => {
+      const repo = (action.tool_args as any)?.repo;
+      const sha = action.scope_sha;
+      if (!repo || !sha) return;
+      try {
+        const r = await postCommitStatus(
+          repo, sha,
+          authorizedStatus(receipt.approved_by, receipt.receipt_id, receipt.viewer_url),
+          process.env.PP_GITHUB_TOKEN as string,
+        );
+        process.stderr.write(`[mcp-guard] Commit status → ${repo}@${sha.slice(0, 7)}: ${r.status}${r.ok ? ' ✓ check green' : ''}\n`);
+      } catch (err: any) {
+        process.stderr.write(`[mcp-guard] Commit status post failed: ${err.message}\n`);
+      }
+    });
+  }
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
