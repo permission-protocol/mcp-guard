@@ -766,8 +766,10 @@ function cardHtml(it){
   const lowConf = it.confidence != null && it.confidence < 75;
   const conf = it.confidence != null
     ? `<span class="conf ${lowConf ? 'lo' : 'hi'}">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+  const cval = it.confidence != null ? Math.max(0, Math.min(100, it.confidence)) : 0;
+  const chue = Math.round(18 + (cval / 100) * 122); // continuous amber(18°)→green(140°), no threshold step
   const confMeter = it.confidence != null
-    ? `<div class="confmeter ${lowConf ? 'lo' : 'hi'}"><i style="width:${Math.max(0, Math.min(100, it.confidence))}%"></i></div>` : "";
+    ? `<div class="confmeter"><i style="width:${cval}%;background:hsl(${chue} 62% 52%)"></i></div>` : "";
   const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
     && it.reversibility === "reversible";
   return `
