@@ -147,6 +147,11 @@
   .btn.holdapprove.holding{box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 0 0 1px var(--brass),0 0 18px -6px rgba(227,173,87,.9)}
   /* confidence encoding on verify cards */
   .conf.lo b{color:var(--amber)} .conf.hi b{color:var(--green)}
+  .confmeter{height:4px;background:var(--panel-3);border-radius:3px;overflow:hidden;margin:0 0 10px}
+  .confmeter i{display:block;height:100%;border-radius:3px}
+  .confmeter.lo i{background:linear-gradient(90deg,#c8913f,var(--amber))} .confmeter.hi i{background:linear-gradient(90deg,#2f8b58,var(--green))}
+  @keyframes nudge{0%,100%{transform:translateX(0)}25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+  .btn.holdapprove.nudge{animation:nudge .35s}
   .preview{color:var(--ink-dim);font-size:11.5px;line-height:1.55;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:9px 11px;margin-bottom:11px;max-height:84px;overflow:hidden;position:relative;white-space:pre-wrap;word-break:break-word}
   .preview.artifact{border-color:var(--line)}
   .preview::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24px;background:linear-gradient(transparent,var(--panel-2))}
@@ -608,9 +613,8 @@ function render(){
     const laneH = document.getElementById("laneh-" + lane);
     if (laneH) laneH.style.display = hideEmpty ? "none" : "";
     host.style.display = hideEmpty ? "none" : "";
-    host.innerHTML = list.length
-      ? list.map(it => cardHtml(it)).join("")
-      : `<div class="lane-empty">nothing here</div>`;
+    // empty lanes are collapsed (above) or covered by the all-clear screen — render nothing
+    host.innerHTML = list.map(it => cardHtml(it)).join("");
   }
 
   // needs-you count = items that genuinely require a human decision (decide + unblock pending)
@@ -759,8 +763,11 @@ function cardHtml(it){
   }
 
   // verify — already acted, post-hoc confirm
+  const lowConf = it.confidence != null && it.confidence < 75;
   const conf = it.confidence != null
-    ? `<span class="conf ${it.confidence < 75 ? 'lo' : 'hi'}">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+    ? `<span class="conf ${lowConf ? 'lo' : 'hi'}">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+  const confMeter = it.confidence != null
+    ? `<div class="confmeter ${lowConf ? 'lo' : 'hi'}"><i style="width:${Math.max(0, Math.min(100, it.confidence))}%"></i></div>` : "";
   const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
     && it.reversibility === "reversible";
   return `
@@ -770,6 +777,7 @@ function cardHtml(it){
       ${conf}
       <span class="when">${esc(when)}</span>
     </div>
+    ${confMeter}
     <div class="impact">${esc(it.summary)}</div>
         ${consequenceFor(it)}
     ${artifact}
@@ -849,14 +857,16 @@ function bindActions(){
 }
 
 // Press-and-hold to confirm — deliberate friction for irreversible approvals.
-// Fills over ~650ms; release early to cancel. Reuses the brass fill motion.
+// Fills over ~650ms; release early to cancel (with a teaching nudge). Works by
+// pointer AND keyboard (hold Space/Enter), and is labelled for screen readers.
 function wireHold(btn, onConfirm){
   const HOLD = 650, fill = btn.querySelector(".holdfill");
-  let raf = null, done = false;
-  const cleanup = () => { if (raf) cancelAnimationFrame(raf); raf = null; btn.classList.remove("holding"); if (fill) fill.style.width = "0%"; };
+  let raf = null, done = false, holding = false;
+  const cleanup = () => { if (raf) cancelAnimationFrame(raf); raf = null; btn.classList.remove("holding"); if (fill) fill.style.width = "0%"; holding = false; };
   const start = (e) => {
-    if (e.cancelable) e.preventDefault();
-    done = false; btn.classList.add("holding");
+    if (holding || done) return;
+    if (e && e.cancelable) e.preventDefault();
+    holding = true; done = false; btn.classList.add("holding");
     const t0 = performance.now();
     const step = (now) => {
       const p = Math.min(1, (now - t0) / HOLD);
@@ -866,11 +876,21 @@ function wireHold(btn, onConfirm){
     };
     raf = requestAnimationFrame(step);
   };
-  const cancel = () => { if (!done) cleanup(); };
+  const cancel = () => {
+    if (done) return;
+    const wasHolding = holding;
+    cleanup();
+    if (wasHolding){ btn.classList.add("nudge"); setTimeout(() => btn.classList.remove("nudge"), 400); toast("Keep holding to approve — this one is irreversible"); }
+  };
+  btn.setAttribute("role", "button");
+  btn.setAttribute("tabindex", "0");
+  btn.setAttribute("aria-label", "Hold to approve. Press and hold — this action is irreversible.");
   btn.addEventListener("pointerdown", start);
   btn.addEventListener("pointerup", cancel);
   btn.addEventListener("pointerleave", cancel);
   btn.addEventListener("pointercancel", cancel);
+  btn.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); start(e); } });
+  btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") cancel(); });
 }
 
 const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
