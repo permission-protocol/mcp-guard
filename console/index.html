@@ -265,7 +265,10 @@
  * ============================================================ */
 
 // --- configurable backend base URL ---
-const BASE_URL = "http://localhost:7700";
+// Derive from the page host so the deck works over localhost AND Tailscale/LAN
+// (API runs on :7700, UI on :7701). Override with ?api=http://host:port if needed.
+const BASE_URL = new URLSearchParams(location.search).get('api')
+  || (location.hostname ? `${location.protocol}//${location.hostname}:7700` : "http://localhost:7700");
 const POLL_MS = 1000;          // fallback poll interval
 const SSE_GRACE_MS = 3500;     // if SSE doesn't open in this window, fall back to polling
 
