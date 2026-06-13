@@ -138,6 +138,15 @@
   .conseq .ic{color:var(--ink-faint)}
   .conseq.danger{color:var(--red)} .conseq.danger .ic{color:var(--red)}
   .conseq.safe{color:var(--green)} .conseq.safe .ic{color:var(--green)}
+  /* on a hard-stop, the blast-radius line is a warning band, not a footnote */
+  .card.irrev .conseq.danger{font-size:11.5px;font-weight:600;background:var(--red-soft);box-shadow:inset 0 0 0 1px var(--red-line);padding:6px 9px;border-radius:7px;margin-bottom:12px}
+  /* hold-to-approve: deliberate friction for irreversible actions */
+  .btn.holdapprove{position:relative;overflow:hidden}
+  .btn.holdapprove .holdfill{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(20,13,3,.34);pointer-events:none}
+  .btn.holdapprove .hl{position:relative;z-index:1}
+  .btn.holdapprove.holding{box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 0 0 1px var(--brass),0 0 18px -6px rgba(227,173,87,.9)}
+  /* confidence encoding on verify cards */
+  .conf.lo b{color:var(--amber)} .conf.hi b{color:var(--green)}
   .preview{color:var(--ink-dim);font-size:11.5px;line-height:1.55;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:9px 11px;margin-bottom:11px;max-height:84px;overflow:hidden;position:relative;white-space:pre-wrap;word-break:break-word}
   .preview.artifact{border-color:var(--line)}
   .preview::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24px;background:linear-gradient(transparent,var(--panel-2))}
@@ -336,15 +345,15 @@
 
       <div class="lanes">
         <!-- DECIDE -->
-        <div class="lane-h decide"><span class="ico">⚖</span><span class="lh">Decide</span><span class="desc">give a yes or a judgment call</span><span class="n" id="n-decide">0</span></div>
+        <div class="lane-h decide" id="laneh-decide"><span class="ico">⚖</span><span class="lh">Decide</span><span class="desc">give a yes or a judgment call</span><span class="n" id="n-decide">0</span></div>
         <div id="lane-decide"></div>
 
         <!-- UNBLOCK -->
-        <div class="lane-h unblock"><span class="ico">⚷</span><span class="lh">Unblock</span><span class="desc">give an input only you have</span><span class="n" id="n-unblock">0</span></div>
+        <div class="lane-h unblock" id="laneh-unblock"><span class="ico">⚷</span><span class="lh">Unblock</span><span class="desc">give an input only you have</span><span class="n" id="n-unblock">0</span></div>
         <div id="lane-unblock"></div>
 
         <!-- VERIFY -->
-        <div class="lane-h verify"><span class="ico">✓</span><span class="lh">Verify</span><span class="desc">I finished, but I'm not sure I got it right</span><span class="n" id="n-verify">0</span></div>
+        <div class="lane-h verify" id="laneh-verify"><span class="ico">✓</span><span class="lh">Verify</span><span class="desc">I finished, but I'm not sure I got it right</span><span class="n" id="n-verify">0</span></div>
         <div id="lane-verify"></div>
       </div>
 
@@ -594,6 +603,11 @@ function render(){
     const host = lanes[lane];
     const list = byLane[lane];
     laneCounts[lane].textContent = list.length;
+    // collapse an empty lane entirely while others have items — no dead "nothing here" stubs
+    const hideEmpty = list.length === 0 && visible.length > 0;
+    const laneH = document.getElementById("laneh-" + lane);
+    if (laneH) laneH.style.display = hideEmpty ? "none" : "";
+    host.style.display = hideEmpty ? "none" : "";
     host.innerHTML = list.length
       ? list.map(it => cardHtml(it)).join("")
       : `<div class="lane-empty">nothing here</div>`;
@@ -687,7 +701,7 @@ function cardHtml(it){
         ${consequenceFor(it)}
         ${artifact}
         <div class="actions">
-          <button class="btn approve" data-act="approve">Approve &amp; send</button>
+          <button class="btn approve holdapprove" data-act="approve" data-hold="1"><span class="holdfill"></span><span class="hl">Hold to approve</span></button>
           <button class="btn deny" data-act="deny">Deny</button>
         </div>
       </div>`;
@@ -695,7 +709,7 @@ function cardHtml(it){
     // reversible — green tag + hold/deny. Countdown only when the contract
     // actually carries one (comms cards auto-send); code/infra reversible cards
     // (merge_pr/deploy) are hard-holds with no auto-send, so no countdown.
-    const hasCountdown = it.countdown_remaining != null || it.countdown_seconds != null;
+    const hasCountdown = (it.countdown_remaining != null || it.countdown_seconds != null) && !it._held;
     const remaining = localCountdown[it.id] != null ? localCountdown[it.id]
                     : (it.countdown_remaining != null ? it.countdown_remaining : 0);
     const total = it.countdown_seconds || it.countdown_remaining || remaining || 1;
@@ -746,7 +760,7 @@ function cardHtml(it){
 
   // verify — already acted, post-hoc confirm
   const conf = it.confidence != null
-    ? `<span class="conf">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+    ? `<span class="conf ${it.confidence < 75 ? 'lo' : 'hi'}">confidence <b>${esc(it.confidence)}%</b></span>` : "";
   const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
     && it.reversibility === "reversible";
   return `
@@ -823,13 +837,40 @@ function ingest(payload){
 // ============================================================
 function bindActions(){
   document.querySelectorAll(".card .btn[data-act]").forEach(btn => {
-    btn.onclick = () => {
+    const fire = () => {
       const card = btn.closest(".card");
       const id = card && card.getAttribute("data-id");
       if (!id) return;
       doAction(id, btn.getAttribute("data-act"), card);
     };
+    if (btn.getAttribute("data-hold")) wireHold(btn, fire);
+    else btn.onclick = fire;
   });
+}
+
+// Press-and-hold to confirm — deliberate friction for irreversible approvals.
+// Fills over ~650ms; release early to cancel. Reuses the brass fill motion.
+function wireHold(btn, onConfirm){
+  const HOLD = 650, fill = btn.querySelector(".holdfill");
+  let raf = null, done = false;
+  const cleanup = () => { if (raf) cancelAnimationFrame(raf); raf = null; btn.classList.remove("holding"); if (fill) fill.style.width = "0%"; };
+  const start = (e) => {
+    if (e.cancelable) e.preventDefault();
+    done = false; btn.classList.add("holding");
+    const t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / HOLD);
+      if (fill) fill.style.width = (p * 100) + "%";
+      if (p < 1) { raf = requestAnimationFrame(step); }
+      else { done = true; cleanup(); onConfirm(); }
+    };
+    raf = requestAnimationFrame(step);
+  };
+  const cancel = () => { if (!done) cleanup(); };
+  btn.addEventListener("pointerdown", start);
+  btn.addEventListener("pointerup", cancel);
+  btn.addEventListener("pointerleave", cancel);
+  btn.addEventListener("pointercancel", cancel);
 }
 
 const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
@@ -849,9 +890,11 @@ function doAction(id, act, card){
   const item = items.find(x => x.id === id);
 
   if (act === "hold"){
-    // stop the countdown immediately; card stays pending as a hard hold
+    // stop the countdown immediately; card stays pending as a hard hold.
+    // Use a _held flag — do NOT mutate reversibility (that drives consequence copy
+    // + the receipt-vs-toast decision; a held email must stay reversible).
     delete localCountdown[id];
-    if (item){ item.reversibility = "irreversible"; } // becomes a hard-hold visual on next render
+    if (item){ item._held = true; }
     const cd = card.querySelector("[data-cd]");
     if (cd) cd.remove();
     lastSig = null; // force the next ingest to repaint
