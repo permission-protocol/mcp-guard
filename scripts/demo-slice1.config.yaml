@@ -1,0 +1,20 @@
+# Permission Deck Slice 1 — demo policy (read by the shipped rules-based guard).
+# Reversibility / countdown / cap live ON each rule (the classifier reads these).
+default_action: allow
+mode: enforce
+rules:
+  - id: post-x
+    tool: post_x
+    action: require_approval
+    reversibility: irreversible        # hard stop, never auto-clears
+  - id: send-email
+    tool: send_email
+    action: require_approval
+    reversibility: reversible
+    countdown_seconds: 2               # short for the demo; auto-releases unless held
+  - id: spend
+    tool: spend
+    action: require_approval
+    reversibility: reversible
+    cap_usd: 50                        # under cap -> acts now, surfaces in Verify
+    verify_threshold: 70

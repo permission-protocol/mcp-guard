@@ -1,0 +1,57 @@
+# pp.config.yaml — Permission Deck Slice 1 policy for the Actions-MCP
+#
+# This config is consumed by `mcp-guard` (the stdio proxy), NOT by the
+# Actions-MCP server itself. The Actions-MCP just executes; the guard does
+# all classification and enforcement upstream.
+#
+# It has two parts:
+#   1. `rules:`  — the policy surface the CURRENTLY-SHIPPED mcp-guard reads
+#                  (allow | block | require_approval per tool name).
+#   2. `tools:`  — the EXTENDED Slice-1 classifier schema from the build spec
+#                  (reversibility / countdown / cap / verify_threshold). These
+#                  fields are forward-looking: they map the three action-class
+#                  behaviours the Permission Deck classifier will enforce.
+
+default_action: block        # deny by default — only the three known tools are reachable
+mode: enforce                # "observe" to dry-run (log decisions, never block)
+
+# ---------------------------------------------------------------------------
+# 1. Base rules (read by shipped mcp-guard)
+# ---------------------------------------------------------------------------
+rules:
+  # post_x is irreversible/public → human must approve before it executes.
+  - id: hold-post-x
+    tool: post_x
+    action: require_approval
+
+  # send_email is reversible → held for approval; the Slice-1 countdown release
+  # (auto-clear unless held) is layered on top of the require_approval hold.
+  - id: hold-send-email
+    tool: send_email
+    action: require_approval
+
+  # spend is reversible below the cap → held for approval; the classifier routes
+  # sub-cap spends to the Verify lane and >= cap to a Decide hard-stop.
+  - id: hold-spend
+    tool: spend
+    action: require_approval
+
+# ---------------------------------------------------------------------------
+# 2. Extended Slice-1 classifier schema (from permission-deck-slice-1-spec.md §b)
+# ---------------------------------------------------------------------------
+tools:
+  post_x:
+    protected: true
+    reversibility: irreversible      # public/permanent → hard-block until signed receipt
+    required_authorization: human    # never auto-clears, never bundle-approved
+
+  send_email:
+    protected: true
+    reversibility: reversible        # retractable → auto-clear on visible countdown
+    countdown_seconds: 300           # 5-min undo window unless held
+
+  spend:
+    protected: true
+    reversibility: reversible
+    cap_usd: 50                      # < cap & reversible → Verify; >= cap → Decide hard-stop
+    verify_threshold: 70             # confidence (_pp.confidence) below this → Verify lane

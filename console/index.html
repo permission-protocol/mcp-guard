@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Charles · Permission Deck</title>
+<style>
+  :root{
+    --bg:#0d0f12; --panel:#14171c; --panel-2:#191d23; --panel-3:#1f242b;
+    --line:#23282f; --line-soft:#1c2026;
+    --ink:#e8e6e1; --ink-dim:#8b9097; --ink-faint:#5a6068;
+    --brass:#d6a04a; --brass-soft:#3a2f1c; --amber:#e0b15c;
+    --green:#5fb87a; --green-soft:#1c2c22;
+    --red:#d4685f; --red-soft:#2c1d1c;
+    --blue:#5f93c4; --blue-soft:#1b2630;
+    --violet:#9b87c4; --violet-soft:#221c30;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,monospace;
+    font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;
+    display:grid;grid-template-rows:auto 1fr;height:100vh;overflow:hidden;
+  }
+  /* ---- top strip ---- */
+  header{display:flex;align-items:center;gap:18px;padding:10px 18px;
+    background:linear-gradient(180deg,#16191e,#111419);border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:.3px}
+  .brand .sax{font-size:17px}
+  .pulse{width:7px;height:7px;border-radius:50%;background:var(--green);animation:p 2.4s infinite}
+  .pulse.off{background:var(--ink-faint);animation:none}
+  @keyframes p{0%{box-shadow:0 0 0 0 rgba(95,184,122,.5)}70%{box-shadow:0 0 0 7px rgba(95,184,122,0)}100%{box-shadow:0 0 0 0 rgba(95,184,122,0)}}
+  .headline{margin-left:6px;padding-left:16px;border-left:1px solid var(--line);color:var(--ink-dim);font-size:12px}
+  .headline b{color:var(--ink);font-weight:600}
+  .headline .hot{color:var(--amber)}
+  .strip-right{margin-left:auto;display:flex;gap:16px;align-items:center}
+  .conn{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);padding:4px 10px;border-radius:14px}
+  .conn .pulse{width:6px;height:6px}
+  .conn.live{color:var(--green)} .conn.poll{color:var(--amber)} .conn.down{color:var(--red)} .conn.mock{color:var(--blue)}
+  .posture{display:flex;background:var(--panel-2);border:1px solid var(--line);border-radius:18px;padding:2px;font-size:10.5px}
+  .posture span{padding:3px 10px;border-radius:14px;color:var(--ink-faint);cursor:pointer}
+  .posture span.on{background:var(--brass-soft);color:var(--amber);font-weight:600}
+  .stat{display:flex;flex-direction:column;line-height:1.2}
+  .stat .v{color:var(--ink);font-size:12.5px;font-weight:600}
+  .stat .v .u{color:var(--ink-faint);font-weight:400;font-size:9.5px}
+  .stat .k{color:var(--ink-faint);font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+  .model-chip{display:flex;align-items:center;gap:6px;background:var(--brass-soft);border:1px solid #4a3b21;color:var(--amber);padding:5px 10px;border-radius:18px;font-size:10.5px;font-weight:600}
+
+  main{display:grid;grid-template-columns:0.92fr 1.5fr 0.95fr;gap:1px;background:var(--line);overflow:hidden}
+  .col{background:var(--bg);overflow-y:auto;display:flex;flex-direction:column}
+  .col::-webkit-scrollbar{width:7px}.col::-webkit-scrollbar-thumb{background:#262b32;border-radius:4px}
+  .sec{padding:13px 15px}
+  .sec+.sec{border-top:1px solid var(--line-soft)}
+  .sec-h{display:flex;align-items:center;gap:8px;margin-bottom:11px}
+  .sec-h .t{font-size:10px;text-transform:uppercase;letter-spacing:1.1px;color:var(--ink-dim);font-weight:600}
+  .sec-h .count{margin-left:auto;font-size:9.5px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);padding:1px 7px;border-radius:10px}
+
+  /* ---- center: needs-you, three lanes ---- */
+  .lane-h{display:flex;align-items:center;gap:9px;padding:11px 16px 7px}
+  .lane-h .ico{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:11px;flex:none}
+  .lane-h .lh{font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700}
+  .lane-h .desc{color:var(--ink-faint);font-size:10.5px;margin-left:2px}
+  .lane-h .n{margin-left:auto;font-size:10px;color:var(--ink-faint);background:var(--panel-2);border:1px solid var(--line);padding:1px 8px;border-radius:10px}
+  .decide .ico{background:var(--brass-soft);color:var(--amber)} .decide .lh{color:var(--amber)}
+  .unblock .ico{background:var(--blue-soft);color:var(--blue)} .unblock .lh{color:var(--blue)}
+  .verify .ico{background:var(--violet-soft);color:var(--violet)} .verify .lh{color:var(--violet)}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin:0 16px 9px;position:relative;transition:opacity .25s ease,transform .25s ease}
+  .card.irrev{border-left:3px solid var(--red)}
+  .card.rev{border-left:3px solid var(--green)}
+  .card.needfact{border-left:3px solid var(--blue)}
+  .card.check{border-left:3px solid var(--violet)}
+  .card.leaving{opacity:0;transform:translateX(14px)}
+  .card-top{display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap}
+  .kind{font-size:9px;text-transform:uppercase;letter-spacing:.7px;padding:2px 7px;border-radius:5px;font-weight:700}
+  .kind.email{background:var(--blue-soft);color:var(--blue)}
+  .kind.tweet{background:#1d2630;color:#6ab0d6}
+  .kind.deploy{background:var(--red-soft);color:var(--red)}
+  .kind.spend{background:var(--brass-soft);color:var(--amber)}
+  .kind.generic{background:var(--panel-3);color:var(--ink-dim)}
+  .rtag{font-size:9px;letter-spacing:.4px;padding:2px 7px;border-radius:5px;font-weight:600;display:flex;align-items:center;gap:4px}
+  .rtag.irrev{background:var(--red-soft);color:var(--red)}
+  .rtag.rev{background:var(--green-soft);color:var(--green)}
+  .card-top .when{margin-left:auto;color:var(--ink-faint);font-size:10px}
+  .impact{color:var(--ink-dim);font-size:10.5px;margin-bottom:7px}
+  .impact b{color:var(--ink)}
+  .preview{color:var(--ink);font-size:11.5px;line-height:1.5;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;padding:8px 10px;margin-bottom:10px;max-height:80px;overflow:hidden;position:relative;white-space:pre-wrap;word-break:break-word}
+  .preview.artifact{border-color:#2e353d}
+  .preview::after{content:"";position:absolute;left:0;right:0;bottom:0;height:22px;background:linear-gradient(transparent,var(--panel-2))}
+  .wire{display:flex;align-items:baseline;gap:8px;margin-bottom:10px;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:7px;padding:9px 11px}
+  .wire .amt{font-size:20px;font-weight:700;color:#fff;letter-spacing:.3px}
+  .wire .payee{color:var(--ink-dim);font-size:11px}
+  .actions{display:flex;gap:6px}
+  .btn{flex:1;text-align:center;padding:7px 0;border-radius:7px;font-size:11px;font-weight:600;border:1px solid transparent;cursor:pointer;font-family:inherit}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.approve{background:var(--green-soft);color:var(--green);border-color:#264a34}
+  .btn.hold{background:transparent;color:var(--red);border-color:#3a2422;flex:0 0 62px}
+  .btn.deny{background:transparent;color:var(--ink-faint);border-color:var(--line);flex:0 0 58px}
+  .btn.undo{background:transparent;color:var(--amber);border-color:#4a3b21;flex:0 0 64px}
+  .btn.primary{background:var(--brass-soft);color:var(--amber);border-color:#4a3b21}
+  .countdown{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:10.5px;color:var(--green)}
+  .countdown .lbl{white-space:nowrap}
+  .bar{flex:1;height:4px;background:var(--panel-3);border-radius:3px;overflow:hidden}
+  .bar i{display:block;height:100%;width:62%;background:var(--green);border-radius:3px;transition:width .9s linear}
+  .fact-in{display:flex;gap:6px;margin-bottom:2px}
+  .fact-in .fld{flex:1;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:8px 10px;color:var(--ink-faint);font-size:11px}
+  .conf{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--ink-dim)}
+  .conf b{color:var(--violet)}
+  .acted{display:inline-flex;align-items:center;gap:5px;font-size:9px;letter-spacing:.4px;padding:2px 7px;border-radius:5px;font-weight:600;background:var(--violet-soft);color:var(--violet)}
+
+  .lane-empty{color:var(--ink-faint);font-size:10.5px;margin:0 16px 9px;padding:9px 12px;border:1px dashed var(--line);border-radius:9px;text-align:center}
+
+  /* all-clear */
+  .clear{display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:60px 24px;text-align:center}
+  .clear .glyph{font-size:34px;opacity:.9}
+  .clear .ttl{font-size:15px;color:var(--ink);font-weight:600;letter-spacing:.3px}
+  .clear .sub{font-size:11px;color:var(--ink-faint);max-width:280px;line-height:1.6}
+  body.allclear .lanes{display:none}
+  body.allclear .clear{display:flex}
+
+  /* ---- left / right static chrome (cockpit) ---- */
+  .live-row{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--line-soft)}
+  .live-row:last-child{border-bottom:0}
+  .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .dot.run{background:var(--green);animation:p 2s infinite}.dot.queue{background:var(--amber)}
+  .live-row .lbl{color:var(--ink);font-size:11.5px}.live-row .sub{color:var(--ink-faint);font-size:10px}
+  .live-row .meta{margin-left:auto;color:var(--ink-faint);font-size:10px;text-align:right}
+  .lev{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:11px}
+  .lev:last-child{border-bottom:0}.lev .k{color:var(--ink-dim)}.lev .v{color:var(--ink);font-weight:600}
+  .lev .v.good{color:var(--green)}.lev .v.warn{color:var(--amber)}
+  .work{display:flex;align-items:center;gap:9px;padding:8px 9px;border:1px solid var(--line);background:var(--panel);border-radius:8px;margin-bottom:6px}
+  .work .ico{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;flex:none;background:var(--panel-2);border:1px solid var(--line)}
+  .work .body{flex:1;min-width:0}.work .title{color:var(--ink);font-size:11.5px}.work .when{color:var(--ink-faint);font-size:9.5px;margin-top:1px}
+  .badge{font-size:9.5px;color:var(--green);background:var(--green-soft);padding:1px 7px;border-radius:9px;border:1px solid #264a34}
+  .badge.warn{color:var(--amber);background:var(--brass-soft);border-color:#4a3b21}
+  .brief{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 12px;margin-bottom:9px}
+  .brief .bh{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--brass);margin-bottom:7px}
+  .brief li{list-style:none;color:var(--ink);font-size:11px;line-height:1.5;padding-left:14px;position:relative;margin-bottom:4px}
+  .brief li::before{content:"›";position:absolute;left:0;color:var(--ink-faint)}
+  .brief li b{color:#fff}
+  .mem{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:6px;position:relative}
+  .mem .tag{font-size:8.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--brass);margin-bottom:3px}
+  .mem .txt{color:var(--ink);font-size:11px;line-height:1.45}.mem .txt b{color:#fff}
+  .mem .pin{position:absolute;right:8px;top:7px;color:var(--brass);font-size:10px}
+  .colhead{padding:12px 15px 0;font-size:10px;text-transform:uppercase;letter-spacing:1.1px;color:var(--ink-dim);font-weight:600}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--panel-3);border:1px solid var(--line);color:var(--ink);font-size:11.5px;padding:9px 16px;border-radius:9px;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.err{border-color:#3a2422;color:var(--red)}
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="sax">🎷</span><span>Charles</span><span class="pulse" id="brandPulse"></span></div>
+    <div class="headline" id="headline"><b>—</b></div>
+    <div class="strip-right">
+      <div class="conn" id="conn"><span class="pulse off"></span><span id="connText">connecting…</span></div>
+      <div class="posture"><span class="on">Normal</span><span>Cautious</span></div>
+      <div class="stat"><span class="v" id="needsCount">0<span class="u"> now</span></span><span class="k">Needs you</span></div>
+      <div class="model-chip"><span class="pulse" style="background:var(--amber)"></span>Opus 4.8 · thinking</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT: live + leverage + standing work (static cockpit chrome) -->
+    <div class="col">
+      <div class="sec">
+        <div class="sec-h"><span class="t">Live Activity</span><span class="count">now</span></div>
+        <div class="live-row"><span class="dot run"></span><div><div class="lbl">Outreach drafter</div><div class="sub">sub-agent · gemini-flash</div></div><div class="meta">drafting 3<br>0:42</div></div>
+        <div class="live-row"><span class="dot run"></span><div><div class="lbl">SEO metrics sync</div><div class="sub">cron · xdares-seo</div></div><div class="meta">fetching</div></div>
+        <div class="live-row"><span class="dot queue"></span><div><div class="lbl">Weekly scorecard</div><div class="sub">queued behind sync</div></div><div class="meta">queued</div></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">Is Charles any good?</span><span class="count">this week</span></div>
+        <div class="lev"><span class="k">Approval rate</span><span class="v good">23 / 24</span></div>
+        <div class="lev"><span class="k">Corrections needed</span><span class="v warn">2 · tone</span></div>
+        <div class="lev"><span class="k">Acted autonomously</span><span class="v">61 actions</span></div>
+        <div class="lev"><span class="k">Risk blocks caught</span><span class="v good">3</span></div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">Standing Work</span><span class="count">13 crons · 3 goals</span></div>
+        <div class="work"><div class="ico">⏱</div><div class="body"><div class="title">Version drift check</div><div class="when">next · 9:00am</div></div><span class="badge">healthy</span></div>
+        <div class="work"><div class="ico">🎯</div><div class="body"><div class="title">Xdares SEO growth</div><div class="when">goal · 4/9 tasks</div></div><span class="badge">on track</span></div>
+        <div class="work"><div class="ico">📡</div><div class="body"><div class="title">Instantly warmup</div><div class="when">cohort 1 · day 16</div></div><span class="badge warn">review</span></div>
+      </div>
+    </div>
+
+    <!-- CENTER: Needs You — three live lanes -->
+    <div class="col">
+      <div class="colhead" style="display:flex;align-items:center"><span>⚓ Needs You</span><span class="count" style="margin-left:auto;text-transform:none;letter-spacing:0">silence is safe — reversible items auto-clear</span></div>
+
+      <div class="lanes">
+        <!-- DECIDE -->
+        <div class="lane-h decide"><span class="ico">⚖</span><span class="lh">Decide</span><span class="desc">give a yes or a judgment call</span><span class="n" id="n-decide">0</span></div>
+        <div id="lane-decide"></div>
+
+        <!-- UNBLOCK -->
+        <div class="lane-h unblock"><span class="ico">⚷</span><span class="lh">Unblock</span><span class="desc">give an input only you have</span><span class="n" id="n-unblock">0</span></div>
+        <div id="lane-unblock"></div>
+
+        <!-- VERIFY -->
+        <div class="lane-h verify"><span class="ico">✓</span><span class="lh">Verify</span><span class="desc">I finished, but I'm not sure I got it right</span><span class="n" id="n-verify">0</span></div>
+        <div id="lane-verify"></div>
+      </div>
+
+      <!-- ALL-CLEAR STATE -->
+      <div class="clear">
+        <div class="glyph">⚓</div>
+        <div class="ttl">You're clear</div>
+        <div class="sub">Nothing needs you right now. Charles is running on its own — anything reversible will clear itself, and you'll see it here the moment it doesn't.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: briefing + memory (static cockpit chrome) -->
+    <div class="col">
+      <div class="sec">
+        <div class="brief">
+          <div class="bh">☀ This morning · what matters</div>
+          <li><b>Cohort-1 reply rate hit 41%</b> — best week; warm replies queued in Decide.</li>
+          <li>MRR flat, no churn. Xdares SEO <b>+6 keywords</b> top-10 overnight.</li>
+          <li>Reversible items clear themselves — only hard stops wait for you.</li>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-h"><span class="t">What I Remember</span><span class="count">editable</span></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">hard rule</div><div class="txt">Never change model config — <b>that's Rod's call</b>.</div></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">preference</div><div class="txt">Cold emails <b>under 150 words</b>; lead with the observation.</div></div>
+        <div class="mem"><span class="pin">📌</span><div class="tag">preference</div><div class="txt">Always use the <b>Tailscale URL</b> for local links.</div></div>
+      </div>
+    </div>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+ * Permission Deck — live console for Slice 1
+ * Builds to: pp-os/specs/permission-deck-slice-1-api-contract.md
+ * ============================================================ */
+
+// --- configurable backend base URL ---
+const BASE_URL = "http://localhost:7700";
+const POLL_MS = 1000;          // fallback poll interval
+const SSE_GRACE_MS = 3500;     // if SSE doesn't open in this window, fall back to polling
+
+const params = new URLSearchParams(location.search);
+const MOCK = params.get("mock") === "1";
+
+// ---------- DOM helpers ----------
+const $ = (id) => document.getElementById(id);
+const lanes = { decide: $("lane-decide"), unblock: $("lane-unblock"), verify: $("lane-verify") };
+const laneCounts = { decide: $("n-decide"), unblock: $("n-unblock"), verify: $("n-verify") };
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+
+function fmtClock(secs){
+  secs = Math.max(0, Math.round(secs));
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+// kind tag derived from tool_name (cosmetic only; contract field stays authoritative)
+function kindFor(tool){
+  const t = (tool || "").toLowerCase();
+  if (t.includes("mail")) return { cls:"email", label:"Email" };
+  if (t.includes("post") || t.includes("tweet") || t.includes("_x")) return { cls:"tweet", label:"Post" };
+  if (t.includes("deploy") || t.includes("ship")) return { cls:"deploy", label:"Deploy" };
+  if (t.includes("spend") || t.includes("pay") || t.includes("charge")) return { cls:"spend", label:"Spend" };
+  return { cls:"generic", label:(tool || "Action") };
+}
+
+function whenFromIso(iso){
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + " min";
+  const h = Math.floor(mins / 60);
+  return h + " hr";
+}
+
+// ---------- toast ----------
+let toastTimer = null;
+function toast(msg, isErr){
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.toggle("err", !!isErr);
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+// ---------- connection status ----------
+function setConn(mode){
+  const el = $("conn"), txt = $("connText");
+  el.className = "conn " + mode;
+  const map = { live:"live · SSE", poll:"live · polling", down:"backend offline", mock:"mock mode" };
+  txt.textContent = map[mode] || mode;
+}
+
+// ============================================================
+// STATE — single source of truth: the latest QueueItem[]
+// ============================================================
+let items = [];        // QueueItem[] currently rendered (status === pending OR within undo window)
+const localCountdown = {}; // id -> remaining secs, ticked locally between server updates
+
+// ============================================================
+// RENDER
+// ============================================================
+function render(){
+  // only show actionable items: pending, plus reversible items in their undo window
+  const visible = items.filter(it =>
+    it.status === "pending" ||
+    ((it.status === "approved" || it.status === "auto_released") && it.lane === "verify") ||
+    it._undoable
+  );
+
+  const byLane = { decide: [], unblock: [], verify: [] };
+  for (const it of visible){
+    if (byLane[it.lane]) byLane[it.lane].push(it);
+  }
+
+  for (const lane of ["decide","unblock","verify"]){
+    const host = lanes[lane];
+    const list = byLane[lane];
+    laneCounts[lane].textContent = list.length;
+    host.innerHTML = list.length
+      ? list.map(it => cardHtml(it)).join("")
+      : `<div class="lane-empty">nothing here</div>`;
+  }
+
+  // needs-you count = items that genuinely require a human decision (decide + unblock pending)
+  const needs = visible.filter(it =>
+    (it.lane === "decide" || it.lane === "unblock") && it.status === "pending").length;
+  $("needsCount").innerHTML = needs + '<span class="u"> now</span>';
+
+  // headline
+  const hardStops = visible.filter(it =>
+    it.lane === "decide" && it.reversibility === "irreversible" && it.status === "pending").length;
+  const autoClearing = visible.filter(it =>
+    it.lane === "decide" && it.reversibility === "reversible" && it.status === "pending").length;
+  $("headline").innerHTML =
+    `<b>${needs} thing${needs===1?"":"s"} need${needs===1?"s":""} you</b>` +
+    (hardStops ? ` · <span class="hot">${hardStops} hard stop${hardStops===1?"":"s"}</span>` : "") +
+    (autoClearing ? ` · ${autoClearing} auto-clearing` : "");
+
+  // all-clear toggle
+  document.body.classList.toggle("allclear", visible.length === 0);
+
+  bindActions();
+}
+
+function cardHtml(it){
+  const k = kindFor(it.tool_name);
+  const when = whenFromIso(it.created_at);
+  const artifact = it.args_preview
+    ? `<div class="preview artifact">${esc(it.args_preview)}</div>` : "";
+
+  if (it.lane === "decide"){
+    if (it.reversibility === "irreversible"){
+      // hard stop — NO countdown, explicit approve/deny
+      return `
+      <div class="card irrev" data-id="${esc(it.id)}">
+        <div class="card-top">
+          <span class="kind ${k.cls}">${esc(k.label)}</span>
+          <span class="rtag irrev">⊘ Irreversible · hard stop</span>
+          <span class="when">${esc(when)}</span>
+        </div>
+        <div class="impact">${esc(it.summary)}</div>
+        ${artifact}
+        <div class="actions">
+          <button class="btn approve" data-act="approve">Approve &amp; send</button>
+          <button class="btn deny" data-act="deny">Deny</button>
+        </div>
+      </div>`;
+    }
+    // reversible — green tag + LIVE countdown + hold/deny
+    const remaining = localCountdown[it.id] != null ? localCountdown[it.id]
+                    : (it.countdown_remaining != null ? it.countdown_remaining : 0);
+    const total = it.countdown_seconds || it.countdown_remaining || remaining || 1;
+    const pct = Math.max(0, Math.min(100, (remaining / total) * 100));
+    return `
+    <div class="card rev" data-id="${esc(it.id)}">
+      <div class="card-top">
+        <span class="kind ${k.cls}">${esc(k.label)}</span>
+        <span class="rtag rev">↺ Reversible</span>
+        <span class="when">${esc(when)}</span>
+      </div>
+      <div class="impact">${esc(it.summary)}</div>
+      ${artifact}
+      <div class="countdown" data-cd>
+        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — undo anytime</span>
+        <span class="bar"><i data-fill style="width:${pct}%"></i></span>
+      </div>
+      <div class="actions">
+        <button class="btn approve" data-act="approve">Send now</button>
+        <button class="btn hold" data-act="hold">Hold</button>
+        <button class="btn deny" data-act="deny">Deny</button>
+      </div>
+    </div>`;
+  }
+
+  if (it.lane === "unblock"){
+    // human-only input
+    return `
+    <div class="card needfact" data-id="${esc(it.id)}">
+      <div class="card-top">
+        <span class="kind ${k.cls}">${esc(k.label)}</span>
+        <span class="rtag" style="background:var(--blue-soft);color:var(--blue)">⚷ needs you</span>
+        <span class="when">${esc(when)}</span>
+      </div>
+      <div class="impact">${esc(it.summary)}</div>
+      ${artifact}
+      <div class="fact-in">
+        <div class="fld">Only you can provide this input →</div>
+        <button class="btn primary" data-act="approve" style="flex:0 0 96px">Provide</button>
+      </div>
+    </div>`;
+  }
+
+  // verify — already acted, post-hoc confirm
+  const conf = it.confidence != null
+    ? `<span class="conf">confidence <b>${esc(it.confidence)}%</b></span>` : "";
+  const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
+    && it.reversibility === "reversible";
+  return `
+  <div class="card check" data-id="${esc(it.id)}">
+    <div class="card-top">
+      <span class="acted">✓ already acted</span>
+      ${conf}
+      <span class="when">${esc(when)}</span>
+    </div>
+    <div class="impact">${esc(it.summary)}</div>
+    ${artifact}
+    <div class="actions">
+      <button class="btn approve" data-act="approve">Looks right</button>
+      ${undoable ? `<button class="btn undo" data-act="undo">Undo</button>` : ""}
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// LIVE COUNTDOWN TICKER (drives reversible Decide cards every 1s)
+// Ticks the DOM in place so it stays smooth between server updates.
+// ============================================================
+setInterval(() => {
+  for (const it of items){
+    if (it.lane !== "decide" || it.reversibility !== "reversible" || it.status !== "pending") continue;
+    if (localCountdown[it.id] == null) continue;
+    localCountdown[it.id] = Math.max(0, localCountdown[it.id] - 1);
+    const card = document.querySelector(`.card[data-id="${cssEsc(it.id)}"]`);
+    if (!card) continue;
+    const clock = card.querySelector("[data-clock]");
+    const fill = card.querySelector("[data-fill]");
+    if (clock) clock.textContent = fmtClock(localCountdown[it.id]);
+    if (fill){
+      const total = it.countdown_seconds || it.countdown_remaining || 1;
+      fill.style.width = Math.max(0, Math.min(100, (localCountdown[it.id] / total) * 100)) + "%";
+    }
+  }
+}, 1000);
+
+function cssEsc(s){
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
+}
+
+// Seed/refresh local countdowns from a fresh server payload (server value is authoritative)
+function syncCountdowns(fresh){
+  for (const it of fresh){
+    if (it.lane === "decide" && it.reversibility === "reversible" && it.status === "pending"){
+      if (it.countdown_remaining != null) localCountdown[it.id] = it.countdown_remaining;
+    } else {
+      delete localCountdown[it.id];
+    }
+  }
+}
+
+// ============================================================
+// DATA INGEST — accept a QueueItem[] from /api/pending or SSE
+// ============================================================
+function ingest(payload){
+  if (!Array.isArray(payload)) return;
+  syncCountdowns(payload);
+  items = payload;
+  render();
+}
+
+// ============================================================
+// ACTIONS — optimistic POST then reconcile on next server push
+// ============================================================
+function bindActions(){
+  document.querySelectorAll(".card .btn[data-act]").forEach(btn => {
+    btn.onclick = () => {
+      const card = btn.closest(".card");
+      const id = card && card.getAttribute("data-id");
+      if (!id) return;
+      doAction(id, btn.getAttribute("data-act"), card);
+    };
+  });
+}
+
+const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
+const ACTION_MSG = {
+  approve:"Approved — receipt issued",
+  hold:"Held — countdown stopped, it won't send",
+  deny:"Denied — caller notified",
+  undo:"Undone — action rolled back"
+};
+
+function doAction(id, act, card){
+  const path = ACTION_PATH[act];
+  if (!path) return;
+
+  // optimistic UI
+  card.querySelectorAll(".btn").forEach(b => b.disabled = true);
+  const item = items.find(x => x.id === id);
+
+  if (act === "hold"){
+    // stop the countdown immediately; card stays pending as a hard hold
+    delete localCountdown[id];
+    if (item){ item.reversibility = "irreversible"; } // becomes a hard-hold visual on next render
+    const cd = card.querySelector("[data-cd]");
+    if (cd) cd.remove();
+    toast(ACTION_MSG.hold);
+    render();
+  } else {
+    // approve / deny / undo => the card leaves the deck
+    card.classList.add("leaving");
+    toast(ACTION_MSG[act]);
+    setTimeout(() => {
+      items = items.filter(x => x.id !== id);
+      delete localCountdown[id];
+      render();
+    }, 240);
+  }
+
+  if (MOCK){
+    // no backend in mock mode; optimistic update is the whole story
+    return;
+  }
+
+  fetch(`${BASE_URL}/api/${path}/${encodeURIComponent(id)}`, { method:"POST" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json().catch(() => ({})); })
+    .then(() => { /* server push via SSE/poll reconciles authoritative state */ })
+    .catch(err => {
+      toast(`Couldn't ${act} — ${err.message}`, true);
+      // pull authoritative state back so the optimistic change doesn't lie
+      pollOnce();
+    });
+}
+
+// ============================================================
+// TRANSPORT — SSE primary, polling fallback
+// ============================================================
+let pollTimer = null;
+let sse = null;
+let sseOpened = false;
+
+function startPolling(reason){
+  if (pollTimer) return;
+  setConn(reason === "down" ? "down" : "poll");
+  pollOnce();
+  pollTimer = setInterval(pollOnce, POLL_MS);
+}
+function stopPolling(){ clearInterval(pollTimer); pollTimer = null; }
+
+function pollOnce(){
+  fetch(`${BASE_URL}/api/pending`, { cache:"no-store" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(data => { if (pollTimer || !sseOpened) setConn("poll"); $("brandPulse").classList.remove("off"); ingest(data); })
+    .catch(() => { setConn("down"); $("brandPulse").classList.add("off"); });
+}
+
+function startSSE(){
+  if (typeof EventSource === "undefined"){ startPolling(); return; }
+  try {
+    sse = new EventSource(`${BASE_URL}/api/stream`);
+  } catch (e){ startPolling(); return; }
+
+  sse.addEventListener("queue", (ev) => {
+    try { ingest(JSON.parse(ev.data)); } catch (e){ /* ignore malformed frame */ }
+  });
+  sse.onopen = () => { sseOpened = true; stopPolling(); setConn("live"); $("brandPulse").classList.remove("off"); };
+  sse.onerror = () => {
+    // SSE dropped or never connected — fall back to polling
+    if (sse){ sse.close(); sse = null; }
+    sseOpened = false;
+    startPolling("down");
+  };
+
+  // if SSE hasn't opened within the grace window, start polling so the UI is never blank
+  setTimeout(() => { if (!sseOpened) startPolling(); }, SSE_GRACE_MS);
+}
+
+// ============================================================
+// MOCK MODE — one card per lane; reversible one has a ticking countdown
+// ============================================================
+function mockItems(){
+  const nowIso = new Date().toISOString();
+  const ago = (min) => new Date(Date.now() - min*60000).toISOString();
+  return [
+    {
+      id: "mock-irrev-1",
+      tool_name: "post_x",
+      lane: "decide",
+      reversibility: "irreversible",
+      summary: "Reply to @nicholascarlini · 41k followers · public & permanent",
+      args_preview: "The \"secret patching\" incident is the whole argument for external governance in one screenshot. An agent will manipulate its own test data to look compliant. The receipt has to be signed by something the agent can't touch.",
+      agent_id: "outreach",
+      rule_id: "public-post",
+      status: "pending",
+      created_at: ago(18)
+    },
+    {
+      id: "mock-rev-1",
+      tool_name: "send_email",
+      lane: "decide",
+      reversibility: "reversible",
+      countdown_seconds: 252,
+      countdown_remaining: 252,   // 4:12 — will tick down live
+      summary: "Cold outreach to patrik@validio.io · pipeline",
+      args_preview: "Hi Patrik — I'm the founder of Permission Protocol. Most firms running AI agents in production can't answer a simple question: who authorized that action? Worth 15 minutes?",
+      agent_id: "outreach",
+      rule_id: "cold-email",
+      status: "pending",
+      created_at: ago(6)
+    },
+    {
+      id: "mock-unblock-1",
+      tool_name: "reauth_instantly",
+      lane: "unblock",
+      reversibility: "irreversible",
+      summary: "Instantly.ai session expired — re-auth to keep Cohort-1 warmup running",
+      args_preview: "Paste login code or approve in 1Password — only you can complete this.",
+      agent_id: "warmup",
+      rule_id: "human-input",
+      status: "pending",
+      created_at: ago(60)
+    },
+    {
+      id: "mock-verify-1",
+      tool_name: "spend",
+      lane: "verify",
+      reversibility: "reversible",
+      confidence: 68,
+      summary: "$49 → Instantly top-up charged & 2,500 contacts added",
+      args_preview: "$49 → Instantly. Charged under the standing \"<$50 outreach tooling\" rule. Contact list skews US-only; your last note said expand LATAM — flagging before Tuesday's send.",
+      agent_id: "warmup",
+      rule_id: "spend-under-cap",
+      status: "auto_released",
+      receipt_id: "rcpt_mock_8842",
+      created_at: ago(22)
+    }
+  ];
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+function boot(){
+  if (MOCK){
+    setConn("mock");
+    $("brandPulse").classList.remove("off");
+    ingest(mockItems());
+    return;
+  }
+  // live: fetch once immediately so the deck isn't blank, then subscribe
+  pollOnce();
+  startSSE();
+}
+boot();
+</script>
+</body>
+</html>

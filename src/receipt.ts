@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import type { Decision } from './engine.js';
+import { signReceiptPayload } from './signer.js';
 
 const DEFAULT_RECEIPTS_PATH = process.env.PP_SHARED_RECEIPTS_PATH || 'pp-receipts.jsonl';
 const DEFAULT_VIEWER_BASE_URL = process.env.PP_VIEWER_BASE_URL || 'https://app.permissionprotocol.com/r';
@@ -317,6 +318,39 @@ export function createReceipt(
     target_server: targetServer,
     mode,
   };
+}
+
+/**
+ * Permission Deck Slice 1 — sign an issued receipt with the local Ed25519 dev key.
+ *
+ * Mutates the receipt in place: marks it AUTHORIZED, records who approved it, and
+ * populates the `signature` block (algorithm `ed25519`, key_id `pp-dev-1`, a real hex
+ * signature value, verified:true). The signature binds the receipt_id + the request
+ * payload hash so it is bound to this exact action. Returns the same receipt.
+ *
+ * This is the "issue signed receipt on approval" step of the loop — the proxy's
+ * `verifyAuthorization()` gate remains the no-receipt-no-execution enforcement point.
+ */
+export function signReceipt(
+  receipt: Receipt,
+  approvedBy: string = 'permission-deck',
+): Receipt {
+  const signingBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
+  const sig = signReceiptPayload(signingBytes);
+  receipt.signature = {
+    algorithm: sig.algorithm,
+    key_id: sig.key_id,
+    value: sig.value,
+    verified: sig.verified,
+  };
+  receipt.status = 'AUTHORIZED';
+  receipt.approved_by = approvedBy;
+  receipt.policy_details = {
+    ...receipt.policy_details,
+    outcome: 'allowed',
+  };
+  receipt.decision = 'allowed';
+  return receipt;
 }
 
 export function emitReceipt(receipt: Receipt, receiptsPath: string = DEFAULT_RECEIPTS_PATH): void {

@@ -2,3 +2,10 @@ node_modules/
 dist/
 pp-receipts.jsonl
 *.tsbuildinfo
+.keys/
+
+# runtime artifacts
+outbox.log
+actions-mcp/outbox.log
+pp-receipts.jsonl
+console/*.png

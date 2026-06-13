@@ -1,0 +1,15 @@
+{
+  "name": "actions-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Permission Deck Slice 1 — Actions-MCP stdio server (send_email, post_x, spend) meant to run behind mcp-guard.",
+  "type": "module",
+  "bin": {
+    "actions-mcp": "./server.mjs"
+  },
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "license": "MIT"
+}
