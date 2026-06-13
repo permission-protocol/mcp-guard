@@ -10,3 +10,4 @@ actions-mcp/outbox.log
 pp-receipts.jsonl
 console/*.png
 scripts/.demo*-receipts.jsonl
+deck-outbox.log
