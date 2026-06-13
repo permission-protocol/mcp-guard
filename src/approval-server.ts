@@ -4,15 +4,17 @@ import {
   getAction,
   resolveAction,
   acknowledgeAction,
+  addExternalDecision,
   holdAction,
   undoAction,
   countdownRemaining,
   type PendingAction,
 } from './pending.js';
-import type { Lane } from './engine.js';
+import type { Lane, Decision } from './engine.js';
 import type { Reversibility } from './config.js';
 import { getApprovalHTML } from './approval-ui.js';
-import type { Receipt } from './receipt.js';
+import { createReceipt, signReceipt, emitReceipt, type Receipt } from './receipt.js';
+import { verifyGithubSignature, parsePrEvent, shouldGate, scopeForPr } from './webhook.js';
 
 /** Recent receipts store (ring buffer) */
 const recentReceipts: Receipt[] = [];
@@ -28,6 +30,32 @@ let onApproveCallback: ((id: string) => void) | null = null;
 
 export function setOnApprove(cb: (id: string) => void): void {
   onApproveCallback = cb;
+}
+
+/** Optional hook fired after an external (webhook) decision is approved + receipted.
+ *  Real deployments use this to post the receipt id / a commit status back to GitHub. */
+let onExternalApprove: ((action: PendingAction, receipt: Receipt) => void) | null = null;
+export function setOnExternalApprove(cb: (action: PendingAction, receipt: Receipt) => void): void {
+  onExternalApprove = cb;
+}
+
+/** Issue + sign a scoped receipt for an external (webhook-sourced) decision. No forward. */
+function issueExternalReceipt(action: PendingAction, approvedBy: string): Receipt {
+  const decision: Decision = {
+    decision: 'allowed',
+    rule_id: action.rule_id,
+    reason: 'Approved by a human in the Permission Deck (GitHub webhook)',
+    lane: action.lane,
+    reversibility: action.reversibility,
+  };
+  const scopeBinding = { scope: action.scope, scope_ref: action.scope_ref, scope_sha: action.scope_sha };
+  const receipt = createReceipt(action.agent_id, action.tool_name, decision, action.tool_args, 'github-webhook', 'enforce', scopeBinding);
+  signReceipt(receipt, approvedBy);
+  action.receipt_id = receipt.receipt_id;
+  emitReceipt(receipt);
+  pushReceipt(receipt);
+  if (onExternalApprove) onExternalApprove(action, receipt);
+  return receipt;
 }
 
 /** The QueueItem shape from the API contract (backend ⇄ console). */
@@ -186,6 +214,15 @@ export function startApprovalServer(port: number): ApprovalServerHandle {
           json(res, 200, { id, status: 'approved', receipt_id: ack.receipt_id ?? null });
           return;
         }
+        // External (webhook) decision: issue a scoped receipt directly — no MCP forward.
+        if (existing?.external) {
+          const receipt = issueExternalReceipt(existing, 'permission-deck-operator');
+          resolveAction(id, 'approved');
+          process.stderr.write(`[mcp-guard] Approved (webhook): ${existing.tool_name} (${id}) → receipt ${receipt.receipt_id}\n`);
+          notifyQueueChange();
+          json(res, 200, { id, status: 'approved', receipt_id: receipt.receipt_id });
+          return;
+        }
         const action = resolveAction(id, 'approved');
         if (!action) {
           json(res, 404, { error: 'Not found or already resolved' });
@@ -248,6 +285,42 @@ export function startApprovalServer(port: number): ApprovalServerHandle {
         process.stderr.write(`[mcp-guard] Undone: ${action.tool_name} (${id})\n`);
         notifyQueueChange();
         json(res, 200, { id, status: 'undone' });
+        return;
+      }
+
+      // POST /api/github/webhook — Slice 2.5: enqueue a labeled PR as a Decide card.
+      if (method === 'POST' && url === '/api/github/webhook') {
+        const raw = await parseBody(req);
+        const secret = process.env.PP_WEBHOOK_SECRET;
+        const sig = (req.headers['x-hub-signature-256'] as string | undefined);
+        if (!verifyGithubSignature(secret, raw, sig)) {
+          process.stderr.write('[mcp-guard] Webhook REJECTED — bad/missing signature\n');
+          json(res, 401, { error: 'invalid signature' });
+          return;
+        }
+        let payload: any;
+        try { payload = JSON.parse(raw); } catch { json(res, 400, { error: 'invalid JSON' }); return; }
+        const ev = parsePrEvent(payload);
+        if (!ev) { json(res, 200, { ignored: true, reason: 'not a pull_request event' }); return; }
+        if (!shouldGate(ev)) { json(res, 200, { ignored: true, reason: `no ${'needs-authority'} label or irrelevant action` }); return; }
+        const sc = scopeForPr(ev);
+        const item = addExternalDecision({
+          toolName: 'merge_pr',
+          agentId: 'github-webhook',
+          ruleId: 'pr-needs-authority',
+          enrichment: {
+            lane: 'decide',
+            reversibility: 'reversible',
+            summary: `Merge ${ev.repo} #${ev.pr_number} · ${ev.title}`,
+            // args_preview is a string per the contract; the console JSON-parses structured blobs.
+            args_preview: JSON.stringify({ repo: ev.repo, pr_number: ev.pr_number, title: ev.title, head_sha: ev.head_sha, html_url: ev.html_url }),
+          },
+          toolArgs: { repo: ev.repo, pr_number: ev.pr_number, scope_sha: ev.head_sha },
+          ...sc,
+        });
+        process.stderr.write(`[mcp-guard] Webhook queued PR ${ev.repo}#${ev.pr_number} for authority (${item.id})\n`);
+        notifyQueueChange();
+        json(res, 202, { queued: true, id: item.id, scope_ref: sc.scope_ref });
         return;
       }
 

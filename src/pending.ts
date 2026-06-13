@@ -53,6 +53,14 @@ export interface PendingAction {
    * surfaced for post-hoc review. Approve = acknowledge (no re-forward); Undo = roll back.
    */
   acted?: boolean;
+  /**
+   * External-source decision (e.g. a GitHub webhook): no MCP child to forward to.
+   * Approve issues a scoped receipt directly; never re-forwards.
+   */
+  external?: boolean;
+  scope?: string;
+  scope_ref?: string;
+  scope_sha?: string;
 
   // --- Internal countdown / undo bookkeeping (not serialized to the API) ---
   /** epoch ms when the countdown auto-release fires; undefined = no countdown */
@@ -168,6 +176,50 @@ export function surfaceActed(
   if (enrichment.reversibility === 'reversible') {
     action.undoDeadline = Date.now() + undoWindowSeconds * 1000;
   }
+  queue.set(action.id, action);
+  return action;
+}
+
+export interface ExternalDecisionInput {
+  toolName: string;             // e.g. 'merge_pr'
+  agentId: string;             // e.g. 'github-webhook'
+  ruleId: string;
+  enrichment: PendingEnrichment; // lane (decide), reversibility, summary, args_preview
+  toolArgs?: any;
+  scope?: string;
+  scope_ref?: string;
+  scope_sha?: string;
+}
+
+/**
+ * Enqueue a Decide item from an external source (a GitHub webhook). There is no MCP
+ * child to forward to — approval issues a scoped receipt directly (handled by the
+ * approval server). Status starts pending; never auto-releases.
+ */
+export function addExternalDecision(input: ExternalDecisionInput): PendingAction {
+  const now = new Date().toISOString();
+  const action: PendingAction = {
+    id: randomUUID(),
+    timestamp: now,
+    created_at: now,
+    tool_name: input.toolName,
+    tool_args: input.toolArgs ?? {},
+    agent_id: input.agentId,
+    rule_id: input.ruleId,
+    status: 'pending',
+    originalLine: '',
+    jsonrpcId: null,
+    resolve: () => {}, // no caller blocked on this
+    lane: input.enrichment.lane,
+    reversibility: input.enrichment.reversibility,
+    ...(input.enrichment.confidence !== undefined ? { confidence: input.enrichment.confidence } : {}),
+    summary: input.enrichment.summary,
+    args_preview: input.enrichment.args_preview,
+    external: true,
+    ...(input.scope ? { scope: input.scope } : {}),
+    ...(input.scope_ref ? { scope_ref: input.scope_ref } : {}),
+    ...(input.scope_sha ? { scope_sha: input.scope_sha } : {}),
+  };
   queue.set(action.id, action);
   return action;
 }
