@@ -41,7 +41,22 @@ function proxyApi(req, res) {
   preq.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('deck backend unreachable'); });
   req.pipe(preq);
 }
+// Optional HTTP Basic Auth so a public tunnel stays "just me".
+const AUTH_USER = process.env.DECK_USER || 'rod';
+const AUTH_PASS = process.env.DECK_PASS || '';
+function authed(req) {
+  if (!AUTH_PASS) return true; // no password configured → open (localhost/tailnet use)
+  const h = req.headers['authorization'] || '';
+  if (!h.startsWith('Basic ')) return false;
+  const [u, p] = Buffer.from(h.slice(6), 'base64').toString().split(':');
+  return u === AUTH_USER && p === AUTH_PASS;
+}
+
 createServer((req, res) => {
+  if (!authed(req)) {
+    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Permission Deck"' });
+    return res.end('Authentication required');
+  }
   if (req.url.startsWith('/api')) return proxyApi(req, res);
   const rel = (req.url === '/' || req.url.startsWith('/?')) ? '/index.html' : req.url.split('?')[0];
   const file = join(ROOT, 'console', rel);

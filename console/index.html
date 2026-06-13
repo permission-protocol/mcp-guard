@@ -25,7 +25,7 @@
     /* depth */
     --sh-card:0 1px 1px rgba(0,0,0,.35),0 10px 30px -16px rgba(0,0,0,.7);
     --sh-pop:0 16px 50px -16px rgba(0,0,0,.75);
-    --r:13px;
+    --r:12px;
     font-synthesis:none;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -105,12 +105,14 @@
   .unblock .ico{background:linear-gradient(180deg,rgba(100,163,219,.22),rgba(100,163,219,.07));color:var(--blue);box-shadow:0 0 14px -4px rgba(100,163,219,.45),inset 0 0 0 1px var(--blue-line)} .unblock .lh{color:var(--blue)}
   .verify .ico{background:linear-gradient(180deg,rgba(173,150,218,.22),rgba(173,150,218,.07));color:var(--violet);box-shadow:0 0 14px -4px rgba(173,150,218,.45),inset 0 0 0 1px var(--violet-line)} .verify .lh{color:var(--violet)}
 
-  .card{background:linear-gradient(180deg,var(--panel),#13161c);border:1px solid var(--line);border-radius:var(--r);padding:13px 13px 12px;margin:0 18px 10px;position:relative;overflow:hidden;
+  .card{background:linear-gradient(180deg,var(--panel),#13161c);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:0 16px 12px;position:relative;overflow:hidden;
     box-shadow:var(--sh-card);transition:transform .2s cubic-bezier(.2,.7,.3,1),box-shadow .2s,border-color .2s,opacity .25s}
   .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:var(--r) 0 0 var(--r)}
   .card:hover{transform:translateY(-2px);border-color:var(--line-bright);box-shadow:var(--sh-pop)}
-  .card.irrev::before{background:linear-gradient(180deg,var(--red),#a8463f)}
-  .card.irrev{box-shadow:var(--sh-card),inset 0 0 30px -20px rgba(229,112,105,.6)}
+  /* irreversible = the one thing that must dominate: heavier spine, warm bg, top keyline, real glow */
+  .card.irrev::before{width:4px;background:linear-gradient(180deg,var(--red),#a8463f)}
+  .card.irrev{border-color:var(--red-line);background:linear-gradient(180deg,#1c1517,#150f11);
+    box-shadow:var(--sh-card),inset 0 1px 0 rgba(229,112,105,.25),inset 0 0 60px -26px rgba(229,112,105,.65)}
   .card.rev::before{background:linear-gradient(180deg,var(--green),#2f8b58)}
   .card.needfact::before{background:linear-gradient(180deg,var(--blue),#3b6f9e)}
   .card.check::before{background:linear-gradient(180deg,var(--violet),#6f5da0)}
@@ -129,7 +131,13 @@
   .rtag.irrev::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--red);box-shadow:0 0 6px var(--red);animation:p 2s infinite}
   .rtag.rev{background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line)}
   .card-top .when{margin-left:auto;color:var(--ink-faint);font-size:10px;letter-spacing:.2px}
-  .impact{color:var(--ink);font-size:12px;line-height:1.45;margin-bottom:9px;font-weight:500}
+  .impact{color:var(--ink);font-size:14.5px;line-height:1.4;margin-bottom:6px;font-weight:600;letter-spacing:-.1px}
+  .card.irrev .impact{font-size:15.5px}
+  /* consequence / blast-radius line — what breaks if you're wrong */
+  .conseq{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--ink-dim);margin-bottom:11px}
+  .conseq .ic{color:var(--ink-faint)}
+  .conseq.danger{color:var(--red)} .conseq.danger .ic{color:var(--red)}
+  .conseq.safe{color:var(--green)} .conseq.safe .ic{color:var(--green)}
   .preview{color:var(--ink-dim);font-size:11.5px;line-height:1.55;background:var(--panel-2);border:1px solid var(--line-soft);border-radius:9px;padding:9px 11px;margin-bottom:11px;max-height:84px;overflow:hidden;position:relative;white-space:pre-wrap;word-break:break-word}
   .preview.artifact{border-color:var(--line)}
   .preview::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24px;background:linear-gradient(transparent,var(--panel-2))}
@@ -150,6 +158,8 @@
   .diffstat .dl .f{color:var(--ink-dim);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .diffstat .dl .ch{color:var(--ink-faint);font-size:10px;white-space:nowrap}
   .diffstat .dl .add{color:var(--green)} .diffstat .dl .del{color:var(--red)}
+  .diffstat .dbar{display:inline-flex;width:46px;height:5px;border-radius:3px;overflow:hidden;background:var(--panel-3);vertical-align:middle;margin-left:3px}
+  .diffstat .dbar .da{background:var(--green)} .diffstat .dbar .dd{background:var(--red)}
   .diffstat .sum{margin-top:6px;padding-top:6px;border-top:1px solid var(--line-soft);color:var(--ink-dim);font-size:10px}
   .diffstat .sum .add{color:var(--green)} .diffstat .sum .del{color:var(--red)}
   .sql{background:#0c0f0c;border:1px solid #29302a;border-left:3px solid var(--ink-faint);border-radius:9px;padding:10px 12px;margin-bottom:11px;font-size:11.5px;line-height:1.6;color:#cde0cd;white-space:pre-wrap;word-break:break-word;max-height:170px;overflow:auto}
@@ -162,8 +172,9 @@
   .btn:hover{transform:translateY(-1px)}
   .btn:active{transform:translateY(0)}
   .btn:disabled{opacity:.45;cursor:default;transform:none}
-  .btn.approve{background:linear-gradient(180deg,rgba(94,203,139,.22),rgba(94,203,139,.10));color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line)}
-  .btn.approve:hover{background:linear-gradient(180deg,rgba(94,203,139,.32),rgba(94,203,139,.16));box-shadow:inset 0 0 0 1px var(--green),0 6px 18px -10px rgba(94,203,139,.8)}
+  /* approve = the authority action → brass, filled, dark text */
+  .btn.approve{background:linear-gradient(180deg,#e9ba62,#c8913f);color:#1c1305;font-weight:700;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 6px 16px -11px rgba(227,173,87,.9)}
+  .btn.approve:hover{background:linear-gradient(180deg,#f0c474,#d49b46);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 8px 20px -10px rgba(227,173,87,1)}
   .btn.hold{background:transparent;color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line);flex:0 0 64px}
   .btn.hold:hover{background:var(--red-soft)}
   .btn.deny{background:transparent;color:var(--ink-faint);box-shadow:inset 0 0 0 1px var(--line);flex:0 0 60px}
@@ -229,10 +240,57 @@
     font-size:11.5px;font-weight:550;padding:11px 18px;border-radius:11px;opacity:0;transition:opacity .25s,transform .25s;
     pointer-events:none;z-index:50;box-shadow:var(--sh-pop);display:flex;align-items:center;gap:9px}
   .toast::before{content:"✓";color:var(--green);font-weight:800}
-  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;cursor:pointer}
   .toast.err{border-color:var(--red-line)} .toast.err::before{content:"!";color:var(--red)}
   .toast.receipt{border-color:var(--brass-line);box-shadow:var(--sh-pop),0 0 30px -10px rgba(227,173,87,.5)}
   .toast.receipt::before{content:"✦";color:var(--brass)}
+
+  /* ---- receipt modal (the proof moment) ---- */
+  .modal-bg{position:fixed;inset:0;background:rgba(6,7,9,.68);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+  .modal-bg.show{display:flex}
+  .receipt-modal{width:min(440px,94vw);background:linear-gradient(180deg,#191c24,#121419);border:1px solid var(--brass-line);border-radius:16px;box-shadow:var(--sh-pop),0 0 70px -22px rgba(227,173,87,.55);overflow:hidden;animation:pop .26s cubic-bezier(.2,.8,.3,1)}
+  @keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
+  .receipt-modal .rh{display:flex;align-items:center;gap:11px;padding:17px 19px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(227,173,87,.08),transparent)}
+  .receipt-modal .seal{font-size:22px;color:var(--brass);filter:drop-shadow(0 0 12px rgba(227,173,87,.7))}
+  .receipt-modal .rt{font-weight:700;font-size:14.5px;letter-spacing:.2px}
+  .receipt-modal .rt small{display:block;color:var(--ink-faint);font-weight:400;font-size:9.5px;text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+  .receipt-modal .rb{padding:16px 19px;display:flex;flex-direction:column;gap:12px}
+  .receipt-modal .verified{display:inline-flex;align-items:center;gap:8px;background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line);padding:8px 12px;border-radius:10px;font-size:11.5px;font-weight:650;width:fit-content}
+  .receipt-modal .row{display:flex;flex-direction:column;gap:3px}
+  .receipt-modal .row .k{font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-faint)}
+  .receipt-modal .row .v{font-size:12.5px;color:var(--ink);line-height:1.45;word-break:break-word}
+  .receipt-modal .row .v.mono{font-family:var(--mono);color:var(--amber);word-break:break-all}
+  .receipt-modal .rf{padding:14px 19px;border-top:1px solid var(--line)}
+  .receipt-modal .rf .btn{width:100%;padding:10px 0}
+
+  /* ---- responsive: tablet ---- */
+  @media (max-width:1120px){
+    main{grid-template-columns:0.95fr 1.55fr}
+    .col.right{display:none}
+  }
+  /* ---- responsive: phone — Needs You first, everything stacks, big tap targets ---- */
+  @media (max-width:760px){
+    html,body{height:auto;overflow-y:auto;overflow-x:hidden}
+    body{display:block}
+    header{position:sticky;top:0;flex-wrap:wrap;height:auto;padding:9px 13px;gap:9px;z-index:20}
+    .headline{flex-basis:100%;order:9;margin:0;padding:7px 0 0;border-left:0}
+    .strip-right{gap:9px}
+    .model-chip,.posture{display:none}
+    main{display:flex;flex-direction:column;gap:0}
+    .col{overflow:visible;max-height:none}
+    .col:not(.center){display:none}   /* phone: focus only on Needs You — no placeholder chrome */
+    .card{margin:0 12px 12px}
+    .card:hover{transform:none}
+    /* destructive actions must NOT sit next to Approve at thumb height */
+    .actions{flex-wrap:wrap;gap:7px}
+    .actions .btn{min-width:0}
+    .actions .btn.approve{flex:1 1 100%;order:-1;padding:14px 0;font-size:14px}
+    .actions .btn.hold,.actions .btn.deny,.actions .btn.undo{flex:1 1 0;padding:11px 0;font-size:12.5px}
+    .btn:hover{transform:none}
+    .lane-h{padding:15px 14px 9px}
+    .colhead{padding:14px 14px 2px}
+    .colhead .sub{display:none}
+  }
 </style>
 </head>
 <body>
@@ -273,7 +331,7 @@
     </div>
 
     <!-- CENTER: Needs You — three live lanes -->
-    <div class="col">
+    <div class="col center">
       <div class="colhead"><span>⚓ Needs You</span><span class="sub">silence is safe — reversible items auto-clear</span></div>
 
       <div class="lanes">
@@ -299,7 +357,7 @@
     </div>
 
     <!-- RIGHT: briefing + memory (static cockpit chrome) -->
-    <div class="col">
+    <div class="col right">
       <div class="sec">
         <div class="brief">
           <div class="bh">☀ This morning · what matters</div>
@@ -316,6 +374,15 @@
       </div>
     </div>
   </main>
+
+  <!-- Receipt modal: the proof moment when you authorize something -->
+  <div class="modal-bg" id="receiptModal">
+    <div class="receipt-modal">
+      <div class="rh"><span class="seal">✦</span><span class="rt">Authority Receipt<small>Permission Protocol</small></span></div>
+      <div class="rb" id="receiptBody"></div>
+      <div class="rf"><button class="btn approve" id="receiptClose">Done</button></div>
+    </div>
+  </div>
 
   <div class="toast" id="toast"></div>
 
@@ -363,6 +430,27 @@ function kindFor(tool){
   return { cls:"generic", label:(tool || "Action") };
 }
 
+// consequence / blast-radius line — what actually happens / breaks if you're wrong
+function consequenceFor(it){
+  const t = (it.tool_name || "").toLowerCase();
+  if (it.lane === "unblock") return `<div class="conseq"><span class="ic">⚷</span>Blocks an in-flight task until you provide it</div>`;
+  if (it.lane === "verify")  return `<div class="conseq"><span class="ic">✓</span>Already done — confirm it matched your intent</div>`;
+  let txt;
+  if (it.reversibility === "irreversible"){
+    if (t.includes("post") || t.includes("_x") || t.includes("tweet")) txt = "Public & permanent — can't be unsent";
+    else if (t.includes("sql") || t.includes("migrat")) txt = "Production schema change — reversible only by restore";
+    else if (t.includes("spend") || t.includes("pay")) txt = "Over the cap — funds leave immediately";
+    else txt = "Irreversible — no undo once it runs";
+    return `<div class="conseq danger"><span class="ic">⊘</span>${esc(txt)}</div>`;
+  }
+  if (t.includes("mail")) txt = "Recoverable — undo window before it leaves";
+  else if (t.includes("merge") || t.includes("_pr")) txt = "Revertable with a follow-up PR";
+  else if (t.includes("spend") || t.includes("pay")) txt = "Refundable charge, under the cap";
+  else if (t.includes("deploy")) txt = "Rollback available";
+  else txt = "Reversible — safe to clear";
+  return `<div class="conseq safe"><span class="ic">↺</span>${esc(txt)}</div>`;
+}
+
 // ---------- Slice 2: tool-aware artifact formatters ----------
 // merge_pr: args_preview carries repo / PR # / title / diffstat.
 // Accepts either an object or a string blob; renders a diffstat-style block.
@@ -381,17 +469,17 @@ function parseArgs(ap){
 
 function diffstatHtml(args){
   const files = Array.isArray(args.files) ? args.files : [];
+  if (!files.length) return ""; // webhook-sourced PRs carry no diffstat — skip the block
   let totAdd = 0, totDel = 0;
   const rows = files.map(f => {
     const add = +f.additions || 0, del = +f.deletions || 0;
     totAdd += add; totDel += del;
     // a compact +/- bar, capped so a huge file doesn't blow the layout
-    const n = Math.min(add + del, 24);
-    const ga = add + del ? Math.round(n * add / (add + del)) : 0;
-    const bar = "+".repeat(ga) + "-".repeat(Math.max(0, n - ga));
+    const tot = add + del || 1;
+    const ap = Math.round(100 * add / tot);
     return `<div class="dl"><span class="f">${esc(f.path)}</span>`
-      + `<span class="ch"><span class="add">+${add}</span> <span class="del">−${del}</span> `
-      + `<span class="add">${"+".repeat(ga)}</span><span class="del">${"-".repeat(Math.max(0, n-ga))}</span></span></div>`;
+      + `<span class="ch"><span class="add">+${add}</span> <span class="del">−${del}</span>`
+      + `<span class="dbar"><i class="da" style="width:${ap}%"></i><i class="dd" style="width:${100-ap}%"></i></span></span></div>`;
   }).join("");
   const fileN = args.changed_files != null ? args.changed_files : files.length;
   return `<div class="diffstat">${rows}`
@@ -436,6 +524,27 @@ function toast(msg, isErr, variant){
   toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
+// ---------- receipt modal (the proof moment) ----------
+function showReceipt(receiptId, item){
+  const body = $("receiptBody");
+  const summary = item ? item.summary : "Action authorized";
+  body.innerHTML =
+    `<div class="verified">✓ Ed25519 signature · verified</div>` +
+    `<div class="row"><span class="k">Action authorized</span><span class="v">${esc(summary)}</span></div>` +
+    `<div class="row"><span class="k">Receipt</span><span class="v mono">${esc(receiptId)}</span></div>` +
+    `<div class="row"><span class="k">Signer</span><span class="v">you — just now</span></div>` +
+    `<div class="row"><span class="k">Guarantee</span><span class="v">No receipt, no execution. This action could not run until you signed it.</span></div>`;
+  $("receiptModal").classList.add("show");
+}
+(function wireModal(){
+  const close = () => $("receiptModal").classList.remove("show");
+  $("receiptClose").onclick = close;
+  $("receiptModal").addEventListener("click", (e) => { if (e.target.id === "receiptModal") close(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  // tap the approval toast to open its receipt (the non-intrusive proof path)
+  $("toast").addEventListener("click", () => { if (lastReceipt) showReceipt(lastReceipt.receiptId, lastReceipt.item); });
+})();
+
 // ---------- connection status ----------
 function setConn(mode){
   const el = $("conn"), txt = $("connText");
@@ -449,6 +558,7 @@ function setConn(mode){
 // ============================================================
 let items = [];        // QueueItem[] currently rendered (status === pending OR within undo window)
 let lastSig = null;    // structural signature of the last render (excl. live countdowns)
+let lastReceipt = null; // {receiptId,item} of the most recent approval — tap the toast to view
 const localCountdown = {}; // id -> remaining secs, ticked locally between server updates
 
 // Structural signature — everything that affects layout EXCEPT countdown_remaining
@@ -476,6 +586,9 @@ function render(){
   for (const it of visible){
     if (byLane[it.lane]) byLane[it.lane].push(it);
   }
+  // irreversible hard-stops dominate: pin them to the top of the Decide lane
+  byLane.decide.sort((a, b) =>
+    (a.reversibility === "irreversible" ? 0 : 1) - (b.reversibility === "irreversible" ? 0 : 1));
 
   for (const lane of ["decide","unblock","verify"]){
     const host = lanes[lane];
@@ -571,6 +684,7 @@ function cardHtml(it){
           <span class="when">${esc(when)}</span>
         </div>
         <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
         ${artifact}
         <div class="actions">
           <button class="btn approve" data-act="approve">Approve &amp; send</button>
@@ -600,6 +714,7 @@ function cardHtml(it){
         <span class="when">${esc(when)}</span>
       </div>
       <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
       ${artifact}
       ${countdown}
       <div class="actions">
@@ -620,6 +735,7 @@ function cardHtml(it){
         <span class="when">${esc(when)}</span>
       </div>
       <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
       ${artifact}
       <div class="fact-in">
         <div class="fld">Only you can provide this input →</div>
@@ -641,6 +757,7 @@ function cardHtml(it){
       <span class="when">${esc(when)}</span>
     </div>
     <div class="impact">${esc(it.summary)}</div>
+        ${consequenceFor(it)}
     ${artifact}
     <div class="actions">
       <button class="btn approve" data-act="approve">Looks right</button>
@@ -717,7 +834,7 @@ function bindActions(){
 
 const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
 const ACTION_MSG = {
-  approve:"Approved — receipt signed & issued",
+  approve:"Approved — receipt signed · tap to view",
   hold:"Held — countdown stopped, it won't send",
   deny:"Denied — caller notified",
   undo:"Undone — action rolled back"
@@ -752,14 +869,27 @@ function doAction(id, act, card){
     }, 240);
   }
 
+  // High-stakes (irreversible) approvals pop the receipt as proof; reversible ones
+  // just toast (tap it to see the receipt) — no modal friction on the 20th approval.
+  const irreversible = item && item.reversibility === "irreversible";
+
   if (MOCK){
-    // no backend in mock mode; optimistic update is the whole story
+    if (act === "approve"){
+      const rid = "rcpt_dg_" + Math.random().toString(36).slice(2, 10) + "_demo";
+      lastReceipt = { receiptId: rid, item };
+      if (irreversible) showReceipt(rid, item);
+    }
     return;
   }
 
   fetch(`${BASE_URL}/api/${path}/${encodeURIComponent(id)}`, { method:"POST" })
     .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json().catch(() => ({})); })
-    .then(() => { /* server push via SSE/poll reconciles authoritative state */ })
+    .then(data => {
+      if (act === "approve" && data && data.receipt_id){
+        lastReceipt = { receiptId: data.receipt_id, item };
+        if (irreversible) showReceipt(data.receipt_id, item);
+      }
+    })
     .catch(err => {
       toast(`Couldn't ${act} — ${err.message}`, true);
       // pull authoritative state back so the optimistic change doesn't lie
@@ -930,6 +1060,8 @@ function boot(){
   startSSE();
 }
 boot();
+// dev: ?receipt=1 previews the receipt modal
+if (params.get("receipt")) setTimeout(() => showReceipt("rcpt_dg_mqc18a4_7f3e21b9c", items[0]), 350);
 </script>
 </body>
 </html>
