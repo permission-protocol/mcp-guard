@@ -6,6 +6,19 @@ import { getToolPolicy, ToolPolicy } from './policy';
 // Simple in-memory replay cache for the proxy
 const usedNonces = new Set<string>();
 
+export function buildAuthorizationSigningBytes(token: SignedToken): string {
+  return stableStringify({
+    request_id: token.request_id,
+    decision: token.decision,
+    payload_hash: token.payload_hash,
+    signers: token.signers,
+    roles: token.roles,
+    signed_at: token.signed_at,
+    expires_at: token.expires_at,
+    key_id: token.key_id,
+  });
+}
+
 export async function verifyAuthorization(
   payload: CanonicalPayload,
   token: SignedToken,
@@ -26,6 +39,9 @@ export async function verifyAuthorization(
   }
   if (!token.request_id || !token.decision || !token.payload_hash || !token.signers || !token.roles || !token.signed_at || !token.expires_at || !token.key_id || !token.signature) {
     throw new Error('Malformed token schema: missing required fields');
+  }
+  if (token.request_id !== payload.request_id) {
+    throw new Error('Request ID mismatch - token does not authorize this payload');
   }
 
   // Trust boundary: Check key identity
@@ -59,7 +75,7 @@ export async function verifyAuthorization(
   // 5. Verify Signature
   const isValidSig = crypto.verify(
     null,
-    Buffer.from(recomputedHash),
+    Buffer.from(buildAuthorizationSigningBytes(token)),
     publicKeyPem,
     Buffer.from(token.signature, 'hex')
   );
