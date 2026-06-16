@@ -16,6 +16,7 @@ import { getApprovalHTML } from './approval-ui.js';
 import { createReceipt, signReceipt, emitReceipt, type Receipt } from './receipt.js';
 import { verifyGithubSignature, parsePrEvent, shouldGate, scopeForPr } from './webhook.js';
 import { postCommitStatus, authorizedStatus } from './github-status.js';
+import { openCompletion, recordCompletion, getCompletion, type CompletionRecord } from './completions.js';
 
 /** Recent receipts store (ring buffer) */
 const recentReceipts: Receipt[] = [];
@@ -24,6 +25,24 @@ const MAX_RECEIPTS = 50;
 export function pushReceipt(receipt: Receipt): void {
   recentReceipts.push(receipt);
   if (recentReceipts.length > MAX_RECEIPTS) recentReceipts.shift();
+  // Open a `pending` completion the moment authority is minted. The executor flips it
+  // to `done` (with the proof URL) via POST /api/completions when the action finishes.
+  // The receipt stays immutable; proof lives only on the completion record.
+  openCompletion(receipt.receipt_id);
+}
+
+/** A ledger row: the immutable signed receipt joined to its mutable completion record. */
+export interface LedgerRow {
+  receipt: Receipt;
+  completion: CompletionRecord | null;
+}
+
+/** Newest-first ledger: every recent receipt ⋈ its completion record. */
+export function ledgerRows(): LedgerRow[] {
+  return recentReceipts
+    .slice(-MAX_RECEIPTS)
+    .reverse()
+    .map((receipt) => ({ receipt, completion: getCompletion(receipt.receipt_id) }));
 }
 
 /** Callback invoked when an action is approved — proxy registers this */
@@ -75,6 +94,10 @@ export interface QueueItem {
   status: PendingAction['status'];
   created_at: string;
   receipt_id?: string;
+  /** The identity this action runs *as* (e.g. `@permissionprotocol`, `github-app[bot]`,
+   *  `pp_prod / migrator`). Answers "approve to do X — as whom?" on the decision card.
+   *  Optional; the console derives a sensible default from tool_name + agent_id when absent. */
+  acting_as?: string;
 }
 
 /** Project a PendingAction into the contract QueueItem, computing countdown_remaining. */
@@ -95,6 +118,7 @@ export function toQueueItem(p: PendingAction): QueueItem {
     status: p.status,
     created_at: p.created_at,
     ...(p.receipt_id !== undefined ? { receipt_id: p.receipt_id } : {}),
+    ...((p as { acting_as?: string }).acting_as ? { acting_as: (p as { acting_as?: string }).acting_as } : {}),
   };
 }
 
@@ -344,9 +368,53 @@ export function startApprovalServer(port: number): ApprovalServerHandle {
         return;
       }
 
-      // GET /api/receipts
+      // GET /api/receipts — raw signed receipts, newest first (verbatim, never mutated).
       if (method === 'GET' && url === '/api/receipts') {
         json(res, 200, recentReceipts.slice(-50).reverse());
+        return;
+      }
+
+      // GET /api/ledger — LedgerRow[] = receipt ⋈ completion. The cockpit's "what was
+      // done" feed: immutable receipt + mutable proof. The cockpit only reads this.
+      if (method === 'GET' && url === '/api/ledger') {
+        json(res, 200, ledgerRows());
+        return;
+      }
+
+      // POST /api/completions — the executor reports an action finished, with proof.
+      // PP owns this write; the cockpit never calls it. The receipt is untouched — only
+      // the linked CompletionRecord changes. Optional bearer auth via PP_COMPLETIONS_TOKEN.
+      if (method === 'POST' && url === '/api/completions') {
+        const expected = process.env.PP_COMPLETIONS_TOKEN;
+        if (expected) {
+          const auth = (req.headers['authorization'] as string | undefined) ?? '';
+          if (auth !== `Bearer ${expected}`) {
+            json(res, 401, { error: 'invalid completions token' });
+            return;
+          }
+        }
+        const raw = await parseBody(req);
+        let body: any;
+        try { body = JSON.parse(raw); } catch { json(res, 400, { error: 'invalid JSON' }); return; }
+        if (!body || typeof body.receipt_id !== 'string') {
+          json(res, 400, { error: 'receipt_id required' });
+          return;
+        }
+        if (!recentReceipts.some((r) => r.receipt_id === body.receipt_id)) {
+          json(res, 404, { error: 'unknown receipt_id' });
+          return;
+        }
+        const rec = recordCompletion({
+          receipt_id: body.receipt_id,
+          status: body.status,
+          proof_type: body.proof_type,
+          proof_url: body.proof_url ?? null,
+          proof_ref: body.proof_ref ?? null,
+          completed_at: body.completed_at ?? null,
+        });
+        process.stderr.write(`[mcp-guard] Completion ${rec.status} for ${rec.receipt_id}${rec.proof_url ? ` → ${rec.proof_url}` : ''}\n`);
+        notifyQueueChange();
+        json(res, 200, rec);
         return;
       }
 

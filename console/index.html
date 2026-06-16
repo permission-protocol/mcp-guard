@@ -304,7 +304,68 @@
     .lane-h{padding:15px 14px 9px}
     .colhead{padding:14px 14px 2px}
     .colhead .sub{display:none}
+    .tabs{order:-1}
+    .ledger{padding:14px 12px}
+    .lcols,.lrow{grid-template-columns:54px 1fr 84px 70px}
+    .lcols span:nth-child(n+5),.lrow .lcell:nth-child(n+5){display:none}
   }
+
+  /* ---- decision packet: acting-as identity + consequence verdict + why-now ---- */
+  .packet{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:-3px 0 10px}
+  .as-chip{display:inline-flex;align-items:center;gap:6px;font-size:10px;padding:3px 9px 3px 7px;border-radius:7px;background:var(--brass-soft);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .as-chip .k{color:var(--ink-faint);text-transform:uppercase;letter-spacing:.6px;font-size:8.5px;font-weight:700}
+  .as-chip b{color:var(--amber);font-family:var(--mono);font-weight:600;font-size:10.5px;letter-spacing:-.1px}
+  .verdict{font-size:8.5px;text-transform:uppercase;letter-spacing:.6px;font-weight:800;padding:3px 8px;border-radius:6px}
+  .verdict.approval_required{background:var(--red-soft);color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line)}
+  .verdict.auto_cleared{background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line)}
+  .verdict.input_required{background:var(--blue-soft);color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue-line)}
+  .verdict.auto_released{background:var(--brass-soft);color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .why{display:flex;gap:6px;font-size:10.5px;color:var(--ink-dim);line-height:1.45;margin:-4px 0 11px}
+  .why .ar{color:var(--ink-faint)}
+
+  /* ---- header view tabs ---- */
+  .tabs{display:flex;gap:3px;background:var(--panel);padding:3px;border-radius:9px;box-shadow:inset 0 0 0 1px var(--line)}
+  .tab{font:inherit;font-size:11.5px;font-weight:650;color:var(--ink-dim);background:transparent;border:0;padding:5px 12px;border-radius:6px;cursor:pointer;letter-spacing:.2px}
+  .tab:hover{color:var(--ink)}
+  .tab.on{color:var(--ink);background:var(--panel-3);box-shadow:inset 0 0 0 1px var(--line-bright)}
+
+  /* ---- ledger view ---- */
+  main.ledger{display:block;padding:20px 26px 60px;max-width:1180px;margin:0 auto;width:100%}
+  main.ledger[hidden]{display:none}  /* beats the display rule above so hidden actually hides */
+  .ledger-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+  .lh-title .t{font-size:17px;font-weight:750;letter-spacing:-.2px}
+  .lh-title .sub{display:block;color:var(--ink-faint);font-size:11px;margin-top:2px}
+  .lh-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .lfilters{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+  .lfilter{font:inherit;font-size:10.5px;font-weight:650;color:var(--ink-dim);background:var(--panel);border:0;box-shadow:inset 0 0 0 1px var(--line);padding:4px 10px;border-radius:7px;cursor:pointer}
+  .lfilter:hover{color:var(--ink)}
+  .lfilter.on{color:var(--ink);background:var(--panel-3);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .lsep{width:1px;height:16px;background:var(--line);margin:0 3px}
+  .lexport{font:inherit;font-size:11px;font-weight:650;color:var(--amber);background:var(--brass-soft);border:0;box-shadow:inset 0 0 0 1px var(--brass-line);padding:6px 13px;border-radius:8px;cursor:pointer}
+  .lexport:hover{background:rgba(227,173,87,.2)}
+  .lcols{display:grid;grid-template-columns:62px 1fr 168px 92px 92px 150px 96px;gap:10px;padding:0 12px 8px;font-size:8.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink-faint);font-weight:700;border-bottom:1px solid var(--line)}
+  .ltable{display:flex;flex-direction:column}
+  .lrow{display:grid;grid-template-columns:62px 1fr 168px 92px 92px 150px 96px;gap:10px;align-items:center;padding:11px 12px;border-bottom:1px solid var(--line-soft)}
+  .lrow:hover{background:var(--panel)}
+  .lrow .when{font-size:10.5px;color:var(--ink-faint)}
+  .l-act{min-width:0}
+  .l-act .lbl{font-size:12px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .l-act .sm{font-size:10px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .l-as{font-family:var(--mono);font-size:10.5px;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .l-dec{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:3px 8px;border-radius:6px;width:fit-content}
+  .l-dec.you{background:var(--blue-soft);color:var(--blue);box-shadow:inset 0 0 0 1px var(--blue-line)}
+  .l-dec.policy{background:var(--brass-soft);color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
+  .l-blast{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:3px 8px;border-radius:6px;width:fit-content}
+  .l-blast.irrev{background:var(--red-soft);color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line)}
+  .l-blast.rev{background:var(--green-soft);color:var(--green);box-shadow:inset 0 0 0 1px var(--green-line)}
+  .l-sig{font-family:var(--mono);font-size:10px;color:var(--ink-dim);cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .l-sig:hover{color:var(--amber)}
+  .l-sig .seal{color:var(--brass)}
+  .proof{font-size:10.5px;font-weight:650;color:var(--green);text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+  .proof:hover{text-decoration:underline}
+  .dstate{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--ink-faint)}
+  .dstate.pending{color:var(--amber)} .dstate.stalled{color:var(--red)} .dstate.done{color:var(--ink-dim)}
+  .lempty{text-align:center;color:var(--ink-faint);font-size:12.5px;padding:60px 20px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -313,6 +374,7 @@
     <div class="brand"><span class="sax">🎷</span><span class="nm">Charles</span><span class="pulse" id="brandPulse"></span></div>
     <div class="headline" id="headline"><b>—</b></div>
     <div class="strip-right">
+      <nav class="tabs" id="viewTabs"><button class="tab on" data-view="cockpit">Cockpit</button><button class="tab" data-view="ledger">Ledger</button></nav>
       <div class="conn" id="conn"><span class="pulse off"></span><span id="connText">connecting…</span></div>
       <div class="posture"><span class="on">Normal</span><span>Cautious</span></div>
       <div class="stat"><span class="v" id="needsCount">0<span class="u"> now</span></span><span class="k">Needs you</span></div>
@@ -320,7 +382,7 @@
     </div>
   </header>
 
-  <main>
+  <main id="cockpitView">
     <!-- LEFT: live + leverage + standing work (static cockpit chrome) -->
     <div class="col">
       <div class="sec">
@@ -387,6 +449,29 @@
         <div class="mem"><span class="pin">📌</span><div class="tag">preference</div><div class="txt">Always use the <b>Tailscale URL</b> for local links.</div></div>
       </div>
     </div>
+  </main>
+
+  <!-- LEDGER: what was done · when · as whom · with receipt + proof -->
+  <main id="ledgerView" class="ledger" hidden>
+    <div class="ledger-head">
+      <div class="lh-title"><span class="t">Ledger</span><span class="sub">what was done · when · as whom · with a receipt and a link to proof</span></div>
+      <div class="lh-tools">
+        <div class="lfilters" id="lfilters">
+          <button class="lfilter on" data-surface="all">All</button>
+          <button class="lfilter" data-surface="social">Social</button>
+          <button class="lfilter" data-surface="code">Code</button>
+          <button class="lfilter" data-surface="deploy">Deploy</button>
+          <button class="lfilter" data-surface="db">DB</button>
+          <span class="lsep"></span>
+          <button class="lfilter" data-decision="you">You</button>
+          <button class="lfilter" data-decision="policy">Auto</button>
+        </div>
+        <button class="lexport" id="lexport">⤓ Export bundle</button>
+      </div>
+    </div>
+    <div class="lcols"><span>when</span><span>action</span><span>acting as</span><span>decision</span><span>blast</span><span>receipt</span><span>proof</span></div>
+    <div class="ltable" id="ltable"></div>
+    <div class="lempty" id="lempty" hidden>No receipts yet. Approve something in the cockpit and it lands here — signed, with a link to proof.</div>
   </main>
 
   <!-- Receipt modal: the proof moment when you authorize something -->
@@ -463,6 +548,52 @@ function consequenceFor(it){
   else if (t.includes("deploy")) txt = "Rollback available";
   else txt = "Reversible — safe to clear";
   return `<div class="conseq safe"><span class="ic">↺</span>${esc(txt)}</div>`;
+}
+
+// ---------- decision packet: the four things you need to decide without leaving the card ----------
+// 1) acting-as identity (answers "do X — as whom?"), 2) consequence-engine verdict,
+// 3) why-now cause. Blast radius (consequenceFor) + exact payload (artifactFor) are already rendered.
+
+// The identity an action runs *as*. Prefer the contract field; otherwise derive a
+// sensible default from the tool + args so "Post to X" always says under which account.
+function actingAsFor(it){
+  if (it.acting_as) return it.acting_as;
+  const t = (it.tool_name || "").toLowerCase();
+  const a = parseArgs(it.args_preview) || {};
+  if (t.includes("post") || t.includes("_x") || t.includes("tweet")) return "@permissionprotocol";
+  if (t.includes("mail")) return "outreach@permissionprotocol.com";
+  if (t.includes("merge") || t.includes("_pr")) return "github-app[bot] · review: you";
+  if (t.includes("migration") || t.includes("migrate") || t.includes("sql")) return (a.database ? a.database + " / " : "") + "migrator";
+  if (t.includes("deploy") || t.includes("ship")) return (a.service ? a.service + " · " : "") + "deploy-bot";
+  if (t.includes("spend") || t.includes("pay") || t.includes("charge")) return "Stripe · ops card";
+  return it.agent_id || "charles";
+}
+
+// Consequence Engine projection — why this is in front of you. denied never reaches the deck.
+function verdictFor(it){
+  if (it.consequence) return it.consequence;
+  if (it.lane === "unblock") return "input_required";
+  if (it.lane === "verify")  return "auto_released";
+  if (it.reversibility === "irreversible") return "approval_required";
+  const a = parseArgs(it.args_preview) || {};
+  if (/prod/i.test((a.env || "").toString())) return "approval_required";
+  return "auto_cleared";
+}
+const VERDICT_LABEL = { approval_required:"approval required", auto_cleared:"policy cleared · you can veto", input_required:"your input only", auto_released:"auto-released" };
+
+// The triggering cause — what's waiting on this. Explicit field wins; no guessing when unknown.
+function whyNowFor(it){ return it.why_now || ""; }
+
+function packetFor(it){
+  const as = esc(actingAsFor(it));
+  const v = verdictFor(it);
+  const vlabel = VERDICT_LABEL[v] || v;
+  const why = whyNowFor(it);
+  return `<div class="packet">`
+    + `<span class="as-chip"><span class="k">acting as</span><b>${as}</b></span>`
+    + `<span class="verdict ${v}">${esc(vlabel)}</span>`
+    + `</div>`
+    + (why ? `<div class="why"><span class="ar">↳</span>${esc(why)}</div>` : "");
 }
 
 // ---------- Slice 2: tool-aware artifact formatters ----------
@@ -702,7 +833,7 @@ function cardHtml(it){
           <span class="when">${esc(when)}</span>
         </div>
         <div class="impact">${esc(it.summary)}</div>
-        ${consequenceFor(it)}
+        ${consequenceFor(it)}${packetFor(it)}
         ${artifact}
         <div class="actions">
           <button class="btn approve holdapprove" data-act="approve" data-hold="1"><span class="holdfill"></span><span class="hl">Hold to approve</span></button>
@@ -732,7 +863,7 @@ function cardHtml(it){
         <span class="when">${esc(when)}</span>
       </div>
       <div class="impact">${esc(it.summary)}</div>
-        ${consequenceFor(it)}
+        ${consequenceFor(it)}${packetFor(it)}
       ${artifact}
       ${countdown}
       <div class="actions">
@@ -753,7 +884,7 @@ function cardHtml(it){
         <span class="when">${esc(when)}</span>
       </div>
       <div class="impact">${esc(it.summary)}</div>
-        ${consequenceFor(it)}
+        ${consequenceFor(it)}${packetFor(it)}
       ${artifact}
       <div class="fact-in">
         <div class="fld">Only you can provide this input →</div>
@@ -781,7 +912,7 @@ function cardHtml(it){
     </div>
     ${confMeter}
     <div class="impact">${esc(it.summary)}</div>
-        ${consequenceFor(it)}
+        ${consequenceFor(it)}${packetFor(it)}
     ${artifact}
     <div class="actions">
       <button class="btn approve" data-act="approve">Looks right</button>
@@ -1070,6 +1201,7 @@ function mockItems(){
       tool_name: "run_sql_migration",
       lane: "decide",
       reversibility: "irreversible",
+      why_now: "Blocks merge_pr #214 — it needs the receipt_id column before it can land",
       summary: "Schema migration on production · adds NOT NULL receipt_id to approvals",
       args_preview: {
         env: "production",
@@ -1111,6 +1243,181 @@ function mockItems(){
 }
 
 // ============================================================
+// LEDGER — what was done, when, as whom, with receipt + proof
+// Reads /api/ledger (LedgerRow[] = { receipt, completion }). Read-only:
+// the cockpit never writes a receipt or a proof; it renders PP's records.
+// ============================================================
+let ledgerData = [];                 // LedgerRow[]
+let ledgerTimer = null;
+const lFilter = { surface: "all", decision: null };
+
+function surfaceOf(row){
+  const t = ((row.receipt.tool_name || row.receipt.action || "") + "").toLowerCase();
+  if (t.includes("post") || t.includes("_x") || t.includes("tweet") || t.includes("mail")) return "social";
+  if (t.includes("merge") || t.includes("_pr") || t.includes("commit")) return "code";
+  if (t.includes("deploy") || t.includes("ship") || t.includes("release")) return "deploy";
+  if (t.includes("sql") || t.includes("migrat")) return "db";
+  return "other";
+}
+// Signer class: a policy principal (auto) vs a named human (you). PP stamps this; we read it.
+function decisionOf(row){
+  const by = (row.receipt.approved_by || "") + "";
+  return /^policy/i.test(by) ? "policy" : "you";
+}
+function blastOf(row){
+  const r = row.receipt;
+  if (r._reversibility) return r._reversibility === "irreversible" ? "irrev" : "rev";
+  return (r.risk_tier === "critical" || r.risk_tier === "high") ? "irrev" : "rev";
+}
+function proofLabel(row){
+  return { social:"post", code:"PR", deploy:"deploy", db:"record", other:"open" }[surfaceOf(row)] || "open";
+}
+function proofCell(row){
+  const c = row.completion;
+  if (c && c.proof_url) return `<a class="proof" href="${esc(c.proof_url)}" target="_blank" rel="noopener">↗ ${esc(proofLabel(row))}</a>`;
+  if (c && c.proof_type === "audit_ref" && c.proof_ref) return `<span class="dstate done" title="no public URL — internal audit reference">${esc(c.proof_ref)}</span>`;
+  const st = (c && c.status) || "pending";
+  if (st === "done") return `<span class="dstate done">done</span>`;
+  return `<span class="dstate ${esc(st)}">${esc(st)}</span>`;
+}
+
+function filteredLedger(){
+  return ledgerData.filter(row => {
+    if (lFilter.surface !== "all" && surfaceOf(row) !== lFilter.surface) return false;
+    if (lFilter.decision && decisionOf(row) !== lFilter.decision) return false;
+    return true;
+  });
+}
+
+function ledgerRowHtml(row){
+  const r = row.receipt;
+  const tool = (r.tool_name || r.action || "").toString();
+  const k = kindFor(tool);
+  const lbl = r._label || k.label;
+  const dec = decisionOf(row);
+  const decTxt = dec === "policy" ? "policy" : "you";
+  const signer = esc(r.approved_by || actingAsFor({ tool_name: tool, args_preview: r.request_json, agent_id: r.actor }));
+  const blast = blastOf(row);
+  const sig = esc((r.receipt_id || "").replace(/^rcpt_dg_/, "rcpt…"));
+  return `<div class="lrow" data-rid="${esc(r.receipt_id)}">`
+    + `<span class="when">${esc(whenFromIso(r.timestamp))}</span>`
+    + `<div class="l-act"><div class="lbl">${esc(lbl)}</div><div class="sm">${esc(r._summary || r.summary || "")}</div></div>`
+    + `<div class="l-as">${signer}</div>`
+    + `<span class="l-dec ${dec}">${decTxt}</span>`
+    + `<span class="l-blast ${blast}">${blast === "irrev" ? "irreversible" : "reversible"}</span>`
+    + `<span class="l-sig" data-rid="${esc(r.receipt_id)}"><span class="seal">✦</span>${sig}</span>`
+    + `<span class="l-proof">${proofCell(row)}</span>`
+    + `</div>`;
+}
+
+function renderLedger(){
+  const rows = filteredLedger();
+  const host = $("ltable"), empty = $("lempty");
+  host.innerHTML = rows.map(ledgerRowHtml).join("");
+  empty.hidden = rows.length > 0;
+  // clicking a receipt id (or row) opens the signed receipt
+  host.querySelectorAll(".l-sig").forEach(el => el.onclick = () => {
+    const row = ledgerData.find(x => x.receipt.receipt_id === el.getAttribute("data-rid"));
+    if (row) showLedgerReceipt(row);
+  });
+}
+
+function showLedgerReceipt(row){
+  const r = row.receipt, c = row.completion;
+  const body = $("receiptBody");
+  const verified = r.signature && r.signature.verified;
+  const proof = c && c.proof_url
+    ? `<a class="proof" href="${esc(c.proof_url)}" target="_blank" rel="noopener">↗ ${esc(c.proof_url)}</a>`
+    : (c && c.proof_ref ? esc(c.proof_ref) : `<span class="dstate ${esc((c&&c.status)||"pending")}">${esc((c&&c.status)||"pending")}</span>`);
+  body.innerHTML =
+    `<div class="verified">${verified ? "✓ Ed25519 signature · verified" : "Ed25519 signature"}</div>` +
+    `<div class="row"><span class="k">Action</span><span class="v">${esc(r._summary || r.summary || r.action || "")}</span></div>` +
+    `<div class="row"><span class="k">Receipt</span><span class="v mono">${esc(r.receipt_id)}</span></div>` +
+    `<div class="row"><span class="k">Acting as</span><span class="v">${esc(r.actor || "")}</span></div>` +
+    `<div class="row"><span class="k">Signed by</span><span class="v">${esc(r.approved_by || "—")}</span></div>` +
+    (r.scope_sha ? `<div class="row"><span class="k">Scope</span><span class="v mono">${esc(r.scope_sha)}</span></div>` : "") +
+    `<div class="row"><span class="k">Authorized</span><span class="v">${esc(whenFromIso(r.timestamp))} ago</span></div>` +
+    `<div class="row"><span class="k">Proof of completion</span><span class="v">${proof}</span></div>` +
+    `<div class="row"><span class="k">Guarantee</span><span class="v">The receipt proves authorization. Completion + proof are tracked separately — the signed receipt is never altered after the fact.</span></div>`;
+  $("receiptModal").classList.add("show");
+}
+
+function loadLedger(){
+  if (MOCK){ ledgerData = mockLedger(); renderLedger(); return; }
+  fetch(`${BASE_URL}/api/ledger`, { cache:"no-store" })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(rows => { ledgerData = Array.isArray(rows) ? rows : []; renderLedger(); })
+    .catch(() => { renderLedger(); });
+}
+
+function exportBundle(){
+  const bundle = { exported_at: new Date().toISOString(), issuer: "permissionprotocol.com", rows: filteredLedger() };
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type:"application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "permission-protocol-receipt-bundle.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Exported ${filteredLedger().length} receipt${filteredLedger().length===1?"":"s"} + proofs`, false, "receipt");
+}
+
+function setView(v){
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.getAttribute("data-view") === v));
+  const onLedger = v === "ledger";
+  // Inline display beats any stylesheet display rule — no specificity war with the `hidden` attr.
+  $("ledgerView").style.display = onLedger ? "block" : "none";
+  $("cockpitView").style.display = onLedger ? "none" : "";
+  $("ledgerView").hidden = !onLedger;
+  $("cockpitView").hidden = onLedger;
+  clearInterval(ledgerTimer); ledgerTimer = null;
+  if (onLedger){
+    loadLedger();
+    if (!MOCK) ledgerTimer = setInterval(loadLedger, 3000); // live refresh while viewing
+  }
+}
+
+(function wireLedger(){
+  document.querySelectorAll(".tab").forEach(t => t.onclick = () => setView(t.getAttribute("data-view")));
+  $("lexport").onclick = exportBundle;
+  $("lfilters").querySelectorAll(".lfilter").forEach(btn => btn.onclick = () => {
+    if (btn.hasAttribute("data-surface")){
+      lFilter.surface = btn.getAttribute("data-surface");
+      $("lfilters").querySelectorAll("[data-surface]").forEach(b => b.classList.toggle("on", b === btn));
+    } else if (btn.hasAttribute("data-decision")){
+      const d = btn.getAttribute("data-decision");
+      lFilter.decision = lFilter.decision === d ? null : d;
+      $("lfilters").querySelectorAll("[data-decision]").forEach(b => b.classList.toggle("on", b.getAttribute("data-decision") === lFilter.decision));
+    }
+    renderLedger();
+  });
+})();
+
+// Mock ledger — a finished-actions trail for screenshots (?mock=1). Shape mirrors
+// the live /api/ledger join exactly: { receipt, completion }.
+function mockLedger(){
+  const ago = (min) => new Date(Date.now() - min*60000).toISOString();
+  const rcpt = (id, o) => Object.assign({
+    receipt_id: id, status:"AUTHORIZED", signature:{ algorithm:"ed25519", key_id:"pp-dev-1", value:"a3f1…", verified:true },
+    risk_tier:"medium", scope_sha:null, request_json:"{}"
+  }, o);
+  const done = (url, type) => ({ status:"done", proof_type:type||"url", proof_url:url||null, proof_ref:null, completed_at: ago(1) });
+  return [
+    { receipt: rcpt("rcpt_dg_mqf3a_7f3e21", { _label:"Posted to X", _summary:"Reply to @nicholascarlini on external governance", action:"post_x", tool_name:"post_x", actor:"@permissionprotocol", approved_by:"Rod", timestamp: ago(14), _reversibility:"irreversible", risk_tier:"high" }),
+      completion: done("https://x.com/permissionprotocol/status/1799455120034", "url") },
+    { receipt: rcpt("rcpt_dg_mqf2b_22ad19", { _label:"Merged PR #214", _summary:"feat(brain): widen corpus to strategy, specs, decisions", action:"merge_pr", tool_name:"merge_pr", actor:"github-app[bot]", approved_by:"Rod", timestamp: ago(31), _reversibility:"reversible", scope_sha:"9c41f0a", risk_tier:"medium" }),
+      completion: done("https://github.com/permission-protocol/mcp-guard/pull/214", "url") },
+    { receipt: rcpt("rcpt_dg_mqf1c_88c402", { _label:"Deployed approval-server", _summary:"v1.9.2 → production · 0 downtime", action:"deploy", tool_name:"deploy", actor:"deploy-bot", approved_by:"Rod", timestamp: ago(52), _reversibility:"reversible", risk_tier:"high" }),
+      completion: done("https://github.com/permission-protocol/mcp-guard/releases/tag/v1.9.2", "url") },
+    { receipt: rcpt("rcpt_dg_mqf0d_1b7e55", { _label:"Prod migration", _summary:"Added NOT NULL receipt_id to approvals", action:"run_sql_migration", tool_name:"run_sql_migration", actor:"pp_prod / migrator", approved_by:"Rod", timestamp: ago(73), _reversibility:"irreversible", risk_tier:"critical" }),
+      completion: { status:"done", proof_type:"audit_ref", proof_url:null, proof_ref:"snapshot:pp_prod@02:00", completed_at: ago(70) } },
+    { receipt: rcpt("rcpt_dg_mqezz_4410af", { _label:"Spend $49 → Instantly", _summary:"Top-up under the <$50 outreach-tooling rule", action:"spend", tool_name:"spend", actor:"Stripe · ops card", approved_by:"policy:spend-under-cap@v3", timestamp: ago(96), _reversibility:"reversible", risk_tier:"low" }),
+      completion: done("https://dashboard.stripe.com/payments/pi_3PqX", "url") },
+    { receipt: rcpt("rcpt_dg_mqeyy_9930bc", { _label:"Sent cold email", _summary:"Outreach to patrik@validio.io", action:"send_email", tool_name:"send_email", actor:"outreach@permissionprotocol.com", approved_by:"Rod", timestamp: ago(8), _reversibility:"reversible", risk_tier:"low" }),
+      completion: { status:"pending", proof_type:"none", proof_url:null, proof_ref:null, completed_at:null } },
+  ];
+}
+
+// ============================================================
 // BOOT
 // ============================================================
 function boot(){
@@ -1125,6 +1432,8 @@ function boot(){
   startSSE();
 }
 boot();
+// deep-link straight to a view: ?view=ledger opens the ledger tab on load
+if (params.get("view") === "ledger") setView("ledger");
 // dev: ?receipt=1 previews the receipt modal
 if (params.get("receipt")) setTimeout(() => showReceipt("rcpt_dg_mqc18a4_7f3e21b9c", items[0]), 350);
 </script>
