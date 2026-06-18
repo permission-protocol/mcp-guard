@@ -6,7 +6,7 @@
 #
 # How it works:
 #   1. The Deck operator approves the `merge_pr` in the console -> mcp-guard issues a
-#      signed receipt scoped `github:merge` to this PR's refs/pull/<n>/merge + merge SHA.
+#      signed receipt scoped `github:merge` to this PR's refs/pull/<n>/merge + head SHA.
 #   2. This job runs `verify-receipt.mjs` with the PR's exact scope_ref/scope_sha.
 #   3. verify-receipt.mjs verifies the Ed25519 signature against the published key,
 #      checks status AUTHORIZED + expiry, and requires an EXACT scope match.
@@ -15,9 +15,11 @@
 #
 # Wire-up:
 #   - Make "Permission Deck Receipt Gate" a required status check in branch protection.
-#   - Supply the receipt: either commit/publish pp-receipts.jsonl, fetch it as an
-#     artifact, or pass PP_RECEIPT_ID via the Deck. The published public key
-#     (.keys/pp-dev-1.pub.pem) is committable-safe; the PRIVATE key never is.
+#   - Supply the receipt: either commit/publish .pp/merge-receipt.json, fetch it as
+#     an artifact, or restore it before verification. The published public key
+#     (.keys/pp-dev-1.pub.pem) is committable-safe, but the verifier must load it
+#     from the protected base branch or another trusted source. The PRIVATE key
+#     never belongs in the repository.
 
 name: Permission Deck Receipt Gate
 
@@ -43,22 +45,24 @@ jobs:
           npm ci
           npm run build
 
-      # The receipt store (pp-receipts.jsonl) and the published public key
-      # (.keys/pp-dev-1.pub.pem) must be present in the workspace. In a real
-      # deployment these are produced by the Deck and fetched here (artifact,
-      # checkout of a receipts repo, or an API pull). For the reference flow we
-      # assume they are checked in / restored before this step.
+      # The receipt file (.pp/merge-receipt.json) must be present in the
+      # workspace. In a real deployment it is produced by the Deck and fetched
+      # here (artifact, checkout of a receipts repo, or an API pull). The public
+      # key is loaded from the protected base branch below.
+
+      - name: Load trusted Permission Deck public key
+        run: |
+          mkdir -p "$RUNNER_TEMP/permission-deck"
+          git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          git show "FETCH_HEAD:.keys/pp-dev-1.pub.pem" > "$RUNNER_TEMP/permission-deck/pp-dev-1.pub.pem"
 
       - name: Verify Permission Deck receipt (offline, fail-closed)
-        env:
-          # The Deck stamps the approved merge's receipt id onto the PR; surface it here.
-          PP_RECEIPT_ID: ${{ github.event.pull_request.head.sha }}
         run: |
           node scripts/verify-receipt.mjs \
-            --receipt-id "${PP_RECEIPT_ID}" \
-            --pubkey .keys/pp-dev-1.pub.pem \
+            --receipt-file .pp/merge-receipt.json \
+            --pubkey "$RUNNER_TEMP/permission-deck/pp-dev-1.pub.pem" \
             --scope "github:merge" \
             --scope-ref "refs/pull/${{ github.event.pull_request.number }}/merge" \
-            --scope-sha "${{ github.event.pull_request.merge_commit_sha }}"
+            --scope-sha "${{ github.event.pull_request.head.sha }}"
         # Exit 0 -> gate green -> merge allowed.
         # Exit non-zero -> ::error:: "No receipt = No deploy" -> required check red -> merge blocked.
