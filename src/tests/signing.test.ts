@@ -73,7 +73,13 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
       'enforce',
       { scope: 'github:merge', scope_ref: 'refs/pull/16/merge', scope_sha: 'abc123' },
     );
-    const expectedBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}.scope=github:merge.scope_ref=refs/pull/16/merge.scope_sha=abc123`;
+    const expectedBytes = `pp-receipt-scope-v2:${JSON.stringify({
+      receipt_id: receipt.receipt_id,
+      request_payload_hash: receipt.request_payload_hash,
+      scope: 'github:merge',
+      scope_ref: 'refs/pull/16/merge',
+      scope_sha: 'abc123',
+    })}`;
     assert.equal(buildSigningBytes(receipt), expectedBytes);
 
     signReceipt(receipt);
@@ -86,6 +92,39 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
     const scopelessBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
     assert.equal(
       edVerify(null, Buffer.from(scopelessBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
+      false,
+    );
+  });
+
+  it('Slice 2: scoped signing bytes are not ambiguous when scope fields contain delimiters', () => {
+    const receipt = createReceipt(
+      'agent-1',
+      'merge_pr',
+      heldDecision,
+      { pr_number: 32 },
+      'infra-mcp',
+      'enforce',
+      {
+        scope: 'github:merge',
+        scope_ref: 'refs/pull/32/merge.scope_sha=deadbeef',
+        scope_sha: 'trail',
+      },
+    );
+    const originalBytes = buildSigningBytes(receipt);
+    const tamperedBytes = buildSigningBytes({
+      ...receipt,
+      scope_ref: 'refs/pull/32/merge',
+      scope_sha: 'deadbeef.scope_sha=trail',
+    });
+    assert.notEqual(tamperedBytes, originalBytes);
+
+    signReceipt(receipt);
+    assert.equal(
+      edVerify(null, Buffer.from(originalBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
+      true,
+    );
+    assert.equal(
+      edVerify(null, Buffer.from(tamperedBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
       false,
     );
   });
