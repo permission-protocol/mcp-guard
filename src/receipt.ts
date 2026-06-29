@@ -182,18 +182,24 @@ function buildArgsPatch(toolName: string, requestPayload: unknown): string {
  * Permission Deck Slice 2 — the canonical signing bytes for a receipt.
  *
  * Binds the receipt to its id, its request payload hash, AND (when present) its scope.
- * The scope fields are appended deterministically so the same input always produces the
- * same bytes, and so the offline verifier can reconstruct them from the receipt alone.
+ * The scope fields are encoded as a versioned JSON envelope so the same input always
+ * produces the same bytes, and so the offline verifier can reconstruct them from the
+ * receipt alone without delimiter ambiguity.
  * Slice-1 (no-scope) receipts produce the original `<id>.<hash>` bytes unchanged, keeping
  * old signatures valid and back-compatible.
  */
 export function buildSigningBytes(receipt: Pick<Receipt, 'receipt_id' | 'request_payload_hash' | 'scope' | 'scope_ref' | 'scope_sha'>): string {
-  let bytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
   const hasScope = receipt.scope || receipt.scope_ref || receipt.scope_sha;
-  if (hasScope) {
-    bytes += `.scope=${receipt.scope ?? ''}.scope_ref=${receipt.scope_ref ?? ''}.scope_sha=${receipt.scope_sha ?? ''}`;
+  if (!hasScope) {
+    return `${receipt.receipt_id}.${receipt.request_payload_hash}`;
   }
-  return bytes;
+  return `pp-receipt-scope-v2:${JSON.stringify({
+    receipt_id: receipt.receipt_id,
+    request_payload_hash: receipt.request_payload_hash,
+    scope: receipt.scope ?? '',
+    scope_ref: receipt.scope_ref ?? '',
+    scope_sha: receipt.scope_sha ?? '',
+  })}`;
 }
 
 export function createReceipt(
