@@ -34,7 +34,7 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
     const receipt = createReceipt('agent-1', 'send_email', heldDecision, { body: 'draft' }, 'actions-mcp', 'enforce');
     signReceipt(receipt);
 
-    const signingBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
+    const signingBytes = buildSigningBytes(receipt);
     const ok = edVerify(
       null,
       Buffer.from(signingBytes),
@@ -58,12 +58,20 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
     assert.equal(ok, false, 'tampered payload must not verify');
   });
 
-  it('Slice 2: a no-scope receipt signs over the original <id>.<hash> bytes (back-compat)', () => {
+  it('Slice 2: a no-scope receipt signs over the authorization envelope', () => {
     const receipt = createReceipt('agent-1', 'send_email', heldDecision, { body: 'draft' }, 'actions-mcp', 'enforce');
-    assert.equal(buildSigningBytes(receipt), `${receipt.receipt_id}.${receipt.request_payload_hash}`);
+    signReceipt(receipt);
+    const envelope = JSON.parse(buildSigningBytes(receipt));
+    assert.equal(envelope.receipt_id, receipt.receipt_id);
+    assert.equal(envelope.request_payload_hash, receipt.request_payload_hash);
+    assert.equal(envelope.status, 'AUTHORIZED');
+    assert.equal(envelope.action, 'send_email');
+    assert.equal(envelope.resource, 'actions-mcp');
+    assert.equal(envelope.scope, null);
+    assert.equal(envelope.expires_at, null);
   });
 
-  it('Slice 2: a scoped receipt folds scope into the signed bytes, and the signature covers it', () => {
+  it('Slice 2: a scoped receipt folds scope into the signed envelope, and the signature covers it', () => {
     const receipt = createReceipt(
       'agent-1',
       'merge_pr',
@@ -73,16 +81,20 @@ describe('Receipt signing (Permission Deck Slice 1)', () => {
       'enforce',
       { scope: 'github:merge', scope_ref: 'refs/pull/16/merge', scope_sha: 'abc123' },
     );
-    const expectedBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}.scope=github:merge.scope_ref=refs/pull/16/merge.scope_sha=abc123`;
-    assert.equal(buildSigningBytes(receipt), expectedBytes);
-
     signReceipt(receipt);
+    const signingBytes = buildSigningBytes(receipt);
+    const envelope = JSON.parse(signingBytes);
+    assert.equal(envelope.scope, 'github:merge');
+    assert.equal(envelope.scope_ref, 'refs/pull/16/merge');
+    assert.equal(envelope.scope_sha, 'abc123');
+    assert.equal(envelope.status, 'AUTHORIZED');
+
     // The real (scope-covering) bytes verify.
     assert.equal(
-      edVerify(null, Buffer.from(expectedBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
+      edVerify(null, Buffer.from(signingBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
       true,
     );
-    // The old (scope-less) bytes do NOT — proving scope is bound into the signature.
+    // The old vulnerable bytes do NOT — proving the full envelope is bound into the signature.
     const scopelessBytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
     assert.equal(
       edVerify(null, Buffer.from(scopelessBytes), getPublicKeyPem(), Buffer.from(receipt.signature.value!, 'hex')),
