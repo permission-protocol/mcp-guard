@@ -1,0 +1,5 @@
+default_action: block
+rules:
+  - id: require-approval-outreach-blitz
+    tool: send_outreach_blitz
+    action: require_approval
