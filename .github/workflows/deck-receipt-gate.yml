@@ -2,11 +2,13 @@
 #
 # This repo gates its OWN merges. A PR cannot go green unless a scoped, signed
 # Permission Deck receipt exists at .pp/merge-receipt.json and verifies OFFLINE
-# against the committed public key (.pp/pp-dev-1.pub.pem). No receipt, or a receipt
-# scoped to a different PR, fails closed. No receipt = No merge. This is intentional.
+# against the protected base branch public key (.pp/pp-dev-1.pub.pem). No receipt,
+# a receipt signed by any other key, or a receipt scoped to a different PR/head
+# fails closed. No receipt = No merge. This is intentional.
 #
 # The receipt is produced by a human approving the merge_pr in the Permission Deck
-# console; approval issues an Ed25519 receipt scoped github:merge -> refs/pull/<n>/merge.
+# console; approval issues an Ed25519 receipt scoped github:merge ->
+# refs/pull/<n>/merge plus the exact PR head SHA.
 
 name: Permission Deck Receipt Gate
 
@@ -32,12 +34,19 @@ jobs:
           npm ci
           npm run build
 
+      - name: Load trusted Permission Deck public key
+        run: |
+          mkdir -p "$RUNNER_TEMP/permission-deck"
+          git fetch --depth=1 origin "${{ github.event.pull_request.base.ref }}"
+          git show "FETCH_HEAD:.pp/pp-dev-1.pub.pem" > "$RUNNER_TEMP/permission-deck/pp-dev-1.pub.pem"
+
       - name: Verify Permission Deck receipt (offline, fail-closed)
         run: |
           echo "Gating merge of PR #${{ github.event.pull_request.number }}"
           node scripts/verify-receipt.mjs \
             --receipt-file .pp/merge-receipt.json \
-            --pubkey .pp/pp-dev-1.pub.pem \
+            --pubkey "$RUNNER_TEMP/permission-deck/pp-dev-1.pub.pem" \
             --scope "github:merge" \
-            --scope-ref "refs/pull/${{ github.event.pull_request.number }}/merge"
+            --scope-ref "refs/pull/${{ github.event.pull_request.number }}/merge" \
+            --scope-sha "${{ github.event.pull_request.head.sha }}"
         # Exit 0 -> green -> merge allowed. Non-zero -> "No receipt = No merge" -> blocked.
