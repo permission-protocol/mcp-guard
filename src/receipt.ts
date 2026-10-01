@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
+import stableStringify from 'fast-json-stable-stringify';
 import type { Decision } from './engine.js';
 import { signReceiptPayload } from './signer.js';
 
@@ -181,19 +182,45 @@ function buildArgsPatch(toolName: string, requestPayload: unknown): string {
 /**
  * Permission Deck Slice 2 — the canonical signing bytes for a receipt.
  *
- * Binds the receipt to its id, its request payload hash, AND (when present) its scope.
- * The scope fields are appended deterministically so the same input always produces the
- * same bytes, and so the offline verifier can reconstruct them from the receipt alone.
- * Slice-1 (no-scope) receipts produce the original `<id>.<hash>` bytes unchanged, keeping
- * old signatures valid and back-compatible.
+ * Bind the full authorization envelope, not only the request hash. The offline verifier
+ * trusts these fields when deciding whether a receipt authorizes an action, so changing
+ * any of them after signing must invalidate the Ed25519 signature.
  */
-export function buildSigningBytes(receipt: Pick<Receipt, 'receipt_id' | 'request_payload_hash' | 'scope' | 'scope_ref' | 'scope_sha'>): string {
-  let bytes = `${receipt.receipt_id}.${receipt.request_payload_hash}`;
-  const hasScope = receipt.scope || receipt.scope_ref || receipt.scope_sha;
-  if (hasScope) {
-    bytes += `.scope=${receipt.scope ?? ''}.scope_ref=${receipt.scope_ref ?? ''}.scope_sha=${receipt.scope_sha ?? ''}`;
-  }
-  return bytes;
+export function buildSigningBytes(receipt: Receipt): string {
+  return stableStringify({
+    receipt_id: receipt.receipt_id,
+    status: receipt.status,
+    action: receipt.action,
+    resource: receipt.resource,
+    scope: receipt.scope,
+    scope_ref: receipt.scope_ref,
+    scope_sha: receipt.scope_sha,
+    actor: receipt.actor,
+    approved_by: receipt.approved_by,
+    approved_by_avatar: receipt.approved_by_avatar,
+    approved_by_url: receipt.approved_by_url,
+    policy: receipt.policy,
+    risk_tier: receipt.risk_tier,
+    summary: receipt.summary,
+    timestamp: receipt.timestamp,
+    expires_at: receipt.expires_at,
+    issuer: receipt.issuer,
+    receipt_version: receipt.receipt_version,
+    url: receipt.url,
+    enrichmentSnapshot: receipt.enrichmentSnapshot,
+    diff: receipt.diff,
+    policy_details: receipt.policy_details,
+    request_json: receipt.request_json,
+    viewer_url: receipt.viewer_url,
+    agent_id: receipt.agent_id,
+    tool_name: receipt.tool_name,
+    decision: receipt.decision,
+    reason: receipt.reason,
+    rule_id: receipt.rule_id,
+    request_payload_hash: receipt.request_payload_hash,
+    target_server: receipt.target_server,
+    mode: receipt.mode,
+  });
 }
 
 export function createReceipt(
@@ -383,6 +410,13 @@ export function signReceipt(
   receipt: Receipt,
   approvedBy: string = 'permission-deck',
 ): Receipt {
+  receipt.status = 'AUTHORIZED';
+  receipt.approved_by = approvedBy;
+  receipt.policy_details = {
+    ...receipt.policy_details,
+    outcome: 'allowed',
+  };
+  receipt.decision = 'allowed';
   const signingBytes = buildSigningBytes(receipt);
   const sig = signReceiptPayload(signingBytes);
   receipt.signature = {
@@ -391,13 +425,6 @@ export function signReceipt(
     value: sig.value,
     verified: sig.verified,
   };
-  receipt.status = 'AUTHORIZED';
-  receipt.approved_by = approvedBy;
-  receipt.policy_details = {
-    ...receipt.policy_details,
-    outcome: 'allowed',
-  };
-  receipt.decision = 'allowed';
   return receipt;
 }
 

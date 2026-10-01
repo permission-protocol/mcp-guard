@@ -34,6 +34,10 @@ function signedMergeReceipt(scope: ScopeBinding = MERGE_SCOPE) {
   return signReceipt(receipt, 'permission-deck-operator');
 }
 
+function cloneReceipt<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 describe('Slice 2 — scope-bound receipts & offline verifier', () => {
   it('scope is carried on the receipt and folded into the signed payload', () => {
     const receipt = signedMergeReceipt();
@@ -92,14 +96,65 @@ describe('Slice 2 — scope-bound receipts & offline verifier', () => {
   });
 
   it('REFUSES an expired receipt', () => {
-    const receipt = signedMergeReceipt();
+    const receipt = createReceipt(
+      'agent-1',
+      'merge_pr',
+      held,
+      { pr_number: 16, scope_sha: MERGE_SCOPE.scope_sha },
+      'infra-mcp',
+      'enforce',
+      MERGE_SCOPE,
+    );
     receipt.expires_at = new Date(Date.now() - 60_000).toISOString();
+    signReceipt(receipt, 'permission-deck-operator');
     const pem = getPublicKeyPem();
     const result = verifyReceiptOffline(receipt, pem);
     assert.equal(result.valid, false);
     assert.ok(
       result.reasons.some((r) => r.includes('PP_EXPIRED')),
       `expected expiry failure, got: ${result.reasons.join('; ')}`,
+    );
+  });
+
+  it('REFUSES a receipt whose expiry was removed after signing', () => {
+    const receipt = createReceipt(
+      'agent-1',
+      'merge_pr',
+      held,
+      { pr_number: 16, scope_sha: MERGE_SCOPE.scope_sha },
+      'infra-mcp',
+      'enforce',
+      MERGE_SCOPE,
+    );
+    receipt.expires_at = new Date(Date.now() - 60_000).toISOString();
+    signReceipt(receipt, 'permission-deck-operator');
+
+    const tampered = cloneReceipt(receipt);
+    tampered.expires_at = null;
+
+    const pem = getPublicKeyPem();
+    const result = verifyReceiptOffline(tampered, pem);
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => r.includes('PP_INVALID_SIGNATURE')),
+      `expected signature failure, got: ${result.reasons.join('; ')}`,
+    );
+  });
+
+  it('REFUSES a receipt whose action metadata was tampered after signing', () => {
+    const receipt = signedMergeReceipt();
+    const tampered = cloneReceipt(receipt);
+    tampered.action = 'deploy_production';
+    tampered.resource = 'prod';
+    tampered.diff.files[0].patch = 'tampered patch';
+    tampered.policy_details.decision_reason = 'tampered reason';
+
+    const pem = getPublicKeyPem();
+    const result = verifyReceiptOffline(tampered, pem, MERGE_SCOPE);
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => r.includes('PP_INVALID_SIGNATURE')),
+      `expected signature failure, got: ${result.reasons.join('; ')}`,
     );
   });
 
