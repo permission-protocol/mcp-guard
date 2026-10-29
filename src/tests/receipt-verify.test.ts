@@ -150,4 +150,12 @@ describe('Offline receipt verification (v2)', () => {
     assert.equal(again.valid, false);
     assert.ok(again.reasons.some((x) => x.startsWith('PP_REPLAYED')));
   });
+
+  it('a full replay cache refuses new receipts instead of forgetting used ones', () => {
+    const cache = new ReplayCache(1);
+    assert.equal(verifyReceipt(scoped(), keys, { replayCache: cache }).valid, true);
+    const second = verifyReceipt(scoped(), keys, { replayCache: cache });
+    assert.equal(second.valid, false);
+    assert.ok(second.reasons.some((x) => x.startsWith('PP_REPLAY_CACHE_FULL')));
+  });
 });

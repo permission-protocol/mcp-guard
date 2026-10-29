@@ -126,8 +126,16 @@ export async function verifyAuthorization(
   }
 
   // 7. Replay Protection (Single-use)
-  if (!usedNonces.use(`${payload.request_id}:${payload.nonce}`)) {
+  // Remember the authorization until both the token and the payload have expired.
+  const outcome = usedNonces.use(
+    `${payload.request_id}:${payload.nonce}`,
+    Math.max(token.expires_at, payload.expires_at) * 1000,
+  );
+  if (outcome === 'replayed') {
     throw new Error('Replay detected - authorization has already been used');
+  }
+  if (outcome === 'full') {
+    throw new Error('Replay cache full - refusing authorization rather than forgetting a used one');
   }
 
   return true;
