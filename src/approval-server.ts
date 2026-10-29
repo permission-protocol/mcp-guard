@@ -80,6 +80,8 @@ export interface QueueItem {
   args_preview: string;
   /** Every argument the server will receive, so the approver sees all of it. */
   args_full: string;
+  /** What an approval authorizes, when the receipt is scoped (merge, migration, deploy). */
+  scope?: { scope: string; ref: string | null; sha: string | null };
   agent_id: string;
   rule_id: string | null;
   status: PendingAction['status'];
@@ -102,6 +104,7 @@ export function toQueueItem(p: PendingAction): QueueItem {
     summary: p.summary,
     args_preview: p.args_preview,
     args_full: JSON.stringify(p.tool_args, null, 2),
+    ...(p.scope ? { scope: { scope: p.scope, ref: p.scope_ref ?? null, sha: p.scope_sha ?? null } } : {}),
     agent_id: p.agent_id,
     rule_id: p.rule_id,
     status: p.status,

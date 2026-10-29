@@ -17,7 +17,7 @@ Fixes the findings of the October 2026 MCP Guard audit.
 - **Post-release undo is removed** (`/api/undo` returns 404). Use Hold before a countdown releases. Verify-lane items can only be acknowledged.
 - **Receipt v2.** New signed envelope; v1 receipts are rejected by the verifier. Receipts carry `args_sha256` and argument names, never raw arguments.
 - **Keys moved** from `./.keys` to `~/.config/mcp-guard/keys` (or `$PP_KEYS_DIR`). Key ids are now `pp-dev-<fingerprint>`. Re-export and re-pin the public key: `mcp-guard export-key`.
-- **`verify` requires `--pubkey`.** The verifier no longer generates or discovers a key.
+- **`verify` requires `--pubkey` and `--scope`.** The verifier no longer generates or discovers a key, and empty `--scope-*` values are errors.
 - **GitHub commit-status poster removed** (`PP_GITHUB_TOKEN`). Gate merges with the Permission Protocol GitHub App's `permission-protocol/approval` check.
 
 ### Added
@@ -25,7 +25,9 @@ Fixes the findings of the October 2026 MCP Guard audit.
 - `mcp-guard verify` and `mcp-guard export-key` subcommands.
 - `--operator <name>`: approvals record `{kind: human, id, via: local-token}`; countdown and standing-rule releases record `{kind: policy}`.
 - `approval_ttl_seconds` and `receipt_ttl_seconds` config keys (default 900 each). Expired held requests answer the agent with `-32004`; denials with `-32003`.
-- The approval UI shows every argument the server will receive (`args_full`).
+- The approval UI and the Permission Deck show every argument the server will receive (`args_full`) and the scope an approval signs for (`scope`).
+- The wrapped server no longer inherits `PP_*` environment variables (approval token, webhook secret, receipt token).
+- `merge_pr` scope ref is derived only from the PR number; `_pp.requires_input` no longer moves an irreversible hold out of the Decide lane.
 - GitHub webhook deduplicates `X-GitHub-Delivery`.
 - `templates/github-actions/receipt-gate.yml`: a deploy gate that takes its verifier, key and receipt only from trusted sources.
 - CI workflow running build, tests and the end-to-end demo drivers.

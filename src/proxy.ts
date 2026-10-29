@@ -103,7 +103,7 @@ export function deriveScope(toolName: string, toolArgs: Record<string, unknown> 
       const prNumber = str(args.pr_number ?? args.pr ?? args.number);
       return {
         scope: 'github:merge',
-        scope_ref: str(args.scope_ref) ?? (prNumber !== undefined ? `refs/pull/${prNumber}/merge` : undefined),
+        scope_ref: prNumber !== undefined ? `refs/pull/${prNumber}/merge` : undefined,
         scope_sha: str(args.scope_sha ?? args.head_sha ?? args.sha),
       };
     }
@@ -142,7 +142,10 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
   const targetServer = serverCommand.slice(0, 2).map((p) => basename(p)).join(' ');
   const approvalEnabled = opts.approvalPort !== undefined;
 
-  const child: ChildProcess = spawn(serverCommand[0], serverCommand.slice(1), { stdio: ['pipe', 'pipe', 'inherit'] });
+  // The server (and anything the agent can make it echo) never sees the guard's own
+  // secrets: approval token, webhook secret, receipt token, key location.
+  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('PP_')));
+  const child: ChildProcess = spawn(serverCommand[0], serverCommand.slice(1), { stdio: ['pipe', 'pipe', 'inherit'], env: childEnv });
   child.on('error', (err) => {
     process.stderr.write(`[mcp-guard] Failed to start server: ${err.message}\n`);
     process.exit(1);
@@ -321,6 +324,7 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
       resolve: toClient,
       enrichment: buildEnrichment(decision, label, forwardArgs, rule),
       ttlSeconds: config.approval_ttl_seconds,
+      ...(tool ? deriveScope(tool, forwardArgs) : {}),
     });
     notifyQueueChange();
     process.stderr.write(`[mcp-guard] Held "${label}" for approval (${pending.id})\n`);

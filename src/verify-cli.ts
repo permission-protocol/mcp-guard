@@ -16,7 +16,7 @@ import type { PinnedKeys } from './verify-core.js';
  * 2 = missing input. "No receipt = No deploy. This is intentional."
  */
 
-const USAGE = 'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --pubkey <pem> [--pubkey <pem> ...] [--scope s] [--scope-ref r] [--scope-sha h] [--allow-policy-approval]';
+const USAGE = 'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --pubkey <pem> [--pubkey <pem> ...] --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]';
 
 function ciError(message: string): void {
   console.log(`::error::${message.replace(/\n/g, '%0A')}`);
@@ -85,11 +85,14 @@ export function runVerify(argv: string[]): number {
     }
   }
 
-  const expected: ExpectedScope = {};
-  if (flags.scope) expected.scope = flags.scope;
+  for (const f of ['scope', 'scope-ref', 'scope-sha']) {
+    if (f in flags && !flags[f]) return fail(`--${f} needs a value`);
+  }
+  if (!flags.scope) return fail('--scope is required: a gate must say which action it authorizes');
+  const expected: ExpectedScope = { scope: flags.scope };
   if (flags['scope-ref']) expected.scope_ref = flags['scope-ref'];
   if (flags['scope-sha']) expected.scope_sha = flags['scope-sha'];
-  const hasExpected = Object.keys(expected).length > 0;
+  const hasExpected = true;
 
   const result = verifyReceipt(receipt, keys, {
     ...(hasExpected ? { expected } : {}),

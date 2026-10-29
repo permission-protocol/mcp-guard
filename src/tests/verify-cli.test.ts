@@ -60,6 +60,12 @@ describe('mcp-guard verify (receipt gate CLI)', () => {
     assert.equal(quiet(() => gate(file, attackerPem)), 0);
   });
 
+  it('refuses to run without a scope expectation or with an empty one', () => {
+    const file = write('ok2.json', deployReceipt({ kind: 'human', id: 'rod', via: 'local-token' }));
+    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--pubkey', pinned])), 2);
+    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--pubkey', pinned, '--scope', 'deploy:production', '--scope-sha', ''])), 2);
+  });
+
   it('missing input exits 2, and --pubkey is required', () => {
     assert.equal(quiet(() => runVerify(['--receipt-file', join(dir, 'nope.json'), '--pubkey', pinned])), 2);
     assert.equal(quiet(() => runVerify(['--receipt-file', write('x.json', {})])), 2);

@@ -60,8 +60,9 @@ export function classify(
   const reversibility: Reversibility = rule?.reversibility ?? 'irreversible'; // fail safe: unknown = irreversible
   const confidence = meta.confidence !== undefined ? { confidence: meta.confidence } : {};
 
-  // 1) Needs an input only the human has -> Unblock. No countdown.
-  if (meta.requires_input) {
+  // 1) Needs an input only the human has -> Unblock. No countdown. An irreversible hold
+  //    stays a Decide hard stop whatever the agent claims.
+  if (meta.requires_input && reversibility === 'reversible') {
     return {
       ...base,
       lane: 'unblock',
@@ -90,7 +91,7 @@ export function classify(
         lane: 'verify',      // ...but surface for post-hoc confirmation
         reversibility,
         ...confidence,
-        reason: `${base.reason}; $${amount} under $${rule.cap_usd} cap — acted, routed to Verify`,
+        reason: `${base.reason}; under the $${rule.cap_usd} cap — acted, routed to Verify`,
       };
     }
     return {
@@ -98,7 +99,7 @@ export function classify(
       lane: 'decide',
       reversibility: 'irreversible', // over-cap spend is treated as a hard stop
       ...confidence,
-      reason: `${base.reason}; $${amount} at/over $${rule.cap_usd} cap — hard stop`,
+      reason: `${base.reason}; at or over the $${rule.cap_usd} cap — hard stop`,
     };
   }
 

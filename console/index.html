@@ -190,6 +190,9 @@
   .btn.approve{background:linear-gradient(180deg,#e9ba62,#c8913f);color:#1c1305;font-weight:700;box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 6px 16px -11px rgba(227,173,87,.9)}
   .btn.approve:hover{background:linear-gradient(180deg,#f0c474,#d49b46);box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 8px 20px -10px rgba(227,173,87,1)}
   .btn.hold{background:transparent;color:var(--red);box-shadow:inset 0 0 0 1px var(--red-line);flex:0 0 64px}
+  .allargs{margin-top:10px}
+  .allargs-h{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:4px}
+  .allargs pre{margin:0;max-height:180px;overflow:auto;padding:8px 10px;border-radius:8px;background:var(--bg-2);border:1px solid var(--line-soft);color:var(--ink-dim);font:12px/1.45 var(--mono);white-space:pre-wrap;word-break:break-word}
   .btn.hold:hover{background:var(--red-soft)}
   .btn.deny{background:transparent;color:var(--ink-faint);box-shadow:inset 0 0 0 1px var(--line);flex:0 0 60px}
   .btn.deny:hover{color:var(--ink-dim);box-shadow:inset 0 0 0 1px var(--line-bright)}
@@ -652,10 +655,23 @@ function render(){
   bindActions();
 }
 
+// Every card shows exactly what an approval authorizes: the scope the receipt binds
+// (when there is one) and every argument the server will receive. The tool-aware
+// artifact above them is a reading aid, never the whole story.
+function artifactFor(it){
+  const scope = it.scope
+    ? `<div class="meta-row">${metaTag("signs for", it.scope.scope, "env prod")}${it.scope.ref ? metaTag("ref", it.scope.ref, "") : ""}${it.scope.sha ? metaTag("sha", it.scope.sha, "") : ""}</div>`
+    : "";
+  const all = it.args_full != null
+    ? `<div class="allargs"><div class="allargs-h">All arguments the server receives</div><pre>${esc(it.args_full)}</pre></div>`
+    : "";
+  return scope + artifactBody(it) + all;
+}
+
 // Build the artifact block (+ optional meta row) for a card, tool-aware.
 // Falls back to the Slice-1 generic literal preview when the tool isn't a
 // code/infra tool or args_preview isn't structured.
-function artifactFor(it){
+function artifactBody(it){
   const tool = (it.tool_name || "").toLowerCase();
   const args = parseArgs(it.args_preview);
 
@@ -772,6 +788,7 @@ function cardHtml(it){
       <div class="fact-in">
         <div class="fld">Only you can provide this input →</div>
         <button class="btn primary" data-act="approve" style="flex:0 0 96px">Provide</button>
+        <button class="btn deny" data-act="deny" style="flex:0 0 72px">Deny</button>
       </div>
     </div>`;
   }

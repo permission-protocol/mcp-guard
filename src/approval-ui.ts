@@ -129,6 +129,10 @@ export function getApprovalHTML(): string {
       if (p.countdown_remaining != null) meta.appendChild(el('span', null, 'Auto-releases in ' + p.countdown_remaining + 's'));
       card.appendChild(meta);
       card.appendChild(el('div', 'summary', p.summary));
+      if (p.scope) {
+        card.appendChild(el('div', 'meta', 'Approving signs for: ' + p.scope.scope
+          + (p.scope.ref ? ' · ' + p.scope.ref : '') + (p.scope.sha ? ' @ ' + p.scope.sha : '')));
+      }
       card.appendChild(el('div', 'args-content', p.args_full || p.args_preview));
       var actions = el('div', 'actions');
       var approve = el('button', 'btn btn-approve', p.acted ? 'Acknowledge' : 'Approve');

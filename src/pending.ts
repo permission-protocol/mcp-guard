@@ -190,6 +190,10 @@ function baseAction(kind: PendingKind, input: BaseInput): PendingAction {
 }
 
 export interface HeldInput extends BaseInput {
+  /** The scope the release receipt will bind, shown to the approver. */
+  scope?: string;
+  scope_ref?: string;
+  scope_sha?: string;
   forwardLine: string;
   jsonrpcId: JsonRpcId;
   resolve: (responseLine: string) => void;
@@ -202,6 +206,9 @@ export function addPending(input: HeldInput): PendingAction {
   action.forwardLine = input.forwardLine;
   action.jsonrpcId = input.jsonrpcId;
   action.resolve = input.resolve;
+  if (input.scope) action.scope = input.scope;
+  if (input.scope_ref) action.scope_ref = input.scope_ref;
+  if (input.scope_sha) action.scope_sha = input.scope_sha;
   const countdown = input.enrichment.countdown_seconds;
   if (countdown !== undefined) action.countdown_seconds = countdown;
 

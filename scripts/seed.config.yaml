@@ -20,3 +20,4 @@ rules:
   - id: reauth
     tool: instantly_reauth
     action: require_approval
+    reversibility: reversible

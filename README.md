@@ -104,7 +104,7 @@ rules:
     amount_arg: amount_usd     # required with cap_usd: the argument the tool actually charges
 ```
 
-The loader is strict: an unknown key, a duplicate rule, a countdown on an irreversible rule, or `cap_usd` without `amount_arg` fails at startup instead of being ignored. A missing or non-numeric amount is a hard stop. Agent metadata under `_pp` (`confidence`, `requires_input`) can route a card to a different lane but can never turn a held or blocked call into an allowed one.
+The loader is strict: an unknown key, a duplicate rule, a countdown on an irreversible rule, or `cap_usd` without `amount_arg` fails at startup instead of being ignored. A missing or non-numeric amount is a hard stop. Agent metadata under `_pp` (`confidence`, `requires_input`) can route a card to a different lane but can never turn a held or blocked call into an allowed one, and `requires_input` never changes how an irreversible hold is presented.
 
 ### Modes
 
@@ -156,7 +156,7 @@ Every decision produces a signed receipt (v2): a small **envelope** that is sign
 
 - The signature covers `pp-mcp-guard-receipt-v2\n` + canonical JSON of the whole envelope, so no authority field can be edited or re-split.
 - `approval` says who authorized the action: `human` (the approval UI operator) or `policy` (a rule, a standing spend cap, or a countdown).
-- Receipts never contain raw arguments — only `args_sha256` and the argument names. Raw arguments appear only in the authenticated approval UI.
+- Receipts never contain raw arguments — only `args_sha256` and the argument names, plus the scope identifiers a scoped receipt is bound to (environment, ref, commit SHA). Raw arguments appear only in the authenticated approval UI, which shows every argument and the scope an approval signs for.
 - The signing key lives in `~/.config/mcp-guard/keys` (or `$PP_KEYS_DIR`), never in the working directory. Its id is derived from the public key. MCP Guard refuses to start if the private key is readable by others.
 
 Receipts are written to stderr (one summary line), `pp-receipts.jsonl` (or `$PP_SHARED_RECEIPTS_PATH`), and optionally POSTed to `$PP_RECEIPT_ENDPOINT` (with `$PP_RECEIPT_TOKEN` as bearer auth).
@@ -172,7 +172,7 @@ mcp-guard verify --receipt-file receipt.json --pubkey .pp/mcp-guard.pub.pem \
   --scope deploy:production --scope-sha "$GITHUB_SHA"
 ```
 
-The verifier accepts only the keys you pin, requires an unexpired `allowed` receipt, checks scope exactly, and refuses scoped receipts that no human approved (pass `--allow-policy-approval` to accept them). Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key and receipt only from trusted places.
+The verifier requires `--scope`, accepts only the keys you pin, requires an unexpired `allowed` receipt, checks scope exactly, and refuses scoped receipts that no human approved (pass `--allow-policy-approval` to accept them). Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key and receipt only from trusted places.
 
 ## CLI
 
@@ -236,7 +236,7 @@ Open the exact URL printed at startup. The part after `#t=` is a per-process acc
 4. **Deny** → the agent gets error `-32003`. A decision is final: approving a denied call returns 409.
 5. No decision within `approval_ttl_seconds` → the agent gets error `-32004`.
 
-**Security of the approval channel:** it listens on 127.0.0.1 only, rejects any other `Host` header, sends no CORS headers, and requires the token on every API route except the HMAC-signed GitHub webhook. `PP_APPROVAL_TOKEN` (32+ characters) supplies the token instead of generating one.
+**Security of the approval channel:** it listens on 127.0.0.1 only, rejects any other `Host` header, sends no CORS headers, and requires the token on every API route except the HMAC-signed GitHub webhook. `PP_APPROVAL_TOKEN` (32+ characters) supplies the token instead of generating one. The wrapped server is started without any `PP_*` environment variables, so a tool that echoes its environment cannot leak the token.
 
 When `--approval-port` is **not** set, `require_approval` calls return `-32002` immediately.
 

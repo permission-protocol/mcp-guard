@@ -24,6 +24,8 @@ default_action: block
 approval_ttl_seconds: 3
 rules:
   - { id: echo, tool: echo, action: allow }
+  - { id: env, tool: env, action: allow }
+  - { id: merge, tool: merge_pr, action: require_approval, reversibility: irreversible }
   - { id: spend, tool: spend, action: require_approval, reversibility: reversible, cap_usd: 50, amount_arg: amount }
   - { id: deploy, tool: deploy, action: require_approval, reversibility: reversible, countdown_seconds: 1 }
   - { id: email, tool: send_email, action: require_approval, reversibility: irreversible }
@@ -92,10 +94,24 @@ describe('mcp-guard end to end', () => {
     call(8, 'send_email', { to: 'a@b.com', body: `the key is ${SENTINEL}` });
     call(9, 'post_x', { text: 'held then denied' });
     call(10, 'deploy', { env: 'production', sha: 'abc123' });
+    call(12, 'env', {});
+    call(13, 'merge_pr', { repo: 'o/r', pr_number: 5, title: 'typo', scope_ref: 'refs/pull/9/merge', scope_sha: 'evilsha' });
     await sleep(500);
   });
 
   after(() => { guard?.kill('SIGTERM'); });
+
+  it('the server never inherits the guard secrets (approval token, webhook secret)', () => {
+    const keys: string[] = responses.get(12)?.result?.env ?? [];
+    assert.ok(keys.length > 0);
+    assert.deepEqual(keys.filter((k) => k.startsWith('PP_')), []);
+  });
+
+  it('the approver sees the scope the receipt will bind, derived from the PR number', async () => {
+    const merge = (await pending()).find((p) => p.tool_name === 'merge_pr');
+    assert.deepEqual(merge.scope, { scope: 'github:merge', ref: 'refs/pull/5/merge', sha: 'evilsha' });
+    assert.ok(merge.args_full.includes('refs/pull/9/merge'), 'the conflicting argument is visible too');
+  });
 
   it('forwards plumbing methods', () => {
     assert.equal(responses.get(0)?.result?.echoed, 'initialize');
