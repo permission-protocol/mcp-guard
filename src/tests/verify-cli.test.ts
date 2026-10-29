@@ -133,7 +133,7 @@ describe('mcp-guard verify on demo and legacy receipts', () => {
   });
 
   it('refuses a legacy 0.2 receipt unless --accept-legacy, then verifies it labelled legacy', () => {
-    const base = ['--receipt-file', join(FIXTURE, 'receipt.json'), '--pubkey', join(FIXTURE, 'pub.pem'), '--scope', 'deploy:production', '--scope-sha', SHA];
+    const base = ['--receipt-file', join(FIXTURE, 'receipt.json'), '--pubkey', join(FIXTURE, 'legacy.pub.pem'), '--scope', 'deploy:production', '--scope-sha', SHA];
     const refused = quiet(() => runVerify(base));
     assert.equal(refused.code, 1);
     assert.match(refused.out, /LEGACY_RECEIPT_REFUSED/);
