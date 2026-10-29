@@ -252,7 +252,13 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     const decision = evaluate(tool, args, config, msg.method);
     const rule = decision.rule_id ? config.rules.find((r) => r.id === decision.rule_id) ?? null : null;
     const forward = stripAgentMetadata(msg);
-    const forwardArgs = tool ? (forward.params as { arguments?: Record<string, unknown> }).arguments : undefined;
+    // What the server will act on: tool arguments for tools/call, the params otherwise.
+    // This is what the approver sees and what the receipt hashes.
+    const forwardArgs: Record<string, unknown> | undefined = tool
+      ? (forward.params as { arguments?: Record<string, unknown> }).arguments
+      : forward.params === undefined ? undefined
+      : Array.isArray(forward.params) ? { params: forward.params }
+      : (forward.params as Record<string, unknown>);
     const label = tool ?? msg.method;
     const policyApproval: Approval | null =
       decision.decision === 'allowed'

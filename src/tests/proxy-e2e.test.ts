@@ -30,6 +30,7 @@ rules:
   - { id: post, tool: post_x, action: require_approval, reversibility: irreversible }
   - { id: nope, tool: nope, action: block }
   - { id: reads, method: resources/read, action: block }
+  - { id: prompts, method: prompts/get, action: require_approval }
 `;
 
 describe('mcp-guard end to end', () => {
@@ -86,7 +87,8 @@ describe('mcp-guard end to end', () => {
     call(4, 'spend', { amount: 25000, payee: 'attacker', _pp: { amount_usd: 1 } });
     call(5, 'echo', { msg: 'hi', _pp: { confidence: 99 } });
     send(JSON.stringify({ jsonrpc: '2.0', id: 6, method: 'resources/read', params: { uri: 'file:///etc/passwd' } }));
-    send(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'prompts/get', params: { name: 'x' } }));
+    send(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'x/unknown', params: { name: 'x' } }));
+    send(JSON.stringify({ jsonrpc: '2.0', id: 11, method: 'prompts/get', params: { name: 'secret-prompt' } }));
     call(8, 'send_email', { to: 'a@b.com', body: `the key is ${SENTINEL}` });
     call(9, 'post_x', { text: 'held then denied' });
     call(10, 'deploy', { env: 'production', sha: 'abc123' });
@@ -127,11 +129,14 @@ describe('mcp-guard end to end', () => {
     assert.equal(responses.get(5)?.result?.params?.arguments?.msg, 'hi');
   });
 
-  it('gates resources/read and prompts/get', () => {
+  it('gates resources/read, prompts/get and unknown methods', async () => {
     assert.equal(responses.get(6)?.error?.code, -32001);
     assert.equal(responses.get(7)?.error?.code, -32001, 'default_action block applies to unknown methods');
     assert.ok(!serverLog().includes('resources/read'));
-    assert.ok(!serverLog().includes('prompts/get'));
+    assert.ok(!serverLog().includes('x/unknown'));
+    assert.ok(!serverLog().includes('prompts/get'), 'held, not forwarded');
+    const held = (await pending()).find((p) => p.tool_name === 'prompts/get');
+    assert.ok(held.args_full.includes('secret-prompt'), 'the approver sees the method params');
   });
 
   it('approving a held call forwards it once with a pinned-key-verifiable human receipt', async () => {
