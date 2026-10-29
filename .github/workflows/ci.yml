@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: End-to-end demo drivers
+        env:
+          PP_KEYS_DIR: ${{ runner.temp }}/mcp-guard-keys
+        run: |
+          node scripts/demo-slice1.mjs
+          node scripts/demo-slice2.mjs
+          node scripts/demo-slice25.mjs
