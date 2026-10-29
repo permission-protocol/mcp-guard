@@ -19,10 +19,11 @@ MCP Guard assumes the agent behind the MCP client is untrusted: it controls ever
 - **Input:** only single, well-formed JSON-RPC 2.0 objects are evaluated, and only the evaluated object is forwarded (re-serialized). Batches and unparseable lines are refused.
 - **Policy:** every method except protocol plumbing is decided by the rules. Agent metadata (`_pp`) can add human attention but never removes it; spend caps read only the argument the rule names.
 - **Approval channel:** loopback only, Host-checked, no CORS, and a per-process bearer token delivered in the URL fragment. Decisions go through one state machine; final states never change.
-- **Receipts:** Ed25519 over a domain-separated canonical envelope, with expiry, nonce and approver. Verifiers trust only pinned keys and refuse scoped receipts no human approved.
-- **Keys:** kept in the operator's config directory with owner-only permissions; MCP Guard refuses to start if the private key is exposed.
+- **Receipts:** the Permission Protocol receipt standard (`jcs_v2`): Ed25519 over the SHA-256 of canonical bytes that bind the decision, decider, expiry, scope, policy version and an `inputHash` of the call, never raw arguments. Every final decision is signed, denials included. Gates trust only the key set they are given, pinned by fingerprint, and refuse scoped receipts no person approved, demo-key receipts, and 0.2 receipts unless explicitly accepted.
+- **Keys:** created only by `mcp-guard keys init` / `keys rotate`, kept in the operator's config directory with owner-only permissions. The guard never generates a key; a missing, exposed, mismatched or revoked key is a typed error that stops signing, never a fallback. Revoking a key in `keys.json` invalidates every receipt it signed.
+- **Decider honesty:** console decisions are signed as `local:<operator>` with `heuristic` confidence, because the operator name is configured rather than authenticated; a console approval with no operator is refused in production.
 
-Out of scope for the local dev signer: an agent running as the **same OS user** with arbitrary shell access can read that user's files and process memory, including the signing key and the approval token. For that threat, run the agent as a different user or use the managed Permission Protocol signer, where approval and signing happen outside the agent's machine.
+Out of scope for the local signer: an agent running as the **same OS user** with arbitrary shell access can read that user's files and process memory, including the signing key and the approval token. For that threat, run the agent as a different user or use the managed Permission Protocol signer, where approval and signing happen outside the agent's machine.
 
 ## Safe harbor
 

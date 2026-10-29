@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { demoKeys } from './demo-keys.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7791;
@@ -30,6 +31,7 @@ const api = async (path, method = 'GET') =>
 // Clean prior run artifacts.
 for (const f of [OUTBOX, RECEIPTS]) if (existsSync(f)) rmSync(f);
 
+demoKeys(); // sign with a throwaway demo key (scope demo), never the operator's
 const guard = spawn(
   'node',
   [
@@ -96,8 +98,9 @@ async function run() {
   await sleep(400);
   check('post_x executed AFTER approval (X POSTED in outbox)', /X POSTED/.test(outbox()));
   const receipts = await api('/api/receipts');
-  const signed = receipts.find((r) => r.envelope?.receipt_id === approve.receipt_id && r.signature?.alg === 'ed25519');
-  check('an Ed25519-signed receipt names the human approver', signed?.envelope.approval?.kind === 'human');
+  const signed = receipts.find((r) => r.record?.id === approve.receipt_id && r.artifact?.alg === 'ed25519');
+  check('an Ed25519-signed receipt names the operator as decider', signed?.record.deciderId?.startsWith('local:'));
+  check('the demo receipt is scoped demo (demo key)', signed?.record.scope === 'demo');
 
   console.log(`\n${failed === 0 ? '✅ ALL BEATS PASS' : '❌ FAILURES'} — ${passed} passed, ${failed} failed`);
 }

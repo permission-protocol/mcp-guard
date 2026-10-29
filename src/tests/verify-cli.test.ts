@@ -1,131 +1,144 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { generateKeyPairSync } from 'node:crypto';
+import { copyFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { issueReceipt, signingBytes, type Receipt } from '../receipt.js';
-import { exportPublicKey, keyIdForPublicKey } from '../signer.js';
 import { buildArtifact } from '../signing/artifact.js';
-import { canonicalJsonText } from '../signing/canonical.js';
-import { fingerprintOf, mcpgKeyId, rawPublicKey } from '../signing/keys.js';
+import { mcpgKeyId, rawPublicKey } from '../signing/keys.js';
+import { keySetPath, loadSigningKey, createKey, revokeKey } from '../keystore.js';
 import { runVerify } from '../verify-cli.js';
-import { isolateKeys } from './helpers.js';
+import type { Decider } from '../issuer.js';
+import { isolateKeys, testIssuer } from './helpers.js';
 
-const SHA_LEGACY = 'a1b2c3d4';
-let legacyPinned = '';
-const deployReceiptLegacy = () => issueReceipt({
-  method: 'tools/call', tool: 'deploy', args: { env: 'production', sha: SHA_LEGACY },
-  decision: { decision: 'allowed', rule_id: 'deploy', reason: 'approved' },
-  approval: { kind: 'human', id: 'rod', via: 'local-token' }, actor: 'agent', mode: 'enforce', policy_sha256: 'p', ttl_seconds: 900, target_server: 's',
-  scope: { scope: 'deploy:production', scope_sha: SHA_LEGACY },
-});
-const pinnedLegacy = () => legacyPinned;
+const FIXTURE = join(__dirname, '..', '..', '..', 'src', 'tests', 'fixtures', 'legacy-0.2');
+const SHA = 'a1b2c3d4';
+
+const quiet = <T>(fn: () => T): { code: T; out: string } => {
+  const lines: string[] = [];
+  const log = console.log, err = console.error;
+  console.log = (m: string) => { lines.push(String(m)); }; console.error = (m: string) => { lines.push(String(m)); };
+  try { return { code: fn(), out: lines.join('\n') }; } finally { console.log = log; console.error = err; }
+};
 
 /** The deploy-gate template's verify step, run against each trust-boundary case. */
 describe('mcp-guard verify (receipt gate CLI)', () => {
   let dir: string;
-  let pinned: string;
-  const SHA = 'a1b2c3d4';
-
-  const deployReceipt = (approval: Receipt['envelope']['approval'], sha = SHA) => issueReceipt({
-    method: 'tools/call', tool: 'deploy', args: { env: 'production', sha },
-    decision: { decision: 'allowed', rule_id: 'deploy', reason: 'approved' },
-    approval, actor: 'agent', mode: 'enforce', policy_sha256: 'p', ttl_seconds: 900, target_server: 's',
-    scope: { scope: 'deploy:production', scope_sha: sha },
+  let trust: string;
+  const deploy = (decider: Decider, sha = SHA, input: Record<string, unknown> = { env: 'production', sha }) => testIssuer().issue({
+    method: 'tools/call', tool: 'deploy', input, status: 'APPROVED', ruleId: 'deploy',
+    reasonCodes: ['RULE_MATCHED:deploy', 'OPERATOR_APPROVED'], decider, scope: { scope: 'deploy:production', scope_sha: sha },
   });
+  const human: Decider = { kind: 'operator', operator: 'rod' };
   const write = (name: string, r: unknown) => { const p = join(dir, name); writeFileSync(p, JSON.stringify(r)); return p; };
-  const gate = (file: string, pubkey = pinned) => runVerify(['--receipt-file', file, '--pubkey', pubkey, '--scope', 'deploy:production', '--scope-sha', SHA]);
-  const quiet = <T>(fn: () => T): T => {
-    const log = console.log, err = console.error;
-    console.log = () => {}; console.error = () => {};
-    try { return fn(); } finally { console.log = log; console.error = err; }
-  };
+  const gate = (file: string, extra: string[] = [], keys = keySetPath()) =>
+    quiet(() => runVerify(['--receipt-file', file, '--keys', keys, '--trust', trust, '--scope', 'deploy:production', '--scope-sha', SHA, ...extra]));
 
   before(() => {
     dir = isolateKeys();
-    pinned = exportPublicKey(join(mkdtempSync(join(tmpdir(), 'pin-')), 'mcp-guard.pub.pem'));
-    legacyPinned = pinned;
+    const key = loadSigningKey();
+    trust = `${key.keyId}=${key.fingerprint}`;
   });
 
   it('green: a human-approved receipt for this scope and commit', () => {
-    assert.equal(quiet(() => gate(write('ok.json', deployReceipt({ kind: 'human', id: 'rod', via: 'local-token' })))), 0);
+    const r = gate(write('ok.json', { artifact: deploy(human).artifact }));
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /VERIFIED \(jcs_v2, key pinned by --trust\)/);
+  });
+
+  it('accepts the JSONL line shape { artifact, record } as written by the guard', () => {
+    assert.equal(gate(write('line.json', deploy(human))).code, 0);
   });
 
   it('red: a receipt for a different commit', () => {
-    assert.equal(quiet(() => gate(write('sha.json', deployReceipt({ kind: 'human', id: 'rod', via: 'local-token' }, 'ffff')))), 1);
+    assert.equal(gate(write('sha.json', deploy(human, 'ffff'))).code, 1);
   });
 
-  it('red: a receipt released by countdown, not a human', () => {
-    assert.equal(quiet(() => gate(write('cd.json', deployReceipt({ kind: 'policy', id: 'deploy', via: 'countdown' })))), 1);
+  it('red: a receipt released by policy (countdown), not a person', () => {
+    const r = gate(write('cd.json', deploy({ kind: 'policy' })));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /PP_APPROVAL_NOT_HUMAN/);
   });
 
-  it('red: a receipt forged with an attacker key, even when the attacker supplies that key', () => {
+  it('red: a receipt forged with an attacker key, even in a key set the attacker supplies', () => {
     const attacker = generateKeyPairSync('ed25519');
-    const pem = attacker.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-    const forged = deployReceipt({ kind: 'human', id: 'ceo', via: 'local-token' });
-    forged.envelope.key_id = keyIdForPublicKey(pem);
-    forged.signature = { alg: 'ed25519', key_id: forged.envelope.key_id, value: sign(null, Buffer.from(signingBytes(forged.envelope)), attacker.privateKey).toString('hex') };
-    const file = write('forged.json', forged);
-    assert.equal(quiet(() => gate(file)), 1, 'refused against the pinned key');
-    const attackerPem = join(dir, 'attacker.pub.pem');
-    writeFileSync(attackerPem, pem);
-    // The template never takes the key from the PR; this shows why it must not.
-    assert.equal(quiet(() => gate(file, attackerPem)), 0);
+    const raw = rawPublicKey(attacker.publicKey);
+    const keyId = mcpgKeyId(raw);
+    const forgedSet = write('attacker-keys.json', { keys: [{ key_id: keyId, alg: 'ed25519', public_key_b64: raw.toString('base64'), status: 'active', revoked_at: null }] });
+    const record = { ...deploy(human).record, signatureKeyId: keyId, deciderId: 'local:ceo' };
+    const file = write('forged.json', { artifact: buildArtifact(record, attacker.privateKey) });
+    const r = gate(file, [], forgedSet);
+    assert.equal(r.code, 1, 'refused: the attacker key is not the pinned one');
+    assert.match(r.out, /KEY_NOT_TRUSTED/);
+    // Without --trust the key set file is the only anchor; the template always pins.
+    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--keys', forgedSet, '--scope', 'deploy:production', '--scope-sha', SHA])).code, 0);
+  });
+
+  it('red: a receipt signed by a revoked key', () => {
+    const revokedDir = isolateKeys();
+    const key = loadSigningKey();
+    const file = join(revokedDir, 'r.json');
+    writeFileSync(file, JSON.stringify(deploy(human)));
+    copyFileSync(keySetPath(), join(revokedDir, 'keys-before.json'));
+    createKey({ rotate: true });
+    revokeKey(key.keyId);
+    const r = quiet(() => runVerify(['--receipt-file', file, '--keys', keySetPath(), '--trust', `${key.keyId}=${key.fingerprint}`, '--scope', 'deploy:production', '--scope-sha', SHA]));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /KEY_REVOKED/);
+    // Rotation alone keeps old receipts verifying.
+    const before = quiet(() => runVerify(['--receipt-file', file, '--keys', join(revokedDir, 'keys-before.json'), '--trust', `${key.keyId}=${key.fingerprint}`, '--scope', 'deploy:production', '--scope-sha', SHA]));
+    assert.equal(before.code, 0, before.out);
+    // Restore the suite's key directory.
+    process.env.PP_KEYS_DIR = join(dir, 'keys');
+  });
+
+  it('--call: the signed inputHash must recompute from the call', () => {
+    const file = write('call.json', deploy(human));
+    const good = write('good-call.json', { tool: 'deploy', operation: 'tools/call', input: { env: 'production', sha: SHA } });
+    const bad = write('bad-call.json', { tool: 'deploy', operation: 'tools/call', input: { env: 'production', sha: SHA, force: true } });
+    assert.equal(gate(file, ['--call', good]).code, 0);
+    const r = gate(file, ['--call', bad]);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /INPUT_HASH_MISMATCH/);
   });
 
   it('refuses to run without a scope expectation or with an empty one', () => {
-    const file = write('ok2.json', deployReceipt({ kind: 'human', id: 'rod', via: 'local-token' }));
-    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--pubkey', pinned])), 2);
-    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--pubkey', pinned, '--scope', 'deploy:production', '--scope-sha', ''])), 2);
+    const file = write('ok2.json', deploy(human));
+    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--keys', keySetPath(), '--trust', trust])).code, 2);
+    assert.equal(quiet(() => runVerify(['--receipt-file', file, '--keys', keySetPath(), '--trust', trust, '--scope', 'deploy:production', '--scope-sha', ''])).code, 2);
   });
 
-  it('missing input exits 2, and --pubkey is required', () => {
-    assert.equal(quiet(() => runVerify(['--receipt-file', join(dir, 'nope.json'), '--pubkey', pinned])), 2);
-    assert.equal(quiet(() => runVerify(['--receipt-file', write('x.json', {})])), 2);
+  it('missing input exits 2, and --keys is required', () => {
+    assert.equal(quiet(() => runVerify(['--receipt-file', join(dir, 'nope.json'), '--keys', keySetPath(), '--scope', 'x'])).code, 2);
+    assert.equal(quiet(() => runVerify(['--receipt-file', write('x.json', deploy(human)), '--scope', 'deploy:production'])).code, 2);
   });
 });
 
-describe('mcp-guard verify on org-standard (jcs_v2) artifacts', () => {
-  let dir2: string;
-  const SHA2 = 'b1c2d3e4';
-  before(() => { dir2 = mkdtempSync(join(tmpdir(), 'verify-jcs-')); });
-  const quiet2 = <T>(fn: () => T): T => {
-    const log = console.log, err = console.error;
-    console.log = () => {}; console.error = () => {};
-    try { return fn(); } finally { console.log = log; console.error = err; }
-  };
-
-  it('verifies with --keys and --trust, refuses a wrong pin, and needs --keys', () => {
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-    const raw = rawPublicKey(publicKey);
-    const keyId = mcpgKeyId(raw);
-    const keysPath = join(dir2, 'keys.json');
-    writeFileSync(keysPath, JSON.stringify({ keys: [{ key_id: keyId, alg: 'ed25519', public_key_b64: raw.toString('base64'), status: 'active', revoked_at: null }] }));
-    const now = Date.now();
-    const artifact = buildArtifact({
-      id: 'rcpt_mg_cli_1', agentId: 'a', runId: 'r', status: 'APPROVED', receiptVersion: 2, canonicalization: 'jcs_v2',
-      signatureAlg: 'ed25519', signatureKeyId: keyId, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 900_000).toISOString(),
-      requestJson: canonicalJsonText({ scope: { capability: 'deploy:production', commitSha: SHA2 } }),
-      deciderId: 'local:rod', deciderAuthMethod: 'local_console', attributionConfidence: 'heuristic', resolutionType: 'allow_once', scope: 'production',
-    }, privateKey);
-    const file = join(dir2, 'r.json');
-    writeFileSync(file, JSON.stringify({ artifact }));
-    const base = ['--receipt-file', file, '--scope', 'deploy:production', '--scope-sha', SHA2];
-    assert.equal(quiet2(() => runVerify([...base, '--keys', keysPath, '--trust', `${keyId}=${fingerprintOf(raw)}`])), 0);
-    assert.equal(quiet2(() => runVerify([...base, '--keys', keysPath, '--trust', `${keyId}=sha256:${'0'.repeat(64)}`])), 1);
-    assert.equal(quiet2(() => runVerify(base)), 2);
+describe('mcp-guard verify on demo and legacy receipts', () => {
+  it('refuses a demo-key receipt unless --allow-demo', () => {
+    const dir = isolateKeys({ demo: true });
+    const key = loadSigningKey();
+    assert.match(key.keyId, /^mcpg-demo-[0-9a-f]{16}$/);
+    const issued = testIssuer().issue({
+      method: 'tools/call', tool: 'deploy', input: {}, status: 'APPROVED', ruleId: 'deploy', reasonCodes: ['OPERATOR_APPROVED'],
+      decider: { kind: 'operator', operator: 'rod' }, scope: { scope: 'deploy:production', scope_sha: SHA },
+    });
+    assert.equal(issued.record.scope, 'demo');
+    const file = join(dir, 'demo.json');
+    writeFileSync(file, JSON.stringify(issued));
+    const args = ['--receipt-file', file, '--keys', keySetPath(), '--trust', `${key.keyId}=${key.fingerprint}`, '--scope', 'deploy:production', '--scope-sha', SHA];
+    const r = quiet(() => runVerify(args));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /PP_DEMO_RECEIPT/);
+    assert.equal(quiet(() => runVerify([...args, '--allow-demo'])).code, 0);
   });
 
-  it('still verifies a legacy 0.2 receipt with --pubkey and labels it legacy', () => {
-    const lines: string[] = [];
-    const log = console.log;
-    console.log = (m: string) => { lines.push(m); };
-    try {
-      const file = join(dir2, 'legacy.json');
-      writeFileSync(file, JSON.stringify(deployReceiptLegacy()));
-      assert.equal(runVerify(['--receipt-file', file, '--pubkey', pinnedLegacy(), '--scope', 'deploy:production', '--scope-sha', SHA_LEGACY]), 0);
-    } finally { console.log = log; }
-    assert.ok(lines.join('\n').includes('legacy mcp-guard 0.2 receipt'));
+  it('refuses a legacy 0.2 receipt unless --accept-legacy, then verifies it labelled legacy', () => {
+    const base = ['--receipt-file', join(FIXTURE, 'receipt.json'), '--pubkey', join(FIXTURE, 'legacy.pub.pem'), '--scope', 'deploy:production', '--scope-sha', SHA];
+    const refused = quiet(() => runVerify(base));
+    assert.equal(refused.code, 1);
+    assert.match(refused.out, /LEGACY_RECEIPT_REFUSED/);
+    const accepted = quiet(() => runVerify([...base, '--accept-legacy']));
+    assert.equal(accepted.code, 0, accepted.out);
+    assert.match(accepted.out, /legacy mcp-guard 0\.2 receipt/);
   });
 });

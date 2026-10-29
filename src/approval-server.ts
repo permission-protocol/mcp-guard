@@ -13,9 +13,11 @@ import {
 } from './pending.js';
 import type { Lane } from './engine.js';
 import type { Reversibility } from './config.js';
-import { DEFAULT_RECEIPT_TTL_SECONDS } from './config.js';
 import { getApprovalHTML } from './approval-ui.js';
-import { issueReceipt, emitReceipt, type Approval, type Receipt } from './receipt.js';
+import { SigningError } from './keystore.js';
+import type { Decider, Issuer, IssuedReceipt } from './issuer.js';
+import { emitReceipt, recentReceipts } from './receipt-log.js';
+import { signHeld } from './release.js';
 import { verifyGithubSignature, parsePrEvent, shouldGate, scopeForPr } from './webhook.js';
 import { errorLine, DENIED } from './frame.js';
 
@@ -32,36 +34,30 @@ import { errorLine, DENIED } from './frame.js';
 
 export const MIN_TOKEN_LENGTH = 32;
 const MAX_BODY_BYTES = 1024 * 1024;
-const MAX_RECEIPTS = 50;
 const MAX_DELIVERIES = 1000;
 
-const recentReceipts: Receipt[] = [];
-
-export function pushReceipt(receipt: Receipt): void {
-  recentReceipts.push(receipt);
-  if (recentReceipts.length > MAX_RECEIPTS) recentReceipts.shift();
-}
-
 export interface ApprovalHooks {
-  /** Release a held request the human approved: sign, forward, return the receipt. */
-  release?: (action: PendingAction, approval: Approval) => Receipt;
+  /**
+   * Forward a held request after the operator approved it. The receipt is already signed
+   * and the item already final; the hook verifies the receipt and forwards, or throws.
+   */
+  release?: (action: PendingAction, issued: IssuedReceipt) => void;
 }
 
 export interface ApprovalServerOptions {
   port: number;
+  /** Signs every console decision. */
+  issuer: Issuer;
   /** Bearer token; defaults to PP_APPROVAL_TOKEN, else 32 random bytes. */
   token?: string;
-  /** Recorded as the approver on human decisions; defaults to the OS username. */
+  /** Signed as the decider (`local:<operator>`); defaults to the OS username. */
   operator?: string;
   hooks?: ApprovalHooks;
-  /** For receipts issued on webhook-sourced decisions. */
-  receiptTtlSeconds?: number;
-  policySha256?: string;
 }
 
 export interface ApprovalServerHandle {
   token: string;
-  operator: string;
+  operator: string | null;
   /** Resolves with the bound port once listening. */
   ready: Promise<number>;
   close: () => Promise<void>;
@@ -185,15 +181,18 @@ function resolveToken(explicit: string | undefined): { token: string; generated:
   return { token: randomBytes(32).toString('base64url'), generated: true };
 }
 
-function defaultOperator(): string {
-  try { return userInfo().username || 'operator'; } catch { return 'operator'; }
+/** The OS user, or null when there is none: an unattributed operator cannot approve in production. */
+function defaultOperator(): string | null {
+  try { return userInfo().username || null; } catch { return null; }
 }
 
 export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServerHandle {
   const { token, generated } = resolveToken(opts.token);
   const tokenDigest = digest(token);
   const operator = opts.operator || defaultOperator();
-  const approval: Approval = { kind: 'human', id: operator, via: 'local-token' };
+  const decider: Decider = { kind: 'operator', operator };
+  const who = operator ?? 'an unattributed operator';
+  const issuer = opts.issuer;
   const hooks = opts.hooks ?? {};
   const seenDeliveries = new Set<string>();
   let boundPort = opts.port;
@@ -209,30 +208,10 @@ export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServer
     return timingSafeEqual(digest(h.slice(7)), tokenDigest);
   }
 
-  function issueExternalReceipt(action: PendingAction): Receipt {
-    const receipt = issueReceipt({
-      method: 'github/merge',
-      tool: action.tool_name,
-      args: action.tool_args,
-      decision: { decision: 'allowed', rule_id: action.rule_id, reason: 'Approved in the Permission Deck (GitHub webhook)' },
-      approval,
-      actor: action.agent_id,
-      mode: 'enforce',
-      policy_sha256: opts.policySha256 ?? 'github-webhook',
-      ttl_seconds: opts.receiptTtlSeconds ?? DEFAULT_RECEIPT_TTL_SECONDS,
-      target_server: 'github-webhook',
-      scope: { scope: action.scope, scope_ref: action.scope_ref, scope_sha: action.scope_sha },
-    });
-    action.receipt_id = receipt.envelope.receipt_id;
-    emitReceipt(receipt);
-    pushReceipt(receipt);
-    return receipt;
-  }
-
   async function handleApi(method: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (method === 'GET' && path === '/api/pending') { json(res, 200, pendingQueue()); return; }
 
-    if (method === 'GET' && path === '/api/receipts') { json(res, 200, recentReceipts.slice().reverse()); return; }
+    if (method === 'GET' && path === '/api/receipts') { json(res, 200, recentReceipts()); return; }
 
     if (method === 'GET' && path === '/api/stream') {
       res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
@@ -258,12 +237,23 @@ export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServer
     }
 
     if (verb === 'deny') {
+      // A denial always takes effect; its receipt is signed when the key allows it.
+      let issued: IssuedReceipt | null = null;
+      let signError: string | null = null;
+      if (existing.status === 'pending' && existing.kind !== 'acted') {
+        try { issued = signHeld(issuer, existing, decider, 'DENIED', 'OPERATOR_DENIED'); } catch (err) {
+          if (!(err instanceof SigningError)) throw err;
+          signError = err.code;
+        }
+      }
       const r = transition(id, 'deny');
       if (!r.ok) { transitionError(res, r); return; }
-      process.stderr.write(`[mcp-guard] Denied by ${operator}: ${r.action.tool_name} (${id})\n`);
-      if (r.action.kind === 'held') r.action.resolve(errorLine(r.action.jsonrpcId, DENIED, `Denied by ${operator}`));
+      if (issued) { r.action.receipt_id = issued.record.id; emitReceipt(issued); }
+      if (signError) process.stderr.write(`[mcp-guard] Denial of ${r.action.tool_name} (${id}) took effect but was not signed: ${signError}\n`);
+      process.stderr.write(`[mcp-guard] Denied by ${who}: ${r.action.tool_name} (${id})\n`);
+      if (r.action.kind === 'held') r.action.resolve(errorLine(r.action.jsonrpcId, DENIED, `Denied by ${who}`));
       notifyQueueChange();
-      json(res, 200, { id, status: 'denied' });
+      json(res, 200, { id, status: 'denied', receipt_id: issued?.record.id ?? null, ...(signError ? { receipt_error: signError } : {}) });
       return;
     }
 
@@ -277,19 +267,35 @@ export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServer
       return;
     }
 
+    // Sign BEFORE the item becomes final: if signing is refused, the call stays held.
+    if (existing.status !== 'pending') { transitionError(res, { ok: false, error: 'final', action: existing }); return; }
+    if (existing.kind === 'held' && !hooks.release) throw new Error('No release hook registered for held requests');
+    let issued: IssuedReceipt;
+    try {
+      issued = signHeld(issuer, existing, decider, 'APPROVED', 'OPERATOR_APPROVED');
+    } catch (err) {
+      if (!(err instanceof SigningError)) throw err;
+      process.stderr.write(`[mcp-guard] Approval of ${existing.tool_name} (${id}) refused, still held: ${err.message}\n`);
+      json(res, 409, { error: err.code, message: err.message, status: 'pending' });
+      return;
+    }
     const r = transition(id, 'approve');
     if (!r.ok) { transitionError(res, r); return; }
-    let receipt: Receipt | undefined;
-    if (r.action.kind === 'external') {
-      receipt = issueExternalReceipt(r.action);
-    } else if (hooks.release) {
-      receipt = hooks.release(r.action, approval);
-    } else {
-      throw new Error('No release hook registered for held requests');
+    r.action.receipt_id = issued.record.id;
+    emitReceipt(issued);
+    if (r.action.kind === 'held') {
+      try {
+        hooks.release!(r.action, issued);
+      } catch (err: any) {
+        process.stderr.write(`[mcp-guard] ${err.message}\n`);
+        notifyQueueChange();
+        json(res, 502, { id, status: 'approved', error: 'release_failed', receipt_id: issued.record.id });
+        return;
+      }
     }
-    process.stderr.write(`[mcp-guard] Approved by ${operator}: ${r.action.tool_name} (${id}) → receipt ${receipt.envelope.receipt_id}\n`);
+    process.stderr.write(`[mcp-guard] Approved by ${who}: ${r.action.tool_name} (${id}) → receipt ${issued.record.id}\n`);
     notifyQueueChange();
-    json(res, 200, { id, status: 'approved', receipt_id: receipt.envelope.receipt_id });
+    json(res, 200, { id, status: 'approved', receipt_id: issued.record.id });
   }
 
   async function handleWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -316,6 +322,7 @@ export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServer
     if (!shouldGate(ev)) { json(res, 200, { ignored: true, reason: 'no needs-authority label or irrelevant action' }); return; }
     const sc = scopeForPr(ev);
     const item = addExternalDecision({
+      method: 'github/merge',
       toolName: 'merge_pr',
       agentId: 'github-webhook',
       ruleId: 'pr-needs-authority',

@@ -9,7 +9,7 @@
  *
  * Exit 0 when every result matches the expectation, 1 otherwise.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -25,6 +25,8 @@ if (EXPECT !== 'vulnerable' && EXPECT !== 'fixed') {
 }
 const require = createRequire(join(ROOT, 'package.json'));
 const isNew = existsSync(join(ROOT, 'dist/src/frame.js'));
+// 0.3 signs the org receipt standard with keys created only by `mcp-guard keys init`.
+const isJcs = existsSync(join(ROOT, 'dist/src/keystore.js'));
 const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-audit-'));
 const LOG = join(dir, 'exec.log');
 const PORT = 7900 + Math.floor(Math.random() * 90);
@@ -41,6 +43,7 @@ rules:
 `);
 
 const env = { ...process.env, PP_KEYS_DIR: join(dir, 'keys'), PP_SHARED_RECEIPTS_PATH: join(dir, 'r.jsonl'), PP_WEBHOOK_SECRET: 's3cret', PP_APPROVAL_TOKEN: TOKEN };
+if (isJcs) execFileSync('node', [join(ROOT, 'dist/src/cli.js'), 'keys', 'init'], { env, stdio: 'ignore' });
 const g = spawn('node', [join(ROOT, 'dist/src/cli.js'), '--config', join(dir, 'cfg.yaml'), '--approval-port', String(PORT), '--', 'node', join(dir, 'echo.mjs')], { cwd: dir, env, stdio: ['pipe', 'pipe', 'ignore'] });
 const send = (s) => g.stdin.write(s + '\n');
 const base = `http://127.0.0.1:${PORT}`;
@@ -76,7 +79,26 @@ g.kill();
 
 // F3: a signed staging approval re-split into a production receipt.
 process.env.PP_KEYS_DIR = join(dir, 'keys-f3');
-if (isNew) {
+if (isJcs) {
+  const { createKey } = require(join(ROOT, 'dist/src/keystore.js'));
+  const { Issuer } = require(join(ROOT, 'dist/src/issuer.js'));
+  const { verifyArtifactReceipt } = require(join(ROOT, 'dist/src/receipt-verify.js'));
+  const key = createKey();
+  const config = { mode: 'enforce', signing: 'required', server_label: 's', policy_sha256: 'p', receipt_ttl_seconds: 900, scoped_receipt_ttl_seconds: 900 };
+  const issued = new Issuer({ config, agentId: 'a' }).issue({
+    method: 'tools/call', tool: 'deploy', input: { env: 'staging', sha: 'x.scope=deploy:production' }, status: 'APPROVED', ruleId: 'deploy',
+    reasonCodes: ['OPERATOR_APPROVED'], decider: { kind: 'operator', operator: 'rod' },
+    scope: { scope: 'deploy:staging', scope_sha: 'x.scope=deploy:production.scope_ref=refs/heads/main.scope_sha=GOODSHA' },
+  });
+  // Re-split the signed scope into production and re-encode the payload.
+  const payload = JSON.parse(Buffer.from(issued.artifact.payload_bytes_b64, 'base64').toString('utf8'));
+  const req = JSON.parse(payload.requestJson);
+  req.scope = { capability: 'deploy:production', ref: 'refs/heads/main', commitSha: 'GOODSHA' };
+  payload.requestJson = JSON.stringify(req);
+  const forged = { ...issued.artifact, payload_bytes_b64: Buffer.from(JSON.stringify(payload)).toString('base64') };
+  const res = verifyArtifactReceipt({ artifact: forged }, key.keySet, { trust: new Map([[key.keyId, key.fingerprint]]), expected: { scope: 'deploy:production', scope_ref: 'refs/heads/main', scope_sha: 'GOODSHA' } });
+  record('F3 a staging approval re-split into deploy:production verifies', res.valid);
+} else if (isNew) {
   const { issueReceipt } = require(join(ROOT, 'dist/src/receipt.js'));
   const { verifyReceipt } = require(join(ROOT, 'dist/src/receipt-verify.js'));
   const { currentKeyId, getPublicKeyPem } = require(join(ROOT, 'dist/src/signer.js'));

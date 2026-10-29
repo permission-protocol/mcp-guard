@@ -7,6 +7,7 @@ import {
   isLegacyMcpGuardReceipt,
   LEGACY_SIGNED_FIELDS_NOTE,
   type ExpectedScope,
+  type CallInput,
   type VerifyResult,
 } from './receipt-verify.js';
 import { keyIdForPublicKey } from './signer.js';
@@ -20,8 +21,9 @@ import type { PinnedKeys } from './verify-core.js';
  *   mcp-guard verify --receipt-file receipt.json --keys keys.json \
  *     --trust KEY_ID=sha256:<fingerprint> --scope deploy:production --scope-sha <sha>
  *
- * Legacy mcp-guard 0.2 receipt (`{ "envelope": ... }`), verified and labelled legacy:
- *   mcp-guard verify --receipt-file receipt.json --pubkey pinned.pub.pem --scope ...
+ * Legacy mcp-guard 0.2 receipt (`{ "envelope": ... }`): refused unless the gate opts in,
+ * then verified and labelled legacy:
+ *   mcp-guard verify --receipt-file receipt.json --accept-legacy --pubkey pinned.pub.pem --scope ...
  *
  * The gate trusts only keys it is given and never generates or discovers one.
  * Exit 0 = authorized, 1 = refused, 2 = missing input. "No receipt = No deploy."
@@ -29,8 +31,9 @@ import type { PinnedKeys } from './verify-core.js';
 
 const USAGE = [
   'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]',
-  '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...]',
-  '  legacy mcp-guard 0.2 receipts:  --pubkey <pem> [--pubkey <pem> ...]',
+  '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...] [--call <call.json>] [--allow-demo]',
+  '    --call: {"tool", "operation", "input"}; the signed inputHash must recompute from it',
+  '  legacy mcp-guard 0.2 receipts:  --accept-legacy --pubkey <pem> [--pubkey <pem> ...]',
 ].join('\n');
 
 function ciError(message: string): void {
@@ -49,7 +52,7 @@ function parseArgs(argv: string[]): Args {
     const a = argv[i];
     if (!a.startsWith('--')) continue;
     const key = a.slice(2);
-    if (key === 'allow-policy-approval' || key === 'help') { bools.add(key); continue; }
+    if (['allow-policy-approval', 'accept-legacy', 'allow-demo', 'help'].includes(key)) { bools.add(key); continue; }
     const next = argv[i + 1];
     if (next === undefined || next.startsWith('--')) { flags[key] = ''; continue; }
     if (key === 'pubkey') pubkeys.push(next);
@@ -107,6 +110,10 @@ export function runVerify(argv: string[]): number {
   let result: VerifyResult;
   let label: string;
   if (isLegacyMcpGuardReceipt(receipt)) {
+    if (!bools.has('accept-legacy')) {
+      ciError(`No receipt = No deploy. This is intentional. Receipt ${receiptIdOf(receipt) ?? '(unknown)'} REFUSED:\n  - LEGACY_RECEIPT_REFUSED: this is an mcp-guard 0.2 receipt, not the org receipt standard. Re-approve the action with mcp-guard 0.3, or pass --accept-legacy with --pubkey to accept 0.2 receipts.`);
+      return 1;
+    }
     if (pubkeys.length === 0) return fail('--pubkey is required for a legacy mcp-guard 0.2 receipt: the gate verifies only against keys you pin');
     const keys: PinnedKeys = {};
     for (const k of pubkeys) {
@@ -129,7 +136,14 @@ export function runVerify(argv: string[]): number {
     try { keySet = JSON.parse(readFileSync(p, 'utf-8')); } catch (e: any) { return fail(`key set ${p} is not valid JSON: ${e.message}`); }
     let pins;
     try { pins = trust.length ? parseTrust(trust) : null; } catch (e: any) { return fail(e.message); }
-    result = verifyArtifactReceipt(receipt, keySet, { expected, allowPolicyApproval, trust: pins });
+    let call: CallInput | undefined;
+    if (flags.call) {
+      const cp = resolve(flags.call);
+      if (!existsSync(cp)) return fail(`call file not found: ${cp}`);
+      try { call = JSON.parse(readFileSync(cp, 'utf-8')); } catch (e: any) { return fail(`call file is not valid JSON: ${e.message}`); }
+      if (typeof call?.tool !== 'string' || typeof call?.operation !== 'string') return fail('call file must be {"tool": "...", "operation": "...", "input": ...}');
+    }
+    result = verifyArtifactReceipt(receipt, keySet, { expected, allowPolicyApproval, trust: pins, call, allowDemo: bools.has('allow-demo') });
     label = pins ? 'VERIFIED (jcs_v2, key pinned by --trust)' : 'VERIFIED (jcs_v2; key taken from the key set file, not pinned)';
   }
 

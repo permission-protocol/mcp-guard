@@ -20,9 +20,11 @@ export interface Rule {
   cap_usd?: number;               // spend cap: under cap may act+verify, at/over cap hard-stops
   amount_arg?: string;            // the tool argument that carries the amount for cap_usd
   verify_threshold?: number;      // 0-100; auto-executed actions below this confidence route to Verify
+  receipt_ttl_seconds?: number;   // overrides the receipt expiry for this rule's receipts
 }
 
 export type Mode = 'enforce' | 'observe';
+export type SigningMode = 'required' | 'off';
 
 export interface Config {
   default_action: Action;
@@ -30,22 +32,36 @@ export interface Config {
   rules: Rule[];
   /** Held requests expire after this many seconds. */
   approval_ttl_seconds: number;
-  /** Signed receipts expire this many seconds after issue. */
+  /** Receipts for unscoped actions expire this many seconds after issue. */
   receipt_ttl_seconds: number;
+  /** Receipts for scoped actions (merge, migration, deploy) expire this many seconds after issue. */
+  scoped_receipt_ttl_seconds: number;
+  /** Names the MCP server in receipts (never its command line, which can hold secrets). */
+  server_label: string;
+  /** `required` (default): every decision is signed or refused. `off`: unsigned records no gate accepts. */
+  signing: SigningMode;
   /** sha256 of the policy source, bound into every receipt. */
   policy_sha256: string;
 }
 
 export const DEFAULT_APPROVAL_TTL_SECONDS = 900;
-export const DEFAULT_RECEIPT_TTL_SECONDS = 900;
+export const DEFAULT_RECEIPT_TTL_SECONDS = 3600;
+export const DEFAULT_SCOPED_RECEIPT_TTL_SECONDS = 900;
+/** No receipt lives longer than a day. */
+export const MAX_RECEIPT_TTL_SECONDS = 86_400;
+export const DEFAULT_SERVER_LABEL = 'mcp-server';
+const SERVER_LABEL_PATTERN = /^[A-Za-z0-9._:/@-]{1,64}$/;
 export const TOOLS_CALL = 'tools/call';
 
 const VALID_ACTIONS: Action[] = ['allow', 'block', 'require_approval'];
 const VALID_MODES: Mode[] = ['enforce', 'observe'];
 const VALID_REVERSIBILITY: Reversibility[] = ['reversible', 'irreversible'];
-const TOP_LEVEL_KEYS = new Set(['default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds']);
+const VALID_SIGNING: SigningMode[] = ['required', 'off'];
+const TOP_LEVEL_KEYS = new Set([
+  'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing',
+]);
 const RULE_KEYS = new Set([
-  'id', 'method', 'tool', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold',
+  'id', 'method', 'tool', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
 ]);
 
 export function loadConfig(configPath: string): Config {
@@ -80,7 +96,17 @@ export function parseConfig(raw: string): Config {
   }
 
   const approvalTtl = positiveInt(parsed.approval_ttl_seconds, 'approval_ttl_seconds', DEFAULT_APPROVAL_TTL_SECONDS);
-  const receiptTtl = positiveInt(parsed.receipt_ttl_seconds, 'receipt_ttl_seconds', DEFAULT_RECEIPT_TTL_SECONDS);
+  const receiptTtl = receiptTtlSeconds(parsed.receipt_ttl_seconds, 'receipt_ttl_seconds', DEFAULT_RECEIPT_TTL_SECONDS);
+  const scopedReceiptTtl = receiptTtlSeconds(parsed.scoped_receipt_ttl_seconds, 'scoped_receipt_ttl_seconds', DEFAULT_SCOPED_RECEIPT_TTL_SECONDS);
+
+  const serverLabel = parsed.server_label ?? DEFAULT_SERVER_LABEL;
+  if (typeof serverLabel !== 'string' || !SERVER_LABEL_PATTERN.test(serverLabel)) {
+    throw new Error('Invalid server_label: 1-64 characters of letters, digits and . _ : / @ -');
+  }
+  const signing: SigningMode = parsed.signing ?? 'required';
+  if (!VALID_SIGNING.includes(signing)) {
+    throw new Error(`Invalid signing: "${parsed.signing}". Must be one of: ${VALID_SIGNING.join(', ')}`);
+  }
 
   if (!Array.isArray(parsed.rules)) {
     throw new Error('Config must include a "rules" array');
@@ -138,6 +164,7 @@ export function parseConfig(raw: string): Config {
     if (r.amount_arg !== undefined && r.amount_arg.startsWith('_pp')) {
       throw new Error(`Rule ${i}: amount_arg cannot read agent metadata (_pp)`);
     }
+    const ruleReceiptTtl = r.receipt_ttl_seconds === undefined ? undefined : receiptTtlSeconds(r.receipt_ttl_seconds, `rule ${i} receipt_ttl_seconds`, 0);
 
     return {
       id: r.id,
@@ -148,6 +175,7 @@ export function parseConfig(raw: string): Config {
       ...(r.countdown_seconds !== undefined ? { countdown_seconds: r.countdown_seconds } : {}),
       ...(r.cap_usd !== undefined ? { cap_usd: r.cap_usd, amount_arg: r.amount_arg } : {}),
       ...(r.verify_threshold !== undefined ? { verify_threshold: r.verify_threshold } : {}),
+      ...(ruleReceiptTtl !== undefined ? { receipt_ttl_seconds: ruleReceiptTtl } : {}),
     };
   });
 
@@ -157,8 +185,17 @@ export function parseConfig(raw: string): Config {
     rules,
     approval_ttl_seconds: approvalTtl,
     receipt_ttl_seconds: receiptTtl,
+    scoped_receipt_ttl_seconds: scopedReceiptTtl,
+    server_label: serverLabel,
+    signing,
     policy_sha256: createHash('sha256').update(raw).digest('hex'),
   };
+}
+
+function receiptTtlSeconds(v: unknown, name: string, fallback: number): number {
+  const n = positiveInt(v, name, fallback);
+  if (n > MAX_RECEIPT_TTL_SECONDS) throw new Error(`Invalid ${name}: at most ${MAX_RECEIPT_TTL_SECONDS} (one day)`);
+  return n;
 }
 
 function positiveInt(v: unknown, name: string, fallback: number): number {

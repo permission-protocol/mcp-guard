@@ -10,6 +10,10 @@ echo "Building..."
 cd "$ROOT_DIR"
 [ -f dist/src/cli.js ] || npm run build --silent 2>/dev/null
 
+# Sign with a throwaway demo key (receipts carry scope "demo"), never your real keys.
+export PP_KEYS_DIR="$(mktemp -d)/keys"
+node dist/src/cli.js keys init --demo > /dev/null
+
 echo "Sending test requests through mcp-guard proxy..."
 echo ""
 
@@ -53,7 +57,8 @@ rm -f "$RESPONSES" "$RECEIPTS"
 echo ""
 echo "=== Approval Flow ==="
 echo ""
-echo "To try the approval UI, run:"
+echo "To try the approval UI, create your signing key once, then run:"
+echo "  node dist/src/cli.js keys init"
 echo "  node dist/src/cli.js --config example/pp.config.yaml --approval-port 3100 --agent-id demo-agent -- node dist/example/server.js"
 echo ""
 echo "Then open the Approval UI URL it prints (it ends with #t=<token>) and send a require_approval tool call."

@@ -448,7 +448,7 @@
   <div class="header-icon">🛡️</div>
   <h1>MCP Guard <span>— Receipt Viewer</span></h1>
   <div class="header-spacer"></div>
-  <span class="header-badge">v0.2</span>
+  <span class="header-badge">v0.3</span>
 </header>
 
 <main>
@@ -456,7 +456,7 @@
     <div class="section-label">Paste or upload receipts</div>
     <div class="input-row">
       <textarea id="pasteArea"
-        placeholder='Paste a JSON receipt or JSONL (one receipt per line)&#10;&#10;{"envelope": {"v": 2, "receipt_id": "...", "tool": "...", "decision": "allowed", ...}, ...}'
+        placeholder='Paste a JSON receipt or JSONL (one receipt per line)&#10;&#10;{"artifact": {...}, "record": {"id": "rcpt_mg_...", "status": "APPROVED", ...}}'
       ></textarea>
       <div class="side-controls">
         <div class="drop-zone" id="dropZone">
@@ -494,32 +494,42 @@
 <script>
   // ── Example receipt ──────────────────────────────────────────────────────
   const EXAMPLE = {
-    "envelope": {
-      "v": 2,
+    "artifact": {
       "receipt_id": "rcpt_mg_mvtj9td5_63c091bfe0e7",
-      "method": "tools/call",
-      "tool": "delete_user_data",
-      "args_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-      "scope": null,
-      "decision": "blocked",
-      "approval": null,
-      "actor": "claude-desktop",
-      "rule_id": "block-delete-user-data",
-      "policy_sha256": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
-      "mode": "enforce",
+      "status": "DENIED",
+      "receipt_version": 2,
+      "canonicalization": "jcs_v2",
+      "key_id": "mcpg-3c1d2e4f5a6b7c8d",
+      "alg": "ed25519",
+      "signed_payload_hash": "…",
+      "signature_b64": "…",
+      "payload_bytes_b64": "…",
       "issued_at": "2026-03-20T15:30:00.000Z",
-      "expires_at": "2026-03-20T15:45:00.000Z",
-      "nonce": "4f1b2b0b822cd15d6c15b0f00a08aa01",
-      "key_id": "pp-dev-3c1d2e4f5a6b7c8d"
+      "expires_at": "2026-03-20T16:30:00.000Z"
     },
-    "signature": { "alg": "ed25519", "key_id": "pp-dev-3c1d2e4f5a6b7c8d", "value": "…" },
-    "display": {
-      "summary": "MCP Guard blocked \"delete_user_data\"",
-      "reason": "Matched rule \"block-delete-user-data\"",
-      "risk_tier": "critical",
-      "target_server": "node my-mcp-server.js",
-      "arg_keys": ["user_id"],
-      "viewer_url": "https://app.permissionprotocol.com/r/rcpt_mg_mvtj9td5_63c091bfe0e7"
+    "record": {
+      "id": "rcpt_mg_mvtj9td5_63c091bfe0e7",
+      "idemKey": "mcp-guard:6f1c0e9a-3b2d-4c5e-8f7a-1b2c3d4e5f60",
+      "agentId": "claude-desktop",
+      "runId": "run_4f1b2b0b822cd15d",
+      "requestJson": "{\"action\":{\"operation\":\"tools/call\",\"resource\":\"crm-mcp\",\"tool\":\"delete_user_data\"},\"context\":{\"mode\":\"enforce\",\"transport\":\"stdio\"},\"hashes\":{\"inputHash\":\"sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\"},\"intent\":{\"category\":\"mcp_tool_call\",\"name\":\"mcp_guard_decision\"},\"policy\":{\"decision\":{\"outcome\":\"denied\",\"ruleId\":\"block-delete-user-data\",\"ruleVersion\":\"mcp-guard-config:sha256:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8\"}}}",
+      "inputHash": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "status": "DENIED",
+      "riskTier": "critical",
+      "policyVersion": "mcp-guard-config:sha256:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+      "reasonCodes": "[\"RULE_MATCHED:block-delete-user-data\"]",
+      "summary": "MCP Guard denied \"delete_user_data\" by mcp-guard policy",
+      "receiptVersion": 2,
+      "canonicalization": "jcs_v2",
+      "signatureAlg": "ed25519",
+      "signatureKeyId": "mcpg-3c1d2e4f5a6b7c8d",
+      "expiresAt": "2026-03-20T16:30:00.000Z",
+      "createdAt": "2026-03-20T15:30:00.000Z",
+      "deciderId": "system/mcp-guard-policy",
+      "deciderDisplay": "mcp-guard policy",
+      "deciderAuthMethod": "policy",
+      "attributionConfidence": "credentialed",
+      "scope": "production"
     }
   };
 
@@ -620,9 +630,36 @@
   }
 
   // ── Build card ────────────────────────────────────────────────────────────
-  // Receipt v2 keeps the signed fields in `envelope` and human text in `display`;
-  // flatten both into the fields this viewer renders.
+  // Flatten the shapes mcp-guard writes into the fields this viewer renders. It displays
+  // receipts; it does not verify them (use `mcp-guard verify` or @permission-protocol/verify).
+  //   0.3: { artifact, record } — the record holds the jcs_v2 signed fields
+  //   0.3: { hold } — a held call, never signed
+  //   0.2 (legacy): { envelope, signature, display }
   function normalize(r) {
+    if (r && r.record) {
+      const rec = r.record;
+      let req = {};
+      try { req = JSON.parse(rec.requestJson || '{}'); } catch { req = {}; }
+      const action = req.action || {}, decision = (req.policy || {}).decision || {};
+      return {
+        receipt_id: rec.id,
+        tool_name: action.tool || action.operation,
+        decision: rec.status === 'APPROVED' ? 'allowed' : 'blocked',
+        mode: (req.context || {}).mode,
+        rule_id: decision.ruleId,
+        agent_id: rec.agentId,
+        target_server: action.resource,
+        timestamp: rec.createdAt,
+        request_payload_hash: rec.inputHash,
+        approved_by: rec.deciderDisplay || rec.deciderId || (rec.attributionConfidence === 'unattributed' ? 'unattributed' : null),
+        signed: !!r.artifact,
+        raw: r,
+      };
+    }
+    if (r && r.hold) {
+      const h = r.hold;
+      return { receipt_id: h.id, tool_name: h.tool || h.method, decision: 'held_for_approval', rule_id: h.ruleId, agent_id: h.agentId, timestamp: h.createdAt, request_payload_hash: h.inputHash, raw: r };
+    }
     if (!r || !r.envelope) return r;
     const e = r.envelope, d = r.display || {};
     return {
@@ -636,6 +673,7 @@
       timestamp: e.issued_at,
       request_payload_hash: e.args_sha256,
       approved_by: e.approval ? `${e.approval.kind}: ${e.approval.id} (${e.approval.via})` : null,
+      legacy: true,
       raw: r,
     };
   }
@@ -670,6 +708,8 @@
         <div class="badges">
           <span class="badge badge-${dm.cls}">${dm.icon} ${dm.label}</span>
           ${isDryRun ? '<span class="badge badge-dryrun">🔬 DRY RUN</span>' : ''}
+          ${receipt.legacy ? '<span class="badge badge-dryrun">legacy 0.2</span>' : ''}
+          ${receipt.signed === false ? '<span class="badge badge-dryrun">unsigned</span>' : ''}
         </div>
       </div>
       <div class="card-body">
@@ -698,12 +738,12 @@
             <div class="meta-value mono">${esc(ruleDisplay)}</div>
           </div>
           <div class="meta-item">
-            <div class="meta-key">Payload Hash</div>
+            <div class="meta-key">Input Hash</div>
             <div class="meta-value mono" title="${esc(hash)}">${esc(hashShort)}</div>
           </div>
           ${receipt.approved_by ? `
           <div class="meta-item">
-            <div class="meta-key">Approved By</div>
+            <div class="meta-key">Decided By</div>
             <div class="meta-value mono">${esc(receipt.approved_by)}</div>
           </div>` : ''}
           ${receipt.receipt_id ? `
