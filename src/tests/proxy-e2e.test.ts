@@ -206,6 +206,15 @@ describe('mcp-guard end to end', () => {
     assert.ok(!stderr.includes(TOKEN), 'an env-supplied token is never printed');
   });
 
+  it('warns at startup when default_action is allow', () => {
+    const cfg = join(dir, 'allow.yaml');
+    writeFileSync(cfg, 'default_action: allow\nrules: []\n');
+    const r = spawnSync('node', [CLI, '--config', cfg, '--', 'node', ECHO], { env: env(), input: '', timeout: 5000 });
+    assert.match(r.stderr.toString(), /WARNING: default_action is "allow"/);
+    const strict = spawnSync('node', [CLI, '--config', join(dir, 'pp.config.yaml'), '--', 'node', ECHO], { env: env(), input: '', timeout: 5000 });
+    assert.doesNotMatch(strict.stderr.toString(), /WARNING/);
+  });
+
   it('refuses to start with an exposed signing key', () => {
     chmodSync(join(dir, 'keys', 'signing.private.pem'), 0o644);
     const r = spawnSync('node', [CLI, '--config', join(dir, 'pp.config.yaml'), '--', 'node', ECHO], { env: env(), input: '', timeout: 5000 });
