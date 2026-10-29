@@ -215,7 +215,7 @@ describe('mcp-guard end to end', () => {
     assert.doesNotMatch(strict.stderr.toString(), /WARNING/);
   });
 
-  it('refuses to start with an exposed signing key', () => {
+  it('refuses to start with an exposed signing key', { skip: process.platform === 'win32' && 'POSIX file modes do not apply on Windows' }, () => {
     chmodSync(join(dir, 'keys', 'signing.private.pem'), 0o644);
     const r = spawnSync('node', [CLI, '--config', join(dir, 'pp.config.yaml'), '--', 'node', ECHO], { env: env(), input: '', timeout: 5000 });
     chmodSync(join(dir, 'keys', 'signing.private.pem'), 0o600);

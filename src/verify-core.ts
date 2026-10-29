@@ -29,23 +29,47 @@ export function verifyDetached(bytes: string, signatureHex: unknown, keyId: unkn
   }
 }
 
-/** Remembers used nonces so an authorization is honored at most once per process. */
-export class ReplayCache {
-  private readonly seen = new Set<string>();
-  constructor(private readonly max = 10_000) {}
+export type ReplayOutcome = 'ok' | 'replayed' | 'full';
 
-  /** Record `key`; returns false when it was already used. */
-  use(key: string): boolean {
-    if (this.seen.has(key)) return false;
-    this.seen.add(key);
-    if (this.seen.size > this.max) {
-      const oldest = this.seen.values().next().value;
-      if (oldest !== undefined) this.seen.delete(oldest);
-    }
-    return true;
+/**
+ * Remembers used authorizations so each is honored at most once per process.
+ *
+ * An entry is kept until the authorization it records has expired, plus a grace period
+ * for clock rounding: after that the authorization fails its own expiry check, so
+ * forgetting it cannot re-open it. An unexpired entry is never evicted. When the cache is
+ * full of unexpired entries, new authorizations are refused ('full') rather than making
+ * room by forgetting one.
+ */
+export class ReplayCache {
+  private readonly seen = new Map<string, number>(); // key -> expiry (epoch ms)
+
+  constructor(
+    private readonly max = 100_000,
+    private readonly now: () => number = () => Date.now(),
+    private readonly graceMs = 60_000,
+  ) {}
+
+  /** Record `key`, valid until `expiresAtMs`. Returns 'replayed' if already used, 'full' at capacity. */
+  use(key: string, expiresAtMs: number): ReplayOutcome {
+    const t = this.now();
+    const prior = this.seen.get(key);
+    if (prior !== undefined && prior > t) return 'replayed';
+    if (this.seen.size >= this.max) this.prune(t);
+    if (this.seen.size >= this.max) return 'full';
+    this.seen.set(key, Number.isFinite(expiresAtMs) ? expiresAtMs + this.graceMs : Number.MAX_SAFE_INTEGER);
+    return 'ok';
   }
 
   has(key: string): boolean {
-    return this.seen.has(key);
+    const exp = this.seen.get(key);
+    return exp !== undefined && exp > this.now();
+  }
+
+  get size(): number {
+    return this.seen.size;
+  }
+
+  private prune(t: number): void {
+    for (const [k, exp] of this.seen) if (exp <= t) this.seen.delete(k);
   }
 }

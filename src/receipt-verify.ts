@@ -116,8 +116,10 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
     }
   }
 
-  if (reasons.length === 0 && opts.replayCache && !opts.replayCache.use(`${e.receipt_id}:${e.nonce}`)) {
-    reasons.push('PP_REPLAYED: this receipt has already been used.');
+  if (reasons.length === 0 && opts.replayCache) {
+    const outcome = opts.replayCache.use(`${e.receipt_id}:${e.nonce}`, expires);
+    if (outcome === 'replayed') reasons.push('PP_REPLAYED: this receipt has already been used.');
+    if (outcome === 'full') reasons.push('PP_REPLAY_CACHE_FULL: too many unexpired receipts in use; refusing rather than forgetting one.');
   }
 
   return { valid: reasons.length === 0, reasons };
