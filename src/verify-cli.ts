@@ -1,31 +1,49 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Receipt } from './receipt.js';
-import { verifyReceipt, type ExpectedScope } from './receipt-verify.js';
+import {
+  verifyReceipt,
+  verifyArtifactReceipt,
+  isLegacyMcpGuardReceipt,
+  LEGACY_SIGNED_FIELDS_NOTE,
+  type ExpectedScope,
+  type VerifyResult,
+} from './receipt-verify.js';
 import { keyIdForPublicKey } from './signer.js';
+import { parseTrust } from './signing/keys.js';
 import type { PinnedKeys } from './verify-core.js';
 
 /**
  * `mcp-guard verify` — the OFFLINE receipt gate a CI step runs.
  *
- *   mcp-guard verify --receipt-file receipt.json --pubkey pinned.pub.pem \
- *     --scope deploy:production --scope-sha <sha>
+ * Org receipt standard (`jcs_v2` artifact, `{ "artifact": ... }`):
+ *   mcp-guard verify --receipt-file receipt.json --keys keys.json \
+ *     --trust KEY_ID=sha256:<fingerprint> --scope deploy:production --scope-sha <sha>
  *
- * The public key must be supplied (`--pubkey`, repeatable): the gate trusts only keys it
- * is given and never generates or discovers one. Exit 0 = authorized, 1 = refused,
- * 2 = missing input. "No receipt = No deploy. This is intentional."
+ * Legacy mcp-guard 0.2 receipt (`{ "envelope": ... }`), verified and labelled legacy:
+ *   mcp-guard verify --receipt-file receipt.json --pubkey pinned.pub.pem --scope ...
+ *
+ * The gate trusts only keys it is given and never generates or discovers one.
+ * Exit 0 = authorized, 1 = refused, 2 = missing input. "No receipt = No deploy."
  */
 
-const USAGE = 'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --pubkey <pem> [--pubkey <pem> ...] --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]';
+const USAGE = [
+  'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]',
+  '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...]',
+  '  legacy mcp-guard 0.2 receipts:  --pubkey <pem> [--pubkey <pem> ...]',
+].join('\n');
 
 function ciError(message: string): void {
   console.log(`::error::${message.replace(/\n/g, '%0A')}`);
   console.error(message);
 }
 
-function parseArgs(argv: string[]): { flags: Record<string, string>; pubkeys: string[]; bools: Set<string> } {
+interface Args { flags: Record<string, string>; pubkeys: string[]; trust: string[]; bools: Set<string> }
+
+function parseArgs(argv: string[]): Args {
   const flags: Record<string, string> = {};
   const pubkeys: string[] = [];
+  const trust: string[] = [];
   const bools = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -35,31 +53,36 @@ function parseArgs(argv: string[]): { flags: Record<string, string>; pubkeys: st
     const next = argv[i + 1];
     if (next === undefined || next.startsWith('--')) { flags[key] = ''; continue; }
     if (key === 'pubkey') pubkeys.push(next);
+    else if (key === 'trust') trust.push(next);
     else flags[key] = next;
     i++;
   }
-  return { flags, pubkeys, bools };
+  return { flags, pubkeys, trust, bools };
 }
 
-function loadReceiptById(id: string, path: string): Receipt | string {
+function receiptIdOf(r: any): string | undefined {
+  return r?.artifact?.receipt_id ?? r?.envelope?.receipt_id;
+}
+
+function loadReceiptById(id: string, path: string): unknown | string {
   if (!existsSync(path)) return `receipt store not found at ${path}`;
-  let found: Receipt | null = null;
+  let found: unknown = null;
   for (const line of readFileSync(path, 'utf-8').split('\n')) {
     if (!line.trim()) continue;
     try {
       const r = JSON.parse(line);
-      if (r?.envelope?.receipt_id === id) found = r;
+      if (receiptIdOf(r) === id) found = r;
     } catch { /* skip malformed line */ }
   }
   return found ?? `no receipt with id "${id}" in ${path}`;
 }
 
 export function runVerify(argv: string[]): number {
-  const { flags, pubkeys, bools } = parseArgs(argv);
+  const { flags, pubkeys, trust, bools } = parseArgs(argv);
   const fail = (msg: string): number => { ciError(`No receipt = No deploy. This is intentional. (${msg})`); return 2; };
   if (bools.has('help')) { console.log(USAGE); return 0; }
 
-  let receipt: Receipt;
+  let receipt: unknown;
   if (flags['receipt-file']) {
     const p = resolve(flags['receipt-file']);
     if (!existsSync(p)) return fail(`receipt file not found: ${p}`);
@@ -72,19 +95,6 @@ export function runVerify(argv: string[]): number {
     return fail(USAGE);
   }
 
-  if (pubkeys.length === 0) return fail('--pubkey is required: the gate verifies only against keys you pin');
-  const keys: PinnedKeys = {};
-  for (const k of pubkeys) {
-    const p = resolve(k);
-    if (!existsSync(p)) return fail(`public key not found: ${p}`);
-    try {
-      const pem = readFileSync(p, 'utf-8');
-      keys[keyIdForPublicKey(pem)] = pem;
-    } catch (e: any) {
-      return fail(`public key ${p} is not a valid PEM: ${e.message}`);
-    }
-  }
-
   for (const f of ['scope', 'scope-ref', 'scope-sha']) {
     if (f in flags && !flags[f]) return fail(`--${f} needs a value`);
   }
@@ -92,16 +102,41 @@ export function runVerify(argv: string[]): number {
   const expected: ExpectedScope = { scope: flags.scope };
   if (flags['scope-ref']) expected.scope_ref = flags['scope-ref'];
   if (flags['scope-sha']) expected.scope_sha = flags['scope-sha'];
-  const hasExpected = true;
+  const allowPolicyApproval = bools.has('allow-policy-approval');
 
-  const result = verifyReceipt(receipt, keys, {
-    ...(hasExpected ? { expected } : {}),
-    allowPolicyApproval: bools.has('allow-policy-approval'),
-  });
-  const id = (receipt as any)?.envelope?.receipt_id ?? '(unknown)';
+  let result: VerifyResult;
+  let label: string;
+  if (isLegacyMcpGuardReceipt(receipt)) {
+    if (pubkeys.length === 0) return fail('--pubkey is required for a legacy mcp-guard 0.2 receipt: the gate verifies only against keys you pin');
+    const keys: PinnedKeys = {};
+    for (const k of pubkeys) {
+      const p = resolve(k);
+      if (!existsSync(p)) return fail(`public key not found: ${p}`);
+      try {
+        const pem = readFileSync(p, 'utf-8');
+        keys[keyIdForPublicKey(pem)] = pem;
+      } catch (e: any) {
+        return fail(`public key ${p} is not a valid PEM: ${e.message}`);
+      }
+    }
+    result = verifyReceipt(receipt as Receipt, keys, { expected, allowPolicyApproval });
+    label = `VERIFIED (${LEGACY_SIGNED_FIELDS_NOTE})`;
+  } else {
+    if (!flags.keys) return fail('--keys <keys.json> is required: the gate verifies only against a key set you supply');
+    const p = resolve(flags.keys);
+    if (!existsSync(p)) return fail(`key set not found: ${p}`);
+    let keySet: unknown;
+    try { keySet = JSON.parse(readFileSync(p, 'utf-8')); } catch (e: any) { return fail(`key set ${p} is not valid JSON: ${e.message}`); }
+    let pins;
+    try { pins = trust.length ? parseTrust(trust) : null; } catch (e: any) { return fail(e.message); }
+    result = verifyArtifactReceipt(receipt, keySet, { expected, allowPolicyApproval, trust: pins });
+    label = pins ? 'VERIFIED (jcs_v2, key pinned by --trust)' : 'VERIFIED (jcs_v2; key taken from the key set file, not pinned)';
+  }
+
+  const id = receiptIdOf(receipt) ?? '(unknown)';
   if (result.valid) {
-    const scope = hasExpected ? ` for ${[expected.scope, expected.scope_ref, expected.scope_sha && `@ ${expected.scope_sha}`].filter(Boolean).join(' ')}` : '';
-    console.log(`Receipt ${id} VERIFIED${scope}. Gate green.`);
+    const scope = [expected.scope, expected.scope_ref, expected.scope_sha && `@ ${expected.scope_sha}`].filter(Boolean).join(' ');
+    console.log(`Receipt ${id} ${label} for ${scope}. Gate green.`);
     return 0;
   }
   ciError(`No receipt = No deploy. This is intentional. Receipt ${id} REFUSED:\n  - ${result.reasons.join('\n  - ')}`);

@@ -96,7 +96,8 @@ mcp-guard — MCP policy proxy
 
 Usage:
   mcp-guard [options] -- <server command>
-  mcp-guard verify --receipt-file <path> --pubkey <pem> [--scope s] [--scope-ref r] [--scope-sha h]
+  mcp-guard verify --receipt-file <path> --keys <keys.json> [--trust ID=sha256:<hex>] --scope s [--scope-ref r] [--scope-sha h]
+  mcp-guard verify --receipt-file <legacy 0.2 receipt> --pubkey <pem> --scope s ...
   mcp-guard export-key [out.pem]
 
 Options:

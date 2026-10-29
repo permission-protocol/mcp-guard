@@ -1,5 +1,7 @@
 import { RECEIPT_VERSION, signingBytes, type Receipt, type ReceiptEnvelope } from './receipt.js';
 import { verifyDetached, type PinnedKeys, type ReplayCache } from './verify-core.js';
+import { checkArtifact } from './signing/artifact.js';
+import { fingerprintOf, type TrustPins } from './signing/keys.js';
 
 /**
  * OFFLINE receipt verifier — the deploy-gate side of "the receipt is the bridge".
@@ -124,3 +126,102 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
 
   return { valid: reasons.length === 0, reasons };
 }
+
+// ---------------------------------------------------------------------------
+// The org receipt standard (`jcs_v2` artifacts). The cryptographic checks are the
+// spec's (src/signing/artifact.ts); the gate checks below read only from the signed
+// payload, never from the artifact's unsigned convenience fields.
+// ---------------------------------------------------------------------------
+
+export interface ArtifactVerifyOptions extends VerifyOptions {
+  /** key id → sha256 fingerprint. Without pins, the key set file is the trust anchor. */
+  trust?: TrustPins | null;
+}
+
+export interface ArtifactVerifyResult extends VerifyResult {
+  format: 'jcs_v2';
+  payload?: Record<string, unknown>;
+  keyFingerprint?: string;
+}
+
+/** The scope a `jcs_v2` request names: `scope.capability`, `scope.ref`, `scope.commitSha`. */
+export function requestScope(payload: Record<string, unknown>): { capability: string; ref: string | null; commitSha: string | null } | null {
+  if (typeof payload.requestJson !== 'string') return null;
+  let request: any;
+  try { request = JSON.parse(payload.requestJson); } catch { return null; }
+  const s = request?.scope;
+  if (!s || typeof s !== 'object' || typeof s.capability !== 'string') return null;
+  return {
+    capability: s.capability,
+    ref: typeof s.ref === 'string' ? s.ref : null,
+    commitSha: typeof s.commitSha === 'string' ? s.commitSha : null,
+  };
+}
+
+/** A decision a person made, as opposed to a policy, a timer or an unattributed click. */
+function humanDecided(payload: Record<string, unknown>): boolean {
+  return typeof payload.deciderId === 'string'
+    && typeof payload.deciderAuthMethod === 'string'
+    && payload.deciderAuthMethod !== 'policy'
+    && payload.attributionConfidence !== 'unattributed';
+}
+
+export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: ArtifactVerifyOptions = {}): ArtifactVerifyResult {
+  const now = opts.now ?? new Date();
+  const artifact = (envelope as { artifact?: unknown } | null)?.artifact ?? envelope;
+  let payload: Record<string, unknown>;
+  let rawKey: Buffer;
+  try {
+    ({ payload, rawKey } = checkArtifact(artifact, keySet, opts.trust ?? null));
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? 'MALFORMED';
+    return { valid: false, format: 'jcs_v2', reasons: [`${code}: ${(err as Error).message}.`] };
+  }
+
+  const reasons: string[] = [];
+  if (payload.status !== 'APPROVED') {
+    reasons.push(`PP_NOT_AUTHORIZED: signed status is ${JSON.stringify(payload.status ?? null)}, expected "APPROVED".`);
+  }
+  const expires = typeof payload.expiresAt === 'string' ? Date.parse(payload.expiresAt) : NaN;
+  if (Number.isNaN(expires)) {
+    reasons.push('PP_EXPIRED: the receipt has no signed expiresAt.');
+  } else if (expires <= now.getTime()) {
+    reasons.push(`PP_EXPIRED: receipt expired at ${new Date(expires).toISOString()} (now ${now.toISOString()}).`);
+  }
+
+  const scope = requestScope(payload);
+  if (scope && !humanDecided(payload) && !opts.allowPolicyApproval) {
+    reasons.push(`PP_APPROVAL_NOT_HUMAN: scoped action was decided by ${JSON.stringify(payload.deciderId ?? null)} (${String(payload.deciderAuthMethod ?? 'no decider')}), not an attributed human.`);
+  }
+  if (opts.expected) {
+    const actual: Record<keyof ExpectedScope, string | null> = {
+      scope: scope?.capability ?? null,
+      scope_ref: scope?.ref ?? null,
+      scope_sha: scope?.commitSha ?? null,
+    };
+    for (const field of ['scope', 'scope_ref', 'scope_sha'] as const) {
+      const want = opts.expected[field];
+      if (want !== undefined && actual[field] !== want) {
+        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want}" but the signed request has "${actual[field] ?? ''}".`);
+      }
+    }
+  }
+
+  if (reasons.length === 0 && opts.replayCache) {
+    const outcome = opts.replayCache.use(`${String(payload.id)}`, expires);
+    if (outcome === 'replayed') reasons.push('PP_REPLAYED: this receipt has already been used.');
+    if (outcome === 'full') reasons.push('PP_REPLAY_CACHE_FULL: too many unexpired receipts in use; refusing rather than forgetting one.');
+  }
+
+  return { valid: reasons.length === 0, format: 'jcs_v2', reasons, payload, keyFingerprint: fingerprintOf(rawKey) };
+}
+
+/** True for a 0.2.0 receipt (`{ envelope: { v: 2 }, signature, display }`). */
+export function isLegacyMcpGuardReceipt(input: unknown): boolean {
+  const e = (input as { envelope?: { v?: unknown } } | null)?.envelope;
+  return !!e && typeof e === 'object' && e.v === 2 && !!(input as { signature?: unknown }).signature;
+}
+
+/** What a 0.2.0 receipt's signature covers, stated whenever one verifies. */
+export const LEGACY_SIGNED_FIELDS_NOTE =
+  'legacy mcp-guard 0.2 receipt: its own canonical envelope is signed (scope, decision, approver, expiry, nonce, key id), but it is not the org receipt standard and no other verifier reads it';

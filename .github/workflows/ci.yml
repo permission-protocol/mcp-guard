@@ -13,9 +13,9 @@ jobs:
     name: Build and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
@@ -31,3 +31,33 @@ jobs:
           node scripts/demo-slice1.mjs
           node scripts/demo-slice2.mjs
           node scripts/demo-slice25.mjs
+
+  audit-regression:
+    name: Audit regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check out the pre-fix baseline (1480615)
+        uses: actions/checkout@v5
+        with:
+          ref: 148061508de0c50ae6a2d5f4fcfe80a6708e3a82
+          path: audit-baseline
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Build current code
+        run: npm ci && npm run build
+
+      - name: Build pre-fix baseline
+        working-directory: audit-baseline
+        run: npm ci && npm run build
+
+      - name: Every audit attack succeeds against the pre-fix baseline
+        run: node scripts/audit-poc.mjs audit-baseline --expect vulnerable
+
+      - name: Every audit attack is stopped by the current code
+        run: node scripts/audit-poc.mjs . --expect fixed
