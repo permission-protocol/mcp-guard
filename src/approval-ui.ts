@@ -155,18 +155,23 @@ export function getApprovalHTML(): string {
     if (receipts.length === 0) { rEl.appendChild(el('div', 'empty', 'No recent decisions')); return; }
     var table = el('table');
     var thead = el('thead'); var hr = el('tr');
-    ['Time', 'Action', 'Decision', 'Approved by', 'Rule', 'Receipt'].forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    ['Time', 'Action', 'Decision', 'Decided by', 'Rule', 'Receipt'].forEach(function (h) { hr.appendChild(el('th', null, h)); });
     thead.appendChild(hr); table.appendChild(thead);
     var tbody = el('tbody');
     receipts.forEach(function (r) {
-      var e = r.envelope || {};
+      var rec = r.record || {};
+      var req = {};
+      try { req = JSON.parse(rec.requestJson || '{}'); } catch (err) { req = {}; }
+      var action = req.action || {};
+      var rule = (req.policy && req.policy.decision && req.policy.decision.ruleId) || '—';
       var tr = el('tr');
-      tr.appendChild(el('td', null, new Date(e.issued_at).toLocaleTimeString()));
-      tr.appendChild(el('td', null, e.tool || e.method));
-      var td = el('td'); td.appendChild(el('span', 'badge badge-' + e.decision, e.decision)); tr.appendChild(td);
-      tr.appendChild(el('td', null, e.approval ? e.approval.kind + ': ' + e.approval.id : '—'));
-      tr.appendChild(el('td', null, e.rule_id || '—'));
-      tr.appendChild(el('td', null, e.receipt_id));
+      tr.appendChild(el('td', null, new Date(rec.createdAt).toLocaleTimeString()));
+      tr.appendChild(el('td', null, action.tool || action.operation || '—'));
+      var cls = rec.status === 'APPROVED' ? 'allowed' : 'blocked';
+      var td = el('td'); td.appendChild(el('span', 'badge badge-' + cls, (rec.status || '').toLowerCase())); tr.appendChild(td);
+      tr.appendChild(el('td', null, rec.deciderDisplay || rec.deciderId || 'unattributed'));
+      tr.appendChild(el('td', null, rule));
+      tr.appendChild(el('td', null, (rec.id || '') + (r.artifact ? '' : ' (unsigned)')));
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);

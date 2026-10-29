@@ -33,6 +33,8 @@ export const HELD = -32002;
 export const DENIED = -32003;
 export const EXPIRED = -32004;
 export const RELEASE_FAILED = -32005;
+/** The guard could not sign the decision (missing, invalid or revoked key): nothing was forwarded. */
+export const SIGNING_FAILED = -32006;
 
 /**
  * Methods that carry no action or data access of their own. Everything else — tools/call,

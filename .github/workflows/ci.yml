@@ -24,9 +24,8 @@ jobs:
       - run: npm run build
       - run: npm test
 
+      # Each driver signs with its own throwaway demo key.
       - name: End-to-end demo drivers
-        env:
-          PP_KEYS_DIR: ${{ runner.temp }}/mcp-guard-keys
         run: |
           node scripts/demo-slice1.mjs
           node scripts/demo-slice2.mjs

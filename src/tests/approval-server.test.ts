@@ -3,20 +3,21 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { request } from 'node:http';
 import { networkInterfaces } from 'node:os';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { startApprovalServer, type ApprovalServerHandle } from '../approval-server.js';
 import { addPending, surfaceActed, getAction, _resetQueue, setAutoReleaseHandler, type PendingEnrichment } from '../pending.js';
-import { issueReceipt, type Approval } from '../receipt.js';
+import type { IssuedReceipt } from '../issuer.js';
 import { derivePreview, buildEnrichment } from '../proxy.js';
 import type { Decision } from '../engine.js';
-import { isolateKeys } from './helpers.js';
+import { keySetPath } from '../keystore.js';
+import { isolateKeys, testIssuer } from './helpers.js';
 
 const TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
 const SECRET = 'approval-test-webhook-secret';
 let handle: ApprovalServerHandle;
 let BASE = '';
 let PORT = 0;
-const released: Array<{ id: string; approval: Approval }> = [];
+const released: Array<{ id: string; issued: IssuedReceipt }> = [];
 
 const auth = { Authorization: `Bearer ${TOKEN}` };
 const get = (path: string, headers: Record<string, string> = auth) => fetch(`${BASE}${path}`, { headers });
@@ -58,18 +59,8 @@ describe('Approval server', () => {
       port: 0,
       token: TOKEN,
       operator: 'rod',
-      hooks: {
-        release: (action, approval) => {
-          released.push({ id: action.id, approval });
-          const r = issueReceipt({
-            method: 'tools/call', tool: action.tool_name, args: action.tool_args,
-            decision: { decision: 'allowed', rule_id: action.rule_id, reason: 'test' },
-            approval, actor: action.agent_id, mode: 'enforce', policy_sha256: 'p', ttl_seconds: 60, target_server: 't',
-          });
-          action.receipt_id = r.envelope.receipt_id;
-          return r;
-        },
-      },
+      issuer: testIssuer(),
+      hooks: { release: (action, issued) => { released.push({ id: action.id, issued }); } },
     });
     PORT = await handle.ready;
     BASE = `http://127.0.0.1:${PORT}`;
@@ -91,7 +82,7 @@ describe('Approval server', () => {
   });
 
   it('refuses a token shorter than 32 characters', () => {
-    assert.throws(() => startApprovalServer({ port: 0, token: 'short' }), /at least 32/);
+    assert.throws(() => startApprovalServer({ port: 0, token: 'short', issuer: testIssuer() }), /at least 32/);
   });
 
   it('rejects a foreign Host header with 421 (DNS rebinding)', async () => {
@@ -159,25 +150,54 @@ describe('Approval server', () => {
     assert.equal(items[0].confidence, 72);
   });
 
-  it('approve releases once with the operator as a human approver', async () => {
+  it('approve releases once, signed by the operator as local:<operator>', async () => {
     const a = add();
     const r1 = await post(`/api/approve/${a.id}`);
     assert.equal(r1.status, 200);
     const body = (await r1.json()) as any;
     assert.equal(body.status, 'approved');
     assert.match(body.receipt_id, /^rcpt_mg_/);
-    assert.deepEqual(released[0].approval, { kind: 'human', id: 'rod', via: 'local-token' });
+    const rec = released[0].issued.record;
+    assert.equal(rec.status, 'APPROVED');
+    assert.equal(rec.deciderId, 'local:rod');
+    assert.equal(rec.resolutionType, 'allow_once');
+    assert.equal(rec.reasonCodes, '["RULE_MATCHED:rule-email","OPERATOR_APPROVED"]');
+    assert.equal(rec.idemKey, `mcp-guard:${a.id}`);
+    assert.ok(released[0].issued.artifact, 'signed');
 
     const r2 = await post(`/api/approve/${a.id}`);
     assert.equal(r2.status, 409);
     assert.equal(released.length, 1);
   });
 
-  it('deny answers the waiting client and is final', async () => {
+  it('B2: approving with no usable key leaves the call held and names the code', async () => {
+    const a = add();
+    const saved = readFileSync(keySetPath(), 'utf-8');
+    writeFileSync(keySetPath(), JSON.stringify({ keys: [] }));
+    try {
+      const r = await post(`/api/approve/${a.id}`);
+      assert.equal(r.status, 409);
+      assert.equal(((await r.json()) as any).error, 'SIGNING_KEY_MISSING');
+      assert.equal(getAction(a.id)?.status, 'pending', 'still held');
+      assert.equal(released.length, 0);
+    } finally {
+      writeFileSync(keySetPath(), saved);
+    }
+    assert.equal((await post(`/api/approve/${a.id}`)).status, 200, 'approvable once the key is back');
+  });
+
+  it('deny answers the waiting client, signs a DENIED receipt and is final', async () => {
     let answered = '';
     const a = add({}, (l) => { answered = l; });
-    assert.equal((await post(`/api/deny/${a.id}`)).status, 200);
+    const res = (await (await post(`/api/deny/${a.id}`)).json()) as any;
+    assert.equal(res.status, 'denied');
     assert.match(answered, /"code":-32003/);
+    const receipts = (await (await get('/api/receipts')).json()) as any[];
+    const rec = receipts.find((x) => x.record.id === res.receipt_id);
+    assert.equal(rec.record.status, 'DENIED');
+    assert.equal(rec.record.resolutionType, 'deny');
+    assert.equal(rec.record.reasonCodes, '["RULE_MATCHED:rule-email","OPERATOR_DENIED"]');
+    assert.ok(rec.artifact);
     const again = await post(`/api/approve/${a.id}`);
     assert.equal(again.status, 409);
     assert.equal(released.length, 0);
@@ -234,27 +254,34 @@ describe('Approval server', () => {
       assert.equal(r.status, 401);
     });
 
-    it('audit PoC: deny then approve gives 409 and issues no receipt', async () => {
+    const records = () => {
+      const path = process.env.PP_SHARED_RECEIPTS_PATH!;
+      return (existsSync(path) ? readFileSync(path, 'utf-8') : '').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    };
+
+    it('audit PoC: deny then approve gives 409; only the signed denial exists', async () => {
       const q = (await (await hook(body)).json()) as any;
-      assert.equal((await post(`/api/deny/${q.id}`)).status, 200);
+      const denied = (await (await post(`/api/deny/${q.id}`)).json()) as any;
       const a1 = await post(`/api/approve/${q.id}`);
       const a2 = await post(`/api/approve/${q.id}`);
       assert.equal(a1.status, 409);
       assert.equal(a2.status, 409);
-      assert.equal(getAction(q.id)?.receipt_id, undefined);
-      const path = process.env.PP_SHARED_RECEIPTS_PATH!;
-      const lines = existsSync(path) ? readFileSync(path, 'utf-8') : '';
-      assert.ok(!lines.includes('pr-needs-authority'), 'no receipt was written for the denied PR');
+      const forPr = records().filter((l) => l.record?.idemKey === `mcp-guard:${q.id}`);
+      assert.equal(forPr.length, 1);
+      assert.equal(forPr[0].record.id, denied.receipt_id);
+      assert.equal(forPr[0].record.status, 'DENIED');
     });
 
-    it('approve issues one scoped, human-approved receipt', async () => {
+    it('approve issues one receipt bound to the PR head commit, decided by the operator', async () => {
       const q = (await (await hook(body)).json()) as any;
       const r = (await (await post(`/api/approve/${q.id}`)).json()) as any;
       assert.match(r.receipt_id, /^rcpt_mg_/);
       const receipts = (await (await get('/api/receipts')).json()) as any[];
-      const rec = receipts.find((x) => x.envelope.receipt_id === r.receipt_id);
-      assert.deepEqual(rec.envelope.scope, { scope: 'github:merge', ref: 'refs/pull/7/merge', sha: 'abc' });
-      assert.equal(rec.envelope.approval.kind, 'human');
+      const rec = receipts.find((x) => x.record.id === r.receipt_id).record;
+      const req = JSON.parse(rec.requestJson);
+      assert.deepEqual(req.scope, { capability: 'github:merge', commitSha: 'abc', ref: 'refs/pull/7/merge' });
+      assert.deepEqual(req.action, { operation: 'github/merge', resource: 'github-webhook', tool: 'merge_pr' });
+      assert.equal(rec.deciderId, 'local:rod');
       assert.equal((await post(`/api/approve/${q.id}`)).status, 409);
     });
 

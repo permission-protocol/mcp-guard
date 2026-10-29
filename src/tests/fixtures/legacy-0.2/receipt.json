@@ -1,0 +1,44 @@
+{
+  "envelope": {
+    "v": 2,
+    "receipt_id": "rcpt_mg_mvu1ihdi_df0008a9de94",
+    "method": "tools/call",
+    "tool": "deploy",
+    "args_sha256": "53990f6cbe764a8b17085e7f76a714f6d98c10c0f61d6e2ca556331b758df5ba",
+    "scope": {
+      "scope": "deploy:production",
+      "ref": null,
+      "sha": "a1b2c3d4"
+    },
+    "decision": "allowed",
+    "approval": {
+      "kind": "human",
+      "id": "rod",
+      "via": "local-token"
+    },
+    "actor": "agent",
+    "rule_id": "deploy",
+    "policy_sha256": "p",
+    "mode": "enforce",
+    "issued_at": "2026-10-29T21:13:09.750Z",
+    "expires_at": "2126-10-05T21:13:09.750Z",
+    "nonce": "edf5d8c063a503eb6789dccad008c6bb",
+    "key_id": "pp-dev-65a35a5ace9dd493"
+  },
+  "signature": {
+    "alg": "ed25519",
+    "key_id": "pp-dev-65a35a5ace9dd493",
+    "value": "0c9f75618ddcc49ee36662c0d0827841455f0e555eba356bf7ae287ff4d619cdd80b3fb822a4f912c8b3dede97d28d4c1417e3bb0376332fbad5f979cb7c670b"
+  },
+  "display": {
+    "summary": "MCP Guard allowed \"deploy\" by human rod",
+    "reason": "approved",
+    "risk_tier": "high",
+    "target_server": "s",
+    "arg_keys": [
+      "env",
+      "sha"
+    ],
+    "viewer_url": "https://app.permissionprotocol.com/r/rcpt_mg_mvu1ihdi_df0008a9de94"
+  }
+}

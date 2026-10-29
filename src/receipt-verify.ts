@@ -2,6 +2,7 @@ import { RECEIPT_VERSION, signingBytes, type Receipt, type ReceiptEnvelope } fro
 import { verifyDetached, type PinnedKeys, type ReplayCache } from './verify-core.js';
 import { checkArtifact } from './signing/artifact.js';
 import { fingerprintOf, type TrustPins } from './signing/keys.js';
+import { hashablePayloadInputHash } from './issuer.js';
 
 /**
  * OFFLINE receipt verifier — the deploy-gate side of "the receipt is the bridge".
@@ -133,9 +134,20 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
 // payload, never from the artifact's unsigned convenience fields.
 // ---------------------------------------------------------------------------
 
+/** The call a receipt is checked against: its `inputHash` must recompute from it. */
+export interface CallInput {
+  tool: string;
+  operation: string;
+  input: unknown;
+}
+
 export interface ArtifactVerifyOptions extends VerifyOptions {
   /** key id → sha256 fingerprint. Without pins, the key set file is the trust anchor. */
   trust?: TrustPins | null;
+  /** Accept receipts signed with scope "demo" (demo keys). Default false. */
+  allowDemo?: boolean;
+  /** When given, the signed inputHash must be this call's pp.hashable_payload.v1 hash. */
+  call?: CallInput;
 }
 
 export interface ArtifactVerifyResult extends VerifyResult {
@@ -187,6 +199,16 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     reasons.push('PP_EXPIRED: the receipt has no signed expiresAt.');
   } else if (expires <= now.getTime()) {
     reasons.push(`PP_EXPIRED: receipt expired at ${new Date(expires).toISOString()} (now ${now.toISOString()}).`);
+  }
+
+  if (payload.scope === 'demo' && !opts.allowDemo) {
+    reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key (scope "demo") and authorizes nothing real.');
+  }
+  if (opts.call) {
+    const want = hashablePayloadInputHash(opts.call.tool, opts.call.operation, opts.call.input);
+    if (payload.inputHash !== want) {
+      reasons.push(`INPUT_HASH_MISMATCH: the signed inputHash is ${JSON.stringify(payload.inputHash ?? null)}, the call hashes to ${want}.`);
+    }
   }
 
   const scope = requestScope(payload);

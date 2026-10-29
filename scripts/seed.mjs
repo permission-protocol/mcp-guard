@@ -2,8 +2,10 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { demoKeys } from './demo-keys.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TOKEN = randomBytes(32).toString('hex');
+demoKeys(); // sign with a throwaway demo key (scope demo), never the operator's
 const g = spawn('node', [join(ROOT,'dist/src/cli.js'),'--config',join(ROOT,'scripts/seed.config.yaml'),'--agent-id','charles','--approval-port','7700','--','node',join(ROOT,'actions-mcp/server.mjs')],{stdio:['pipe','pipe','inherit'],env:{...process.env,PP_APPROVAL_TOKEN:TOKEN}});
 process.stderr.write(`\n  Approval UI: http://127.0.0.1:7700/#t=${TOKEN}\n\n`);
 const s=o=>g.stdin.write(JSON.stringify(o)+'\n');

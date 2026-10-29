@@ -13,6 +13,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
+import { demoKeys } from './demo-keys.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API_PORT = 7700;
@@ -23,6 +24,7 @@ const TOKEN = randomBytes(32).toString('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 1) Guard + approval API, wrapping the combined demo MCP server.
+demoKeys(); // sign with a throwaway demo key (scope demo), never the operator's
 const guard = spawn(
   'node',
   [join(ROOT, 'dist/src/cli.js'), '--config', join(ROOT, 'scripts/deck.config.yaml'),

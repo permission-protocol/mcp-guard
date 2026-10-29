@@ -1,16 +1,16 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { issueReceipt, type ReceiptInput, type Receipt } from '../receipt.js';
+import type { Receipt } from '../receipt.js';
 import { verifyReceipt } from '../receipt-verify.js';
-import { currentKeyId, getPublicKeyPem, keyIdForPublicKey } from '../signer.js';
+import { keyIdForPublicKey } from '../signer.js';
 import { ReplayCache, type PinnedKeys } from '../verify-core.js';
-import { isolateKeys } from './helpers.js';
+import { mintLegacy, LEGACY_KEY_ID, LEGACY_PUBLIC_PEM, type LegacyInput } from './legacy-mint.js';
 
 let keys: PinnedKeys;
 
-function scoped(over: Partial<ReceiptInput> = {}): Receipt {
-  return issueReceipt({
+function scoped(over: Partial<LegacyInput> = {}): Receipt {
+  return mintLegacy({
     method: 'tools/call',
     tool: 'deploy',
     args: { env: 'staging', sha: 'GOODSHA' },
@@ -28,10 +28,9 @@ function scoped(over: Partial<ReceiptInput> = {}): Receipt {
 
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
 
-describe('Offline receipt verification (v2)', () => {
+describe('Offline verification of legacy 0.2 receipts', () => {
   beforeEach(() => {
-    isolateKeys();
-    keys = { [currentKeyId()]: getPublicKeyPem() };
+    keys = { [LEGACY_KEY_ID]: LEGACY_PUBLIC_PEM };
   });
 
   it('accepts a valid scoped human-approved receipt with matching expectations', () => {
@@ -124,7 +123,7 @@ describe('Offline receipt verification (v2)', () => {
     assert.equal(r.valid, false);
     assert.ok(r.reasons.some((x) => x.includes('untrusted key_id')));
     // Pinning the right key id with the wrong key material still fails.
-    const swapped = verifyReceipt(scoped(), { [currentKeyId()]: other });
+    const swapped = verifyReceipt(scoped(), { [LEGACY_KEY_ID]: other });
     assert.equal(swapped.valid, false);
   });
 

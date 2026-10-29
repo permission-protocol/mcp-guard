@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
 import { TOOLS_CALL, type Config, type Rule } from './config.js';
 import { evaluate, type Decision } from './engine.js';
-import { issueReceipt, emitReceipt, type Approval, type Receipt, type ScopeBinding } from './receipt.js';
-import { verifyReceipt } from './receipt-verify.js';
-import { currentKeyId, getPublicKeyPem } from './signer.js';
-import { ReplayCache, type PinnedKeys } from './verify-core.js';
+import { Issuer, ruleReason, hashablePayloadInputHash, type IssuedReceipt, type ScopeBinding } from './issuer.js';
+import { SigningError } from './keystore.js';
+import { emitReceipt, emitHold } from './receipt-log.js';
+import { signHeld, forwardReleased } from './release.js';
+import { ReplayCache } from './verify-core.js';
 import {
   addPending,
   surfaceActed,
@@ -15,7 +15,7 @@ import {
   type PendingAction,
   type PendingEnrichment,
 } from './pending.js';
-import { startApprovalServer, pushReceipt, notifyQueueChange } from './approval-server.js';
+import { startApprovalServer, notifyQueueChange } from './approval-server.js';
 import {
   parseFrame,
   errorLine,
@@ -26,7 +26,7 @@ import {
   HELD,
   EXPIRED,
   INVALID_PARAMS,
-  RELEASE_FAILED,
+  SIGNING_FAILED,
   type JsonRpcMessage,
 } from './frame.js';
 
@@ -135,11 +135,21 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     process.exit(1);
   }
 
-  // Load the signing key up front: a missing or exposed key stops the guard here
-  // instead of failing open later.
-  const pinnedKeys: PinnedKeys = { [currentKeyId()]: getPublicKeyPem() };
+  const issuer = new Issuer({ config, agentId });
+  if (config.signing === 'off') {
+    process.stderr.write('[mcp-guard] WARNING: signing is off. Receipts are written unsigned and no gate accepts them.\n');
+  } else {
+    // Load the signing key up front: in enforce mode a missing, exposed or revoked key
+    // stops the guard here instead of failing later. The signer never creates a key.
+    try {
+      const key = issuer.key();
+      process.stderr.write(`[mcp-guard] Signing receipts with ${key.keyId} (${key.fingerprint})${key.demo ? ' [demo key: receipts are scope demo]' : ''}\n`);
+    } catch (err) {
+      if (!(err instanceof SigningError) || config.mode === 'enforce') throw err;
+      process.stderr.write(`[mcp-guard] WARNING: ${err.message}. Observe mode forwards calls; their receipts are marked signingFailed.\n`);
+    }
+  }
   const replayCache = new ReplayCache();
-  const targetServer = serverCommand.slice(0, 2).map((p) => basename(p)).join(' ');
   const approvalEnabled = opts.approvalPort !== undefined;
 
   // The server (and anything the agent can make it echo) never sees the guard's own
@@ -157,76 +167,48 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
 
   const toClient = (line: string): void => { process.stdout.write(line + '\n'); };
   const toServer = (msg: JsonRpcMessage): void => { child.stdin!.write(JSON.stringify(msg) + '\n'); };
+  const forwardLine = (line: string): void => { child.stdin!.write(line + '\n'); };
 
   // Server → client traffic is passed through unchanged.
   createInterface({ input: child.stdout! }).on('line', toClient);
 
-  function record(
-    method: string,
-    tool: string | null,
-    args: Record<string, unknown> | undefined,
-    decision: Decision,
-    approval: Approval | null,
-    actor: string,
-  ): Receipt {
-    const receipt = issueReceipt({
+  /** Sign a policy decision for a gated call. Throws SigningError when it cannot sign. */
+  function signPolicy(method: string, tool: string | null, input: Record<string, unknown> | undefined, decision: Decision): IssuedReceipt {
+    return issuer.issue({
       method,
       tool,
-      args,
-      decision,
-      approval,
-      actor,
-      mode: config.mode,
-      policy_sha256: config.policy_sha256,
-      ttl_seconds: config.receipt_ttl_seconds,
-      target_server: targetServer,
-      scope: tool ? deriveScope(tool, args) : undefined,
+      input,
+      status: decision.decision === 'allowed' ? 'APPROVED' : 'DENIED',
+      ruleId: decision.rule_id,
+      reasonCodes: [ruleReason(decision.rule_id)],
+      decider: { kind: 'policy' },
+      reversibility: decision.reversibility,
+      argKeys: Object.keys(input ?? {}).sort(),
+      scope: tool ? deriveScope(tool, input) : undefined,
     });
-    emitReceipt(receipt);
-    if (approvalEnabled) pushReceipt(receipt);
-    return receipt;
-  }
-
-  /**
-   * The single release path for held requests (manual approve and countdown): issue the
-   * signed receipt, verify it against the pinned key, and only then forward.
-   */
-  function release(action: PendingAction, approval: Approval): Receipt {
-    const tool = action.method === TOOLS_CALL ? action.tool_name : null;
-    const decision: Decision = {
-      decision: 'allowed',
-      rule_id: action.rule_id,
-      reason: `Released by ${approval.kind} "${approval.id}" (${approval.via})`,
-    };
-    const receipt = record(action.method, tool, action.tool_args, decision, approval, action.agent_id);
-    const check = verifyReceipt(receipt, pinnedKeys, { replayCache, allowPolicyApproval: true });
-    if (!check.valid) {
-      action.resolve(errorLine(action.jsonrpcId, RELEASE_FAILED, `Release refused: ${check.reasons.join(' ')}`));
-      throw new Error(`release refused for ${action.id}: ${check.reasons.join(' ')}`);
-    }
-    action.receipt_id = receipt.envelope.receipt_id;
-    child.stdin!.write(action.forwardLine + '\n');
-    return receipt;
   }
 
   if (approvalEnabled) {
     const server = startApprovalServer({
       port: opts.approvalPort!,
+      issuer,
       operator: opts.operator,
-      hooks: { release },
-      receiptTtlSeconds: config.receipt_ttl_seconds,
-      policySha256: config.policy_sha256,
+      hooks: { release: (action, issued) => forwardReleased(issuer, action, issued, replayCache, forwardLine) },
     });
     server.ready.catch((err) => {
       process.stderr.write(`[mcp-guard] Approval server failed to start: ${err.message}\n`);
       process.exit(1);
     });
 
+    // A countdown is a policy decision: signed as policy, never as a person.
     setAutoReleaseHandler((action) => {
       process.stderr.write(`[mcp-guard] Auto-released (countdown) "${action.tool_name}" (${action.id})\n`);
       try {
-        release(action, { kind: 'policy', id: action.rule_id ?? 'default_action', via: 'countdown' });
+        const issued = signHeld(issuer, action, { kind: 'policy' }, 'APPROVED', 'COUNTDOWN_AUTO_RELEASE');
+        emitReceipt(issued);
+        forwardReleased(issuer, action, issued, replayCache, forwardLine);
       } catch (err: any) {
+        if (err instanceof SigningError) action.resolve(errorLine(action.jsonrpcId, SIGNING_FAILED, `Not released: ${err.message}`));
         process.stderr.write(`[mcp-guard] ${err.message}\n`);
       }
       notifyQueueChange();
@@ -234,13 +216,23 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
 
     setExpireHandler((action) => {
       process.stderr.write(`[mcp-guard] Expired without a decision: "${action.tool_name}" (${action.id})\n`);
-      if (action.kind === 'held') action.resolve(errorLine(action.jsonrpcId, EXPIRED, 'Approval request expired without a decision'));
+      if (action.kind === 'held') {
+        try {
+          const issued = signHeld(issuer, action, { kind: 'policy' }, 'DENIED', 'APPROVAL_EXPIRED');
+          action.receipt_id = issued.record.id;
+          emitReceipt(issued);
+        } catch (err: any) {
+          process.stderr.write(`[mcp-guard] Expiry of ${action.id} was not signed: ${err.message}\n`);
+        }
+        action.resolve(errorLine(action.jsonrpcId, EXPIRED, 'Approval request expired without a decision'));
+      }
       notifyQueueChange();
     });
   }
 
   function gate(msg: JsonRpcMessage & { method: string }, isRequest: boolean): void {
     const id = msg.id ?? null;
+    let allowedReceiptId: string | undefined;
     const reply = (line: string): void => { if (isRequest) toClient(line); };
 
     let tool: string | null = null;
@@ -263,11 +255,35 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
       : Array.isArray(forward.params) ? { params: forward.params }
       : (forward.params as Record<string, unknown>);
     const label = tool ?? msg.method;
-    const policyApproval: Approval | null =
-      decision.decision === 'allowed'
-        ? { kind: 'policy', id: decision.rule_id ?? 'default_action', via: decision.lane === 'verify' ? 'standing_rule' : 'rule' }
-        : null;
-    const receipt = record(msg.method, tool, forwardArgs, decision, policyApproval, agentId);
+
+    const hold = (holdId: string | null): void => emitHold({
+      id: holdId, method: msg.method, tool, agentId, ruleId: decision.rule_id,
+      inputHash: hashablePayloadInputHash(tool ?? msg.method, msg.method, forwardArgs), createdAt: new Date().toISOString(),
+    });
+
+    // Allow and block are final policy decisions: signed now. A hold is not a decision:
+    // it is recorded unsigned, and whatever resolves it is signed then.
+    if (decision.decision !== 'held_for_approval') {
+      let receipt: IssuedReceipt;
+      try {
+        receipt = signPolicy(msg.method, tool, forwardArgs, decision);
+      } catch (err: any) {
+        process.stderr.write(`[mcp-guard] ${err.message}\n`);
+        if (decision.decision === 'allowed') {
+          // Enforce mode: no receipt, no forward.
+          if (isRequest) toClient(errorLine(id, SIGNING_FAILED, `Refused: ${err.message}`));
+          else process.stderr.write(`[mcp-guard] Dropped notification "${label}": not signed\n`);
+          return;
+        }
+        // A blocked call stays blocked whether or not its denial could be signed.
+        if (isRequest) toClient(errorLine(id, BLOCKED, `Blocked: ${decision.reason}`));
+        return;
+      }
+      emitReceipt(receipt);
+      allowedReceiptId = receipt.record.id;
+    }
+
+    if (decision.decision === 'held_for_approval' && (!isRequest || config.mode === 'observe' || !approvalEnabled)) hold(null);
 
     if (!isRequest) {
       // A notification gets no response, so it can neither be held nor told it was blocked.
@@ -294,7 +310,7 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
           agentId,
           ruleId: decision.rule_id,
           enrichment: buildEnrichment(decision, label, forwardArgs, rule),
-          receiptId: receipt.envelope.receipt_id,
+          receiptId: allowedReceiptId,
           ttlSeconds: config.approval_ttl_seconds,
         });
         notifyQueueChange();
@@ -326,6 +342,7 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
       ttlSeconds: config.approval_ttl_seconds,
       ...(tool ? deriveScope(tool, forwardArgs) : {}),
     });
+    hold(pending.id);
     notifyQueueChange();
     process.stderr.write(`[mcp-guard] Held "${label}" for approval (${pending.id})\n`);
   }

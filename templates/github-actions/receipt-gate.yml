@@ -1,16 +1,32 @@
 # mcp-guard receipt gate — reference workflow for a deploy pipeline.
 #
-# A deploy runs only with a signed, unexpired receipt that a HUMAN approved for this
+# A deploy runs only with a signed, unexpired receipt that a PERSON approved for this
 # exact scope and commit. "No receipt = No deploy. This is intentional."
+#
+# Receipts are the org receipt standard (jcs_v2): the same format
+# @permission-protocol/verify checks. mcp-guard 0.2 receipts are refused.
 #
 # Trust boundaries (each one closes a bypass):
 #   - Verifier code: a pinned npm version. Nothing from a pull request runs before the gate.
-#   - Public key: read from the default branch, never from a pull request. Commit it once
-#     with `npx @permission-protocol/mcp-guard export-key .pp/mcp-guard.pub.pem`.
+#   - Key set: read from the default branch, never from a pull request. Commit it once:
+#       npx @permission-protocol/mcp-guard keys show     # prints the key set path and --trust value
+#       cp ~/.config/mcp-guard/keys/keys.json .pp/keys.json
+#   - Key pin: the repository variable MCP_GUARD_TRUST holds the KEY_ID=sha256:<fingerprint>
+#     value `keys show` prints (Settings → Secrets and variables → Actions → Variables).
+#     A key set edited on the default branch still fails unless the pin matches.
 #   - Receipt: delivered out of band (the workflow_dispatch input below), never read
 #     from the repository tree, so committing a file cannot satisfy the gate.
 #   - Scope: the receipt must name this environment and the exact commit being deployed.
-#     Receipts released by a countdown or standing rule are refused (human approval only).
+#     Receipts released by a countdown or standing rule are refused (a person must approve),
+#     and so are receipts signed by a demo key.
+#
+# Which commit a receipt binds:
+#   - deploy:<env> receipts bind the commit being deployed (`sha` in the deploy call):
+#     this gate checks it against $GITHUB_SHA.
+#   - github:merge receipts (merge_pr, or a PR approved through the webhook) bind the PR's
+#     HEAD commit (`pull_request.head.sha`), not the merge commit GitHub creates. A merge
+#     gate checks --scope github:merge --scope-ref refs/pull/<n>/merge
+#     --scope-sha <pull_request.head.sha>; a new push to the PR needs a new receipt.
 #
 # Wire-up: trigger this workflow with the receipt JSON the approver received, e.g.
 #   gh workflow run deploy.yml -f receipt="$(cat receipt.json)"
@@ -32,11 +48,11 @@ jobs:
     name: mcp-guard receipt gate
     runs-on: ubuntu-latest
     steps:
-      - name: Read the pinned public key from the default branch only
+      - name: Read the key set from the default branch only
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
-          sparse-checkout: .pp/mcp-guard.pub.pem
+          sparse-checkout: .pp/keys.json
           sparse-checkout-cone-mode: false
           path: trust
 
@@ -47,11 +63,17 @@ jobs:
       - name: Verify the receipt (offline, fail closed)
         env:
           RECEIPT: ${{ inputs.receipt }}
+          TRUST: ${{ vars.MCP_GUARD_TRUST }}
         run: |
+          if [ -z "$TRUST" ]; then
+            echo "::error::Set the MCP_GUARD_TRUST repository variable to the --trust value from 'mcp-guard keys show'."
+            exit 1
+          fi
           printf '%s' "$RECEIPT" > "$RUNNER_TEMP/receipt.json"
-          npx --yes @permission-protocol/mcp-guard@0.2.1 verify \
+          npx --yes @permission-protocol/mcp-guard@0.3.0 verify \
             --receipt-file "$RUNNER_TEMP/receipt.json" \
-            --pubkey trust/.pp/mcp-guard.pub.pem \
+            --keys trust/.pp/keys.json \
+            --trust "$TRUST" \
             --scope deploy:production \
             --scope-sha "$GITHUB_SHA"
 

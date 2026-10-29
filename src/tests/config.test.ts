@@ -27,8 +27,28 @@ rules:
     assert.equal(config.rules[2].method, 'resources/read');
     assert.equal(config.mode, 'enforce');
     assert.equal(config.approval_ttl_seconds, 900);
-    assert.equal(config.receipt_ttl_seconds, 900);
+    assert.equal(config.receipt_ttl_seconds, 3600);
+    assert.equal(config.scoped_receipt_ttl_seconds, 900);
+    assert.equal(config.server_label, 'mcp-server');
+    assert.equal(config.signing, 'required');
     assert.match(config.policy_sha256, /^[0-9a-f]{64}$/);
+  });
+
+  it('reads receipt expiry, server label, signing mode and per-rule expiry', () => {
+    const config = parseConfig(`
+default_action: block
+receipt_ttl_seconds: 600
+scoped_receipt_ttl_seconds: 300
+server_label: github-mcp
+signing: off
+rules:
+  - { id: m, tool: merge_pr, action: require_approval, receipt_ttl_seconds: 120 }
+`);
+    assert.equal(config.receipt_ttl_seconds, 600);
+    assert.equal(config.scoped_receipt_ttl_seconds, 300);
+    assert.equal(config.server_label, 'github-mcp');
+    assert.equal(config.signing, 'off');
+    assert.equal(config.rules[0].receipt_ttl_seconds, 120);
   });
 
   const bad: Array<[string, string, RegExp]> = [
@@ -46,6 +66,10 @@ rules:
     ['bad action', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: maybe }', /invalid action/],
     ['bad default_action', 'default_action: yolo\nrules: []', /Invalid default_action/],
     ['bad ttl', 'default_action: allow\napproval_ttl_seconds: 0\nrules: []', /approval_ttl_seconds/],
+    ['receipt ttl over a day', 'default_action: allow\nreceipt_ttl_seconds: 86401\nrules: []', /at most 86400/],
+    ['rule receipt ttl over a day', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: allow, receipt_ttl_seconds: 90000 }', /at most 86400/],
+    ['server label with spaces (a command line)', 'default_action: allow\nserver_label: node server.js --token x\nrules: []', /Invalid server_label/],
+    ['unknown signing mode', 'default_action: allow\nsigning: maybe\nrules: []', /Invalid signing/],
   ];
   for (const [name, yaml, re] of bad) {
     it(`rejects ${name}`, () => assert.throws(() => parseConfig(yaml), re));

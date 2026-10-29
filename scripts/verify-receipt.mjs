@@ -2,10 +2,11 @@
 /**
  * OFFLINE receipt gate — thin wrapper over `mcp-guard verify` (src/verify-cli.ts).
  *
- *   node scripts/verify-receipt.mjs --receipt-file ./receipt.json --pubkey pinned.pub.pem \
- *     --scope deploy:staging --scope-sha <sha>
+ *   node scripts/verify-receipt.mjs --receipt-file ./receipt.json --keys .pp/keys.json \
+ *     --trust KEY_ID=sha256:<fingerprint> --scope deploy:staging --scope-sha <sha>
  *
- * --pubkey is required: the gate verifies only against keys you pin.
+ * --keys is required and --trust pins the key: the gate verifies only against keys you
+ * supply. Legacy 0.2 receipts need --accept-legacy --pubkey <pem>.
  * Exit 0 = authorized, 1 = refused, 2 = missing input.
  * Build first: `npm run build` (this script imports the compiled dist/).
  */

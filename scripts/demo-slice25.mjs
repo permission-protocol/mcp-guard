@@ -9,17 +9,18 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { demoKeys } from './demo-keys.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7795;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SECRET = 'deck-webhook-secret';
 const RECEIPTS = join(ROOT, 'scripts', '.demo25-receipts.jsonl');
-const PUBKEY = join(ROOT, 'scripts', '.demo25.pub.pem');
 const TOKEN = crypto.randomBytes(32).toString('hex'); // approval API access token for this run
 const AUTH = { Authorization: `Bearer ${TOKEN}` };
 const PR = 16, REPO = 'permission-protocol/mcp-guard', SHA = 'abc123def456';
 const SCOPE_REF = `refs/pull/${PR}/merge`;
+const KEYS = demoKeys();
 
 process.env.PP_WEBHOOK_SECRET = SECRET;
 process.env.PP_SHARED_RECEIPTS_PATH = RECEIPTS;
@@ -41,7 +42,7 @@ async function post(path, body, sig) {
 const api = (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m, headers: AUTH }).then((r) => r.json());
 
 function gate(args) {
-  try { execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, '--pubkey', PUBKEY, ...args], { stdio: 'pipe' }); return 0; }
+  try { execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, ...KEYS.gateArgs, ...args], { stdio: 'pipe' }); return 0; }
   catch (e) { return e.status ?? 1; }
 }
 
@@ -58,9 +59,10 @@ const prPayload = (over = {}) => JSON.stringify({
 
 async function run() {
   const { startApprovalServer } = await import('../dist/src/approval-server.js');
-  const { exportPublicKey } = await import('../dist/src/signer.js');
-  exportPublicKey(PUBKEY); // pin the key, exactly as a CI gate would
-  const server = startApprovalServer({ port: PORT, token: TOKEN });
+  const { Issuer } = await import('../dist/src/issuer.js');
+  const { parseConfig } = await import('../dist/src/config.js');
+  const issuer = new Issuer({ config: parseConfig('default_action: block\nrules: []\n'), agentId: 'github-webhook' });
+  const server = startApprovalServer({ port: PORT, token: TOKEN, issuer, operator: 'rod' });
   await server.ready;
 
   console.log('\nBeat A — bad signature is rejected (fail closed):');

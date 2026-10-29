@@ -1,15 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — receipts in the org receipt standard (breaking)
+
+mcp-guard now signs the same receipt format the Permission Protocol app issues (`jcs_v2`, receipt-spec), so one verifier reads both. Design: Permission Protocol F-10 design note, "mcp-guard signing alignment".
+
+### Breaking changes and migration
+
+1. **Create a signing key before the first run.** The guard no longer creates one:
+   ```bash
+   npx @permission-protocol/mcp-guard keys init
+   ```
+   Without a key the guard exits at startup with `SIGNING_KEY_MISSING` (enforce mode). Your 0.2 key (`signing.private.pem`) is not reused: 0.3 key ids are `mcpg-<16 hex of sha256(public key)>`, so a key can never pass as another.
+2. **Re-pin your gates.** Gates verify against a key set and a fingerprint pin instead of a PEM:
+   ```bash
+   npx @permission-protocol/mcp-guard keys show   # prints the keys.json path and the --trust value
+   cp ~/.config/mcp-guard/keys/keys.json .pp/keys.json
+   ```
+   In `templates/github-actions/receipt-gate.yml`: the key set is read from `.pp/keys.json` on the default branch, the pin comes from the `MCP_GUARD_TRUST` repository variable, and the verifier is pinned to 0.3.0. Remove `.pp/mcp-guard.pub.pem` once no gate needs 0.2 receipts.
+3. **0.2 receipts are refused by default** (`LEGACY_RECEIPT_REFUSED`). Re-approve the action, or pass `--accept-legacy --pubkey <0.2 pem>`; such a receipt verifies labelled legacy. `mcp-guard export-key` now only exports an existing 0.2 public key, for that case.
+4. **Receipt lines changed.** Each line of `pp-receipts.jsonl` is `{ "artifact": …, "record": … }`; held calls are `{ "hold": … }` lines and are never signed. `GET /api/receipts` returns the same objects. Anything that read `envelope`, `signature` or `display` must read `record` (the signed fields) or verify `artifact`.
+5. **Receipt expiry defaults changed:** 1 hour for unscoped actions (`receipt_ttl_seconds`, was 15 minutes), 15 minutes for merge / migration / deploy receipts (`scoped_receipt_ttl_seconds`). Rules can set `receipt_ttl_seconds`; no receipt lives longer than a day.
 
 ### Added
 
-- `mcp-guard verify` checks receipts in the org receipt standard (`jcs_v2` artifacts, as issued by Permission Protocol and verified by `@permission-protocol/verify`): `--keys <keys.json>` and `--trust KEY_ID=sha256:<fingerprint>`. The checks follow the receipt-spec order (key, payload hash, Ed25519 over the digest, canonical bytes, identity), then the gate checks read only from the signed payload: approved status, signed expiry, exact scope (`scope.capability`, `scope.ref`, `scope.commitSha`) and an attributed human decider for scoped actions. mcp-guard 0.2 receipts still verify with `--pubkey` and are labelled legacy. Signing in the new format follows in 0.3.0.
+- `mcp-guard keys init | rotate | revoke <id> | show`. Rotation keeps older keys in `keys.json` so their receipts still verify; revocation invalidates every receipt the key signed. `--demo` creates an `mcpg-demo-` key whose receipts carry `scope: "demo"`.
+- Every final decision is signed: allowed, blocked, console approve and deny, countdown release, and expiry. Denials are signed receipts too (`status: DENIED`).
+- The decider is signed: rules, caps and countdowns as `system/mcp-guard-policy` (`policy`); console decisions as `local:<operator>` (`local_console`, `heuristic`). A console approval with no operator is refused (`UNATTRIBUTED_PRODUCTION_DECIDER`) and the call stays held.
+- Signed `reasonCodes` from a fixed set (`RULE_MATCHED:<id>`, `DEFAULT_ACTION`, `COUNTDOWN_AUTO_RELEASE`, `OPERATOR_APPROVED`, `OPERATOR_DENIED`, `APPROVAL_EXPIRED`) and `policyVersion` = `mcp-guard-config:sha256:<config hash>`.
+- Config: `server_label` (names the server in receipts), `signing: required | off` (`off` writes unsigned records no gate accepts), `scoped_receipt_ttl_seconds`, per-rule `receipt_ttl_seconds`.
+- `verify --call <call.json>` recomputes `inputHash` from the call (`INPUT_HASH_MISMATCH`); `verify` refuses demo-key receipts unless `--allow-demo`.
+- JSON-RPC error `-32006`: the decision could not be signed, nothing was forwarded.
+- `mcp-guard verify` checks org-standard artifacts (`--keys`, `--trust`), following the receipt-spec order, then gate checks read only from the signed payload. Cross-checked against `@permission-protocol/verify`.
 - CI job `Audit regression`: replays the October 2026 audit attacks against the pre-fix commit (all must succeed) and the current code (all must be stopped) on every run.
 
 ### Changed
 
-- Workflows and the receipt-gate template use `actions/checkout@v5` and `actions/setup-node@v5`; the template pins `@permission-protocol/mcp-guard@0.2.1`.
+- Receipts never carry raw arguments or the server command line: the signed request names the tool, method, server label, rule and scope, and binds arguments only by `inputHash` (`pp.hashable_payload.v1`).
+- The signer reloads its key for each receipt: a key revoked or removed while the guard runs stops signing at once. Allowed calls are then refused (`-32006`), held calls stay held, and in observe mode calls are forwarded with records marked `signingFailed`.
+- The release path verifies its own receipt against the guard's pinned key, scope and replay cache before forwarding.
+- The demo command and demo scripts sign with a throwaway demo key in a temporary directory.
+- Workflows and the receipt-gate template use `actions/checkout@v5` and `actions/setup-node@v5`.
 
 ## 0.2.1 — security fix
 

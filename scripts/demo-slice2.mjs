@@ -9,13 +9,13 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { demoKeys } from './demo-keys.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7793;
 const BASE = `http://127.0.0.1:${PORT}`;
 const OUTBOX = join(ROOT, 'infra-mcp', 'outbox.log');
 const RECEIPTS = join(ROOT, 'scripts', '.demo2-receipts.jsonl');
-const PUBKEY = join(ROOT, 'scripts', '.demo2.pub.pem');
 const TOKEN = randomBytes(32).toString('hex'); // approval API access token for this run
 const PR = { repo: 'pp/mcp-guard', pr_number: 16, scope_sha: 'abc123def456' };
 const SCOPE_REF = `refs/pull/${PR.pr_number}/merge`;
@@ -29,14 +29,14 @@ const api = async (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m, headers: {
 // Run the CI gate exactly as a GitHub Action would; return its exit code.
 function gate(extraArgs) {
   try {
-    execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, '--pubkey', PUBKEY, ...extraArgs], { stdio: 'pipe' });
+    execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, ...KEYS.gateArgs, ...extraArgs], { stdio: 'pipe' });
     return 0;
   } catch (e) { return e.status ?? 1; }
 }
 
 for (const f of [OUTBOX, RECEIPTS]) if (existsSync(f)) rmSync(f);
-// Pin the guard's public key, exactly as a CI gate would.
-execFileSync('node', [join(ROOT, 'dist/src/cli.js'), 'export-key', PUBKEY], { stdio: 'pipe' });
+// A demo signing key, pinned by the gate exactly as a CI gate pins the real one.
+const KEYS = demoKeys();
 
 const guard = spawn(
   'node',
