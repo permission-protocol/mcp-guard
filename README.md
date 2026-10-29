@@ -4,13 +4,13 @@
 
 [MCP](https://modelcontextprotocol.io) (Model Context Protocol) is how AI agents call tools — like APIs, databases, or deployments. MCP has no built-in access control. MCP Guard adds that layer.
 
-Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and logs every decision as an audit receipt.
+Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and records every decision as a signed receipt.
 
-Without MCP Guard, your agent can call any tool. With it, every action is checked. **MCP Guard does not just log — it blocks execution before it happens.**
+Every tool call, resource read and prompt fetch goes through your policy; only protocol plumbing (`initialize`, `ping`, list calls, notifications) passes untouched. **MCP Guard does not just log — it blocks execution before it happens.**
 
 → **Blocks** unsafe tool calls before they execute
 → **Holds** sensitive actions for human approval
-→ **Logs** every decision as an immutable receipt
+→ **Signs** every decision as an Ed25519 receipt that names who authorized it
 → **Observe mode** — audit what would be blocked before enforcing
 
 <p align="center">
@@ -39,7 +39,9 @@ EOF
 mcp-guard --config pp.config.yaml -- node my-mcp-server.js
 ```
 
-That's it. Your agent can no longer delete user data. Production deploys require approval. Everything is logged to `pp-receipts.jsonl`, and each decision gets a shareable receipt URL.
+That's it. Your agent can no longer delete user data. Production deploys require approval. Every decision is signed and logged to `pp-receipts.jsonl`.
+
+`default_action: allow` lets any tool without a rule run, and the guard warns about it at startup. Use `block` or `require_approval` to fail closed.
 
 ## 60-Second Demo (no MCP server needed)
 
@@ -63,28 +65,46 @@ npx @permission-protocol/mcp-guard demo
                               (audit trail)
 ```
 
-MCP Guard intercepts JSON-RPC messages on stdin/stdout. When it sees a `tools/call` request:
+MCP Guard parses every JSON-RPC message on stdin and forwards only what it parsed and evaluated, re-serialized:
 
-1. Looks up the tool name in the config rules
-2. If **allowed** → forwards to the real server
-3. If **blocked** → returns a JSON-RPC error (`-32001`) directly
-4. If **held for approval** → returns a JSON-RPC error (`-32002`) directly
-5. Emits a receipt for every decision (stderr + jsonl file + viewer URL)
-
-All other JSON-RPC methods pass through transparently.
+1. A line that is not a single JSON-RPC 2.0 object (invalid JSON, a batch array, a malformed frame) gets an error and is never forwarded.
+2. Plumbing passes through: `initialize`, `ping`, `notifications/*`, `tools/list`, `resources/list`, `resources/templates/list`, `resources/unsubscribe`, `prompts/list`, `logging/setLevel`, `completion/complete`.
+3. Everything else — `tools/call`, `resources/read`, `prompts/get`, `resources/subscribe` and any method MCP Guard does not know — is decided by the rules, then `default_action`.
+4. **Allowed** → forwarded (agent metadata under `_pp` is stripped first). **Blocked** → error `-32001`. **Held** → waits for a human (or returns `-32002` without an approval UI).
+5. Every decision emits a signed receipt (one stderr line + `pp-receipts.jsonl`).
 
 ## Config Reference
 
 ```yaml
 # pp.config.yaml
-default_action: allow  # "allow" or "block" — applies when no rule matches
-mode: enforce          # "enforce" (default) or "observe" (log only, never block)
+default_action: block        # allow | block | require_approval — when no rule matches
+mode: enforce                # "enforce" (default) or "observe" (log only, never block)
+approval_ttl_seconds: 900    # held requests expire after this (default 900)
+receipt_ttl_seconds: 900     # signed receipts expire after this (default 900)
 
 rules:
-  - id: unique-rule-id        # Human-readable identifier
-    tool: tool_name            # Exact match on MCP tool name
-    action: allow              # allow | block | require_approval
+  - id: unique-rule-id       # unique identifier
+    tool: tool_name          # exact tool name (tools/call rules)
+    action: allow            # allow | block | require_approval
+
+  - id: hold-reads
+    method: resources/read   # govern another method (no "tool" field)
+    action: require_approval
+
+  - id: hold-email
+    tool: send_email
+    action: require_approval
+    reversibility: reversible  # reversible | irreversible (default: irreversible)
+    countdown_seconds: 300     # reversible only: auto-release unless someone holds it
+
+  - id: spend
+    tool: spend
+    action: require_approval
+    cap_usd: 50                # under the cap: runs now, shows in Verify; at/over: hard stop
+    amount_arg: amount_usd     # required with cap_usd: the argument the tool actually charges
 ```
+
+The loader is strict: an unknown key, a duplicate rule, a countdown on an irreversible rule, or `cap_usd` without `amount_arg` fails at startup instead of being ignored. A missing or non-numeric amount is a hard stop. Agent metadata under `_pp` (`confidence`, `requires_input`) can route a card to a different lane but can never turn a held or blocked call into an allowed one.
 
 ### Modes
 
@@ -101,60 +121,72 @@ Use `observe` mode to audit what *would* be blocked before turning enforcement o
 |--------|----------|-------------------|
 | `allow` | Forward request to server | — |
 | `block` | Reject immediately | `-32001` |
-| `require_approval` | Reject with hold status | `-32002` |
+| `require_approval` | Hold for approval (or reject without an approval UI) | `-32002` |
+
+Other errors the agent can receive: `-32003` denied by a human, `-32004` approval request expired, `-32005` release refused (receipt failed verification), `-32700` / `-32600` / `-32602` malformed input.
 
 ## Receipts
 
-Every `tools/call` decision generates an immutable receipt:
+Every decision produces a signed receipt (v2): a small **envelope** that is signed, plus a **display** block for people that is not.
 
 ```json
 {
-  "receipt_id": "rcpt_dg_mba0m6u7_4e2d7dfbf913",
-  "status": "DENIED",
-  "action": "delete_user_data",
-  "actor": "my-agent",
-  "policy": "block-dangerous-delete",
-  "risk_tier": "critical",
-  "summary": "AI summary: MCP Guard blocked \"delete_user_data\" because matched rule \"block-dangerous-delete\".",
-  "timestamp": "2026-03-20T15:30:00.000Z",
-  "agent_id": "my-agent",
-  "tool_name": "delete_user_data",
-  "decision": "blocked",
-  "reason": "Matched rule \"block-dangerous-delete\"",
-  "rule_id": "block-dangerous-delete",
-  "request_payload_hash": "sha256-hex-string",
-  "target_server": "node my-mcp-server.js",
-  "mode": "enforce",
-  "viewer_url": "https://app.permissionprotocol.com/r/rcpt_dg_mba0m6u7_4e2d7dfbf913"
+  "envelope": {
+    "v": 2,
+    "receipt_id": "rcpt_mg_mvtj9td5_63c091bfe0e7",
+    "method": "tools/call",
+    "tool": "deploy",
+    "args_sha256": "<sha256 of the canonical arguments the server received>",
+    "scope": { "scope": "deploy:production", "ref": null, "sha": "a1b2c3d4" },
+    "decision": "allowed",
+    "approval": { "kind": "human", "id": "rod", "via": "local-token" },
+    "actor": "my-agent",
+    "rule_id": "deploy",
+    "policy_sha256": "<sha256 of pp.config.yaml>",
+    "mode": "enforce",
+    "issued_at": "2026-10-29T15:30:00.000Z",
+    "expires_at": "2026-10-29T15:45:00.000Z",
+    "nonce": "<random>",
+    "key_id": "pp-dev-3c1d2e4f5a6b7c8d"
+  },
+  "signature": { "alg": "ed25519", "key_id": "pp-dev-3c1d2e4f5a6b7c8d", "value": "<hex>" },
+  "display": { "summary": "…", "reason": "…", "risk_tier": "high", "target_server": "node server.js", "arg_keys": ["env", "sha"], "viewer_url": "…" }
 }
 ```
 
-Receipts are written to:
-- **stderr** — for real-time monitoring
-- **pp-receipts.jsonl** — append-only audit file
-- **`$PP_SHARED_RECEIPTS_PATH`** — optional shared JSONL file for PP/backend ingestion
+- The signature covers `pp-mcp-guard-receipt-v2\n` + canonical JSON of the whole envelope, so no authority field can be edited or re-split.
+- `approval` says who authorized the action: `human` (the approval UI operator) or `policy` (a rule, a standing spend cap, or a countdown).
+- Receipts never contain raw arguments — only `args_sha256` and the argument names. Raw arguments appear only in the authenticated approval UI.
+- The signing key lives in `~/.config/mcp-guard/keys` (or `$PP_KEYS_DIR`), never in the working directory. Its id is derived from the public key. MCP Guard refuses to start if the private key is readable by others.
 
-Optional publishing:
-- Set `PP_RECEIPT_ENDPOINT` to POST each receipt to a backend that stores public receipts
-- Set `PP_RECEIPT_TOKEN` if that endpoint expects bearer auth
-- Set `PP_VIEWER_BASE_URL` to override the default `https://app.permissionprotocol.com/r`
+Receipts are written to stderr (one summary line), `pp-receipts.jsonl` (or `$PP_SHARED_RECEIPTS_PATH`), and optionally POSTed to `$PP_RECEIPT_ENDPOINT` (with `$PP_RECEIPT_TOKEN` as bearer auth).
 
-The `request_payload_hash` is a SHA-256 of the full request params, so you can verify what was sent without storing sensitive arguments.
+### Verifying a receipt
 
-The emitted receipt now carries PP-style viewer fields (`summary`, `risk_tier`, `enrichmentSnapshot`, `diff`, `policy_details`) so the same JSON object can be stored or forwarded for the hosted receipt viewer.
+```bash
+# Once: export the public key and commit it on your default branch
+mcp-guard export-key .pp/mcp-guard.pub.pem
 
-Each decision also logs a direct link like `https://app.permissionprotocol.com/r/<receipt_id>` so the user can inspect the decision in the Permission Protocol viewer once the receipt is available to the backend.
+# In CI: verify offline against the pinned key
+mcp-guard verify --receipt-file receipt.json --pubkey .pp/mcp-guard.pub.pem \
+  --scope deploy:production --scope-sha "$GITHUB_SHA"
+```
+
+The verifier accepts only the keys you pin, requires an unexpired `allowed` receipt, checks scope exactly, and refuses scoped receipts that no human approved (pass `--allow-policy-approval` to accept them). Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key and receipt only from trusted places.
 
 ## CLI
 
 ```
 mcp-guard [options] -- <server command>
+mcp-guard verify --receipt-file <path> --pubkey <pem> [--scope s] [--scope-ref r] [--scope-sha h]
+mcp-guard export-key [out.pem]
 
 Options:
-  --config <path>     Path to config file (default: ./pp.config.yaml)
-  --agent-id <id>     Agent identifier for receipts (default: "unknown")
+  --config <path>         Path to config file (default: ./pp.config.yaml)
+  --agent-id <id>         Agent identifier for receipts (default: "unknown")
+  --operator <name>       Approver name recorded on receipts (default: OS username)
   --mode <mode>           enforce or observe (overrides config file)
-  --approval-port <port>  Enable approval UI on this port (e.g. 3100)
+  --approval-port <port>  Enable the approval UI on 127.0.0.1:<port>
   -h, --help              Show help
 ```
 
@@ -186,29 +218,27 @@ With:
 }
 ```
 
-## Approval Flow (v0.1)
+## Approval Flow
 
-When a tool call matches a `require_approval` rule, MCP Guard can hold the request open and wait for human approval via a web UI — instead of rejecting immediately.
+When a call matches a `require_approval` rule, MCP Guard can hold it open and wait for a human in a local web UI instead of rejecting it.
 
 ```bash
-# Start with approval UI on port 3100
 mcp-guard --config pp.config.yaml --approval-port 3100 -- node my-mcp-server.js
-
-# Open http://localhost:3100 to see pending approvals
+# stderr: [mcp-guard] Approval UI: http://127.0.0.1:3100/#t=<token>
 ```
 
+Open the exact URL printed at startup. The part after `#t=` is a per-process access token; it never leaves the browser except as the `Authorization: Bearer` header on API calls.
+
 **How it works:**
-1. Agent calls a tool that requires approval
-2. MCP Guard holds the JSON-RPC response open (does NOT return an error)
-3. The tool call appears in the approval UI at `http://localhost:<port>`
-4. Human clicks **Approve** → request is forwarded to the server, response returned to the agent
-5. Human clicks **Deny** → JSON-RPC error (-32002) returned to the agent
+1. Agent calls a tool that requires approval; MCP Guard holds the response open.
+2. The call appears in the UI with every argument the server will receive.
+3. **Approve** → MCP Guard signs a receipt naming you as the approver, verifies it, then forwards the call.
+4. **Deny** → the agent gets error `-32003`. A decision is final: approving a denied call returns 409.
+5. No decision within `approval_ttl_seconds` → the agent gets error `-32004`.
 
-When `--approval-port` is **not** set, `require_approval` tools return an error immediately (original behavior, no change).
+**Security of the approval channel:** it listens on 127.0.0.1 only, rejects any other `Host` header, sends no CORS headers, and requires the token on every API route except the HMAC-signed GitHub webhook. `PP_APPROVAL_TOKEN` (32+ characters) supplies the token instead of generating one.
 
-The approval UI auto-refreshes every 3 seconds and shows:
-- Pending tool calls with collapsible arguments
-- Recent decision history (last 20)
+When `--approval-port` is **not** set, `require_approval` calls return `-32002` immediately.
 
 ## Why not just use X?
 
@@ -222,7 +252,7 @@ The approval UI auto-refreshes every 3 seconds and shows:
 
 - **Not a dashboard.** It's a proxy. It sits in the data path and enforces rules.
 - **Not a scanner.** It doesn't analyze your code or model outputs. It gates tool calls.
-- **Not compliance theater.** Every decision has a cryptographic receipt.
+- **Not compliance theater.** Every decision has an Ed25519-signed receipt that names who authorized it.
 - **Not a replacement for good architecture.** It's one layer in a defense-in-depth strategy.
 
 Agents shouldn't be able to execute arbitrary actions without an explicit decision point.
