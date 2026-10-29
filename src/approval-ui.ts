@@ -1,3 +1,8 @@
+/**
+ * The built-in approval page. It is static and holds no secret: the access token
+ * arrives in the URL fragment (`#t=…`, never sent to any server), is kept in
+ * sessionStorage for this tab, and is sent as `Authorization: Bearer` on every call.
+ */
 export function getApprovalHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -18,12 +23,9 @@ export function getApprovalHTML(): string {
     display: inline-block; padding: 2px 8px; border-radius: 12px;
     font-size: 12px; font-weight: 600; text-transform: uppercase;
   }
-  .badge-pending { background: #d29922; color: #0d1117; }
-  .badge-approved { background: #238636; color: #fff; }
-  .badge-denied { background: #da3633; color: #fff; }
+  .badge-pending, .badge-held_for_approval { background: #d29922; color: #0d1117; }
   .badge-allowed { background: #238636; color: #fff; }
   .badge-blocked { background: #da3633; color: #fff; }
-  .badge-held_for_approval { background: #d29922; color: #0d1117; }
   .card {
     border: 1px solid #30363d; border-radius: 8px; padding: 16px;
     margin-bottom: 12px; background: #161b22;
@@ -32,19 +34,13 @@ export function getApprovalHTML(): string {
   .tool-name { font-size: 18px; font-weight: 700; color: #f0f6fc; }
   .meta { font-size: 13px; color: #8b949e; margin-bottom: 8px; }
   .meta span { margin-right: 16px; }
-  .args-toggle {
-    background: none; border: 1px solid #30363d; color: #58a6ff;
-    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
-    margin-bottom: 8px;
-  }
-  .args-toggle:hover { border-color: #58a6ff; }
+  .summary { margin-bottom: 8px; }
   .args-content {
-    display: none; background: #0d1117; border: 1px solid #30363d;
+    background: #0d1117; border: 1px solid #30363d;
     border-radius: 4px; padding: 12px; margin-bottom: 12px;
     font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
     overflow-x: auto; white-space: pre-wrap; word-break: break-all;
   }
-  .args-content.open { display: block; }
   .actions { display: flex; gap: 8px; }
   .btn {
     padding: 6px 16px; border-radius: 6px; border: none;
@@ -54,101 +50,139 @@ export function getApprovalHTML(): string {
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-approve { background: #238636; color: #fff; }
   .btn-deny { background: #da3633; color: #fff; }
-  .empty {
+  .empty, .notice {
     text-align: center; padding: 40px; color: #8b949e;
     border: 1px dashed #30363d; border-radius: 8px; margin-bottom: 24px;
   }
+  .notice { color: #d29922; border-color: #d29922; }
   h2 { color: #c9d1d9; font-size: 18px; margin: 24px 0 12px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th { text-align: left; padding: 8px; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; }
   td { padding: 8px; border-bottom: 1px solid #21262d; }
-  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 8px; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   .status-bar { display: flex; align-items: center; font-size: 12px; color: #8b949e; margin-bottom: 16px; }
 </style>
 </head>
 <body>
 <h1>MCP Guard — Approval Queue</h1>
 <p class="subtitle">Human-in-the-loop approval for AI tool calls</p>
-<div class="status-bar"><span class="pulse"></span> Polling every 3s</div>
+<div class="status-bar" id="status">Connecting…</div>
 
 <div id="pending"></div>
 <h2>Recent Decisions</h2>
 <div id="receipts"></div>
 
 <script>
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+(function () {
+  var token = null;
+  var m = location.hash.match(/(?:^#|&)t=([^&]+)/);
+  if (m) {
+    token = decodeURIComponent(m[1]);
+    try { sessionStorage.setItem('mcp-guard-token', token); } catch (e) {}
+    history.replaceState(null, '', location.pathname + location.search);
+  } else {
+    try { token = sessionStorage.getItem('mcp-guard-token'); } catch (e) {}
+  }
 
-function toggleArgs(btn) {
-  const c = btn.nextElementSibling;
-  c.classList.toggle('open');
-  btn.textContent = c.classList.contains('open') ? '▾ Hide arguments' : '▸ Show arguments';
-}
+  var statusEl = document.getElementById('status');
+  var pEl = document.getElementById('pending');
+  var rEl = document.getElementById('receipts');
 
-async function act(id, action) {
-  const btns = document.querySelectorAll('[data-id="'+id+'"]');
-  btns.forEach(b => b.disabled = true);
-  try {
-    const r = await fetch('/api/' + action + '/' + id, { method: 'POST' });
-    if (!r.ok) { const e = await r.text(); alert('Error: ' + e); }
-  } catch(e) { alert('Network error'); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function api(path, method) {
+    return fetch(path, { method: method || 'GET', headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+  }
+
+  function noToken(msg) {
+    pEl.textContent = '';
+    pEl.appendChild(el('div', 'notice', msg));
+    statusEl.textContent = 'Not connected';
+  }
+
+  async function act(id, verb, btns) {
+    btns.forEach(function (b) { b.disabled = true; });
+    try {
+      var r = await api('/api/' + verb + '/' + id, 'POST');
+      if (!r.ok) statusEl.textContent = 'Could not ' + verb + ' (HTTP ' + r.status + ')';
+    } catch (e) { statusEl.textContent = 'Network error'; }
+    refresh();
+  }
+
+  function renderPending(pending) {
+    pEl.textContent = '';
+    if (pending.length === 0) { pEl.appendChild(el('div', 'empty', 'No pending approvals')); return; }
+    pending.forEach(function (p) {
+      var card = el('div', 'card');
+      var head = el('div', 'card-header');
+      head.appendChild(el('span', 'tool-name', p.tool_name));
+      head.appendChild(el('span', 'badge badge-pending', p.acted ? 'ran · confirm' : 'pending'));
+      card.appendChild(head);
+      var meta = el('div', 'meta');
+      meta.appendChild(el('span', null, 'Agent: ' + p.agent_id));
+      meta.appendChild(el('span', null, 'Rule: ' + (p.rule_id || 'default action')));
+      meta.appendChild(el('span', null, new Date(p.created_at).toLocaleTimeString()));
+      if (p.countdown_remaining != null) meta.appendChild(el('span', null, 'Auto-releases in ' + p.countdown_remaining + 's'));
+      card.appendChild(meta);
+      card.appendChild(el('div', 'summary', p.summary));
+      card.appendChild(el('div', 'args-content', p.args_full || p.args_preview));
+      var actions = el('div', 'actions');
+      var approve = el('button', 'btn btn-approve', p.acted ? 'Acknowledge' : 'Approve');
+      var btns = [approve];
+      approve.addEventListener('click', function () { act(p.id, 'approve', btns); });
+      actions.appendChild(approve);
+      if (!p.acted) {
+        var deny = el('button', 'btn btn-deny', 'Deny');
+        btns.push(deny);
+        deny.addEventListener('click', function () { act(p.id, 'deny', btns); });
+        actions.appendChild(deny);
+      }
+      card.appendChild(actions);
+      pEl.appendChild(card);
+    });
+  }
+
+  function renderReceipts(receipts) {
+    rEl.textContent = '';
+    if (receipts.length === 0) { rEl.appendChild(el('div', 'empty', 'No recent decisions')); return; }
+    var table = el('table');
+    var thead = el('thead'); var hr = el('tr');
+    ['Time', 'Action', 'Decision', 'Approved by', 'Rule', 'Receipt'].forEach(function (h) { hr.appendChild(el('th', null, h)); });
+    thead.appendChild(hr); table.appendChild(thead);
+    var tbody = el('tbody');
+    receipts.forEach(function (r) {
+      var e = r.envelope || {};
+      var tr = el('tr');
+      tr.appendChild(el('td', null, new Date(e.issued_at).toLocaleTimeString()));
+      tr.appendChild(el('td', null, e.tool || e.method));
+      var td = el('td'); td.appendChild(el('span', 'badge badge-' + e.decision, e.decision)); tr.appendChild(td);
+      tr.appendChild(el('td', null, e.approval ? e.approval.kind + ': ' + e.approval.id : '—'));
+      tr.appendChild(el('td', null, e.rule_id || '—'));
+      tr.appendChild(el('td', null, e.receipt_id));
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    rEl.appendChild(table);
+  }
+
+  async function refresh() {
+    if (!token) { noToken('Open the approval URL printed in the terminal. It ends with #t=… and carries the access token.'); return; }
+    try {
+      var res = await Promise.all([api('/api/pending'), api('/api/receipts')]);
+      if (res[0].status === 401) { noToken('The access token is missing or wrong. Open the URL printed in the terminal again.'); return; }
+      renderPending(await res[0].json());
+      renderReceipts(await res[1].json());
+      statusEl.textContent = 'Live · refreshes every 3s';
+    } catch (e) { statusEl.textContent = 'Disconnected · retrying'; }
+  }
+
   refresh();
-}
-
-async function refresh() {
-  try {
-    const [pRes, rRes] = await Promise.all([
-      fetch('/api/pending'), fetch('/api/receipts')
-    ]);
-    const pending = await pRes.json();
-    const receipts = await rRes.json();
-
-    const pEl = document.getElementById('pending');
-    if (pending.length === 0) {
-      pEl.innerHTML = '<div class="empty">No pending approvals</div>';
-    } else {
-      pEl.innerHTML = pending.map(p => \`
-        <div class="card">
-          <div class="card-header">
-            <span class="tool-name">\${esc(p.tool_name)}</span>
-            <span class="badge badge-pending">pending</span>
-          </div>
-          <div class="meta">
-            <span>Agent: <strong>\${esc(p.agent_id)}</strong></span>
-            <span>Rule: <strong>\${esc(p.rule_id)}</strong></span>
-            <span>\${esc(new Date(p.timestamp).toLocaleTimeString())}</span>
-          </div>
-          <button class="args-toggle" onclick="toggleArgs(this)">▸ Show arguments</button>
-          <div class="args-content">\${esc(JSON.stringify(p.tool_args, null, 2))}</div>
-          <div class="actions">
-            <button class="btn btn-approve" data-id="\${p.id}" onclick="act('\${p.id}','approve')">✅ Approve</button>
-            <button class="btn btn-deny" data-id="\${p.id}" onclick="act('\${p.id}','deny')">❌ Deny</button>
-          </div>
-        </div>
-      \`).join('');
-    }
-
-    const rEl = document.getElementById('receipts');
-    if (receipts.length === 0) {
-      rEl.innerHTML = '<div class="empty">No recent decisions</div>';
-    } else {
-      rEl.innerHTML = \`<table>
-        <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Agent</th><th>Rule</th><th>Viewer</th></tr></thead>
-        <tbody>\${receipts.map(r => \`<tr>
-          <td>\${esc(new Date(r.timestamp).toLocaleTimeString())}</td>
-          <td><strong>\${esc(r.tool_name)}</strong></td>
-          <td><span class="badge badge-\${r.decision}">\${esc(r.decision)}</span></td>
-          <td>\${esc(r.agent_id)}</td>
-          <td>\${esc(r.rule_id || '—')}</td>
-          <td>\${r.viewer_url ? \`<a href="\${esc(r.viewer_url)}" target="_blank" rel="noreferrer">Open</a>\` : '—'}</td>
-        </tr>\`).join('')}</tbody>
-      </table>\`;
-    }
-  } catch(e) { /* retry next cycle */ }
-}
-
-refresh();
-setInterval(refresh, 3000);
+  setInterval(refresh, 3000);
+})();
 </script>
 </body>
 </html>`;

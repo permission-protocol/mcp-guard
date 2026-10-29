@@ -1,9 +1,13 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import stableStringify from 'fast-json-stable-stringify';
 import { buildAuthorizationSigningBytes, verifyAuthorization } from '../enforcement/verifier.js';
-import type { ToolPolicy } from '../enforcement/policy.js';
+import { loadPolicy, PolicyError, _resetPolicyCache, type ToolPolicy } from '../enforcement/policy.js';
+import { interceptToolCall } from '../enforcement/index.js';
 import type { CanonicalPayload, SignedToken } from '../enforcement/types.js';
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -108,5 +112,54 @@ describe('authorization token verification', () => {
       () => verifyAuthorization(differentPayload, token, publicKeyPem, policy),
       /Request ID mismatch/,
     );
+  });
+});
+
+describe('authorization policy enforcement', () => {
+  it('counts a repeated signer name once toward required_approvals', async () => {
+    const payload = makePayload('duplicate-signers');
+    const token = makeToken(payload, { signers: ['alice', 'alice'] });
+    await assert.rejects(
+      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, required_approvals: 2 }),
+      /Requires 2 valid approvals, found 1/,
+    );
+  });
+
+  it('accepts two distinct allowed signers for a two-approval policy', async () => {
+    const payload = makePayload('two-signers');
+    const token = makeToken(payload, { signers: ['alice', 'bob'] });
+    await assert.doesNotReject(
+      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['alice', 'bob'], required_approvals: 2 }),
+    );
+  });
+
+  it('rejects a token signed under a different key id', async () => {
+    const payload = makePayload('other-key-id');
+    const token = makeToken(payload, { key_id: 'pp-other' });
+    await assert.rejects(() => verifyAuthorization(payload, token, publicKeyPem, policy), /Untrusted key_id/);
+  });
+});
+
+describe('policy loading fails closed', () => {
+  const saved = process.env.PP_CONFIG_PATH;
+  after(() => {
+    if (saved === undefined) delete process.env.PP_CONFIG_PATH; else process.env.PP_CONFIG_PATH = saved;
+    _resetPolicyCache();
+  });
+
+  it('a missing policy file is a typed error, not "nothing protected"', async () => {
+    _resetPolicyCache();
+    process.env.PP_CONFIG_PATH = join(tmpdir(), 'definitely-missing-pp.config.yaml');
+    assert.throws(() => loadPolicy(), (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_MISSING');
+    const r = await interceptToolCall({ method: 'tools/call', params: { name: 'deploy', arguments: {} } }, publicKeyPem);
+    assert.equal(r.allowed, false);
+  });
+
+  it('an unparsable policy is a typed error', () => {
+    _resetPolicyCache();
+    const dir = mkdtempSync(join(tmpdir(), 'pp-policy-'));
+    const path = join(dir, 'pp.config.yaml');
+    writeFileSync(path, 'tools: [unclosed');
+    assert.throws(() => loadPolicy(path), (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_INVALID');
   });
 });

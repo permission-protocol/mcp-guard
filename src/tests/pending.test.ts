@@ -1,136 +1,156 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   addPending,
+  addExternalDecision,
+  surfaceActed,
   getAction,
   getPending,
-  resolveAction,
-  holdAction,
-  undoAction,
+  transition,
   countdownRemaining,
+  queueSize,
   setAutoReleaseHandler,
+  setExpireHandler,
+  MAX_RESOLVED,
   _resetQueue,
   type PendingEnrichment,
 } from '../pending.js';
 
-const noopResolve = (_line: string): void => {};
-
-function enrichment(over: Partial<PendingEnrichment> = {}): PendingEnrichment {
-  return {
-    lane: 'decide',
-    reversibility: 'reversible',
-    countdown_seconds: 1,
-    summary: 'test summary',
-    args_preview: 'test preview',
-    ...over,
-  };
-}
-
-function add(over: Partial<PendingEnrichment> = {}) {
-  return addPending(
-    'send_email',
-    { body: 'hi' },
-    'agent-1',
-    'rule-1',
-    '{"jsonrpc":"2.0","id":1,"method":"tools/call"}',
-    1,
-    noopResolve,
-    enrichment(over),
-  );
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe('Pending countdown / undo (Permission Deck Slice 1)', () => {
+function enrichment(over: Partial<PendingEnrichment> = {}): PendingEnrichment {
+  return { lane: 'decide', reversibility: 'reversible', countdown_seconds: 1, summary: 's', args_preview: 'p', ...over };
+}
+
+function add(over: Partial<PendingEnrichment> = {}, ttlSeconds?: number) {
+  return addPending({
+    toolName: 'send_email',
+    toolArgs: { body: 'hi' },
+    agentId: 'agent-1',
+    ruleId: 'rule-1',
+    forwardLine: '{"jsonrpc":"2.0","id":1,"method":"tools/call"}',
+    jsonrpcId: 1,
+    resolve: () => {},
+    enrichment: enrichment(over),
+    ttlSeconds,
+  });
+}
+
+describe('Decision state machine', () => {
   beforeEach(() => {
     _resetQueue();
-    setAutoReleaseHandler(() => {});
+    setAutoReleaseHandler(null);
+    setExpireHandler(null);
   });
 
   it('threads enrichment fields onto the pending item', () => {
-    const a = add({ confidence: 88 });
-    assert.equal(a.lane, 'decide');
-    assert.equal(a.reversibility, 'reversible');
-    assert.equal(a.countdown_seconds, 1);
-    assert.equal(a.confidence, 88);
-    assert.equal(a.summary, 'test summary');
-    assert.equal(a.args_preview, 'test preview');
+    const a = add({ confidence: 70 });
     assert.equal(a.status, 'pending');
-    assert.ok(a.created_at);
-  });
-
-  it('countdown auto-release fires when nothing intervenes', async () => {
-    let fired: string | null = null;
-    setAutoReleaseHandler((id) => {
-      fired = id;
-      resolveAction(id, 'auto_released');
-    });
-    const a = add({ countdown_seconds: 1 });
+    assert.equal(a.kind, 'held');
+    assert.equal(a.confidence, 70);
     assert.equal(getPending().length, 1);
-    await sleep(1100);
-    assert.equal(fired, a.id);
-    assert.equal(getAction(a.id)!.status, 'auto_released');
-    assert.equal(getPending().length, 0);
   });
 
-  it('hold cancels the countdown timer (no auto-release fires)', async () => {
-    let fired = false;
-    setAutoReleaseHandler(() => {
-      fired = true;
-    });
-    const a = add({ countdown_seconds: 1 });
-    const held = holdAction(a.id);
-    assert.ok(held);
-    assert.equal(countdownRemaining(held!), undefined, 'countdown removed after hold');
-    await sleep(1200);
-    assert.equal(fired, false, 'timer must not fire after hold');
-    assert.equal(getAction(a.id)!.status, 'pending', 'item stays pending');
+  it('countdown auto-release moves the item to auto_released, then calls the handler', async () => {
+    let released: string | null = null;
+    setAutoReleaseHandler((a) => { released = a.status; });
+    add({ countdown_seconds: 0.05 });
+    await sleep(120);
+    assert.equal(released, 'auto_released');
   });
 
-  it('irreversible items never auto-release (no countdown timer)', async () => {
+  it('hold cancels the countdown; the item stays pending', async () => {
     let fired = false;
-    setAutoReleaseHandler(() => {
-      fired = true;
-    });
-    const a = add({ reversibility: 'irreversible', countdown_seconds: undefined });
+    setAutoReleaseHandler(() => { fired = true; });
+    const a = add({ countdown_seconds: 0.05 });
+    assert.ok(transition(a.id, 'hold').ok);
+    await sleep(120);
+    assert.equal(fired, false);
+    assert.equal(getAction(a.id)?.status, 'pending');
     assert.equal(countdownRemaining(a), undefined);
-    await sleep(300);
-    assert.equal(fired, false);
-    assert.equal(getAction(a.id)!.status, 'pending');
   });
 
-  it('undo within the window succeeds; outside the window is rejected', async () => {
-    const a = add({ reversibility: 'reversible', countdown_seconds: undefined });
-    // Release it with a short 1s undo window.
-    resolveAction(a.id, 'approved', 1);
-    const undone = undoAction(a.id);
-    assert.ok(undone, 'undo within window should succeed');
-    assert.equal(getAction(a.id)!.status, 'undone');
-
-    // A second item, let its undo window lapse.
-    const b = add({ reversibility: 'reversible', countdown_seconds: undefined });
-    resolveAction(b.id, 'auto_released', 1);
-    await sleep(1100);
-    const late = undoAction(b.id);
-    assert.equal(late, undefined, 'undo outside the window must be rejected');
-    assert.equal(getAction(b.id)!.status, 'auto_released');
-  });
-
-  it('hold/deny before expiry wins the race against auto-release', () => {
+  it('irreversible items never auto-release', async () => {
     let fired = false;
-    setAutoReleaseHandler(() => {
-      fired = true;
-    });
-    const a = add({ countdown_seconds: 1 });
-    const denied = resolveAction(a.id, 'denied');
-    assert.ok(denied);
-    assert.equal(denied!.status, 'denied');
+    setAutoReleaseHandler(() => { fired = true; });
+    const a = add({ reversibility: 'irreversible', countdown_seconds: 0.05 });
+    await sleep(120);
     assert.equal(fired, false);
+    assert.equal(a.releaseAt, undefined);
+  });
+
+  it('final states never change: deny then approve is refused', () => {
+    const a = add();
+    assert.ok(transition(a.id, 'deny').ok);
+    for (const ev of ['approve', 'auto_release', 'expire', 'hold', 'deny'] as const) {
+      const r = transition(a.id, ev);
+      assert.equal(r.ok, false, ev);
+      assert.equal(!r.ok && r.error, 'final', ev);
+    }
+    assert.equal(getAction(a.id)?.status, 'denied');
+  });
+
+  it('approving twice succeeds once', () => {
+    const a = add();
+    assert.ok(transition(a.id, 'approve').ok);
+    assert.equal(transition(a.id, 'approve').ok, false);
+  });
+
+  it('a manual approve racing the countdown releases exactly once', async () => {
+    let autoReleases = 0;
+    setAutoReleaseHandler(() => { autoReleases++; });
+    const a = add({ countdown_seconds: 0.05 });
+    await sleep(45);
+    const manual = transition(a.id, 'approve');
+    await sleep(60);
+    assert.equal((manual.ok ? 1 : 0) + autoReleases, 1);
+  });
+
+  it('expires after the TTL and tells the handler', async () => {
+    let expired: string | null = null;
+    setExpireHandler((x) => { expired = x.status; });
+    const a = add({ reversibility: 'irreversible' }, 0.05);
+    assert.ok(a.expires_at);
+    await sleep(120);
+    assert.equal(expired, 'expired');
+    assert.equal(transition(a.id, 'approve').ok, false);
+  });
+
+  it('acted items can only be acknowledged', () => {
+    const a = surfaceActed({ toolName: 'spend', agentId: 'a', ruleId: 'r', enrichment: enrichment({ lane: 'verify' }) });
+    const deny = transition(a.id, 'deny');
+    assert.equal(!deny.ok && deny.error, 'not_allowed');
+    assert.equal(transition(a.id, 'approve').ok, false);
+    assert.ok(transition(a.id, 'acknowledge').ok);
+    assert.equal(getAction(a.id)?.status, 'acknowledged');
+  });
+
+  it('external items approve or deny once and never expire', () => {
+    const a = addExternalDecision({ toolName: 'merge_pr', agentId: 'gh', ruleId: 'r', enrichment: enrichment({ countdown_seconds: undefined }) });
+    assert.equal(a.expires_at, undefined);
+    assert.equal(transition(a.id, 'hold').ok, false);
+    assert.ok(transition(a.id, 'deny').ok);
+    assert.equal(transition(a.id, 'approve').ok, false);
+  });
+
+  it(`keeps at most ${MAX_RESOLVED} resolved items`, () => {
+    for (let i = 0; i < 500; i++) transition(add({ countdown_seconds: undefined }).id, 'deny');
+    const live = add({ countdown_seconds: undefined });
+    assert.ok(queueSize() <= MAX_RESOLVED + 1);
+    assert.equal(getAction(live.id)?.status, 'pending');
   });
 
   it('countdown_remaining counts down and is server-computed', () => {
-    const a = add({ countdown_seconds: 5 });
-    const remaining = countdownRemaining(a);
-    assert.ok(remaining !== undefined && remaining <= 5 && remaining >= 4);
+    const a = add({ countdown_seconds: 10 });
+    const r = countdownRemaining(a);
+    assert.ok(r !== undefined && r <= 10 && r >= 9);
+  });
+
+  it('status is assigned only inside transition()', () => {
+    const src = readFileSync(join(__dirname, '..', '..', '..', 'src', 'pending.ts'), 'utf-8');
+    const assignments = src.split('\n').filter((l) => /\.status\s*=[^=]/.test(l));
+    assert.deepEqual(assignments.map((l) => l.trim()), ['action.status = FINAL_STATUS[event];']);
   });
 });

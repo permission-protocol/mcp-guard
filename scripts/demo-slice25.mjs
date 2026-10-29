@@ -12,9 +12,12 @@ import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7795;
-const BASE = `http://localhost:${PORT}`;
+const BASE = `http://127.0.0.1:${PORT}`;
 const SECRET = 'deck-webhook-secret';
 const RECEIPTS = join(ROOT, 'scripts', '.demo25-receipts.jsonl');
+const PUBKEY = join(ROOT, 'scripts', '.demo25.pub.pem');
+const TOKEN = crypto.randomBytes(32).toString('hex'); // approval API access token for this run
+const AUTH = { Authorization: `Bearer ${TOKEN}` };
 const PR = 16, REPO = 'permission-protocol/mcp-guard', SHA = 'abc123def456';
 const SCOPE_REF = `refs/pull/${PR}/merge`;
 
@@ -35,10 +38,10 @@ async function post(path, body, sig) {
   });
   return { status: res.status, json: await res.json().catch(() => ({})) };
 }
-const api = (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m }).then((r) => r.json());
+const api = (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m, headers: AUTH }).then((r) => r.json());
 
 function gate(args) {
-  try { execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, ...args], { stdio: 'pipe' }); return 0; }
+  try { execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, '--pubkey', PUBKEY, ...args], { stdio: 'pipe' }); return 0; }
   catch (e) { return e.status ?? 1; }
 }
 
@@ -55,8 +58,10 @@ const prPayload = (over = {}) => JSON.stringify({
 
 async function run() {
   const { startApprovalServer } = await import('../dist/src/approval-server.js');
-  const server = startApprovalServer(PORT);
-  await sleep(400);
+  const { exportPublicKey } = await import('../dist/src/signer.js');
+  exportPublicKey(PUBKEY); // pin the key, exactly as a CI gate would
+  const server = startApprovalServer({ port: PORT, token: TOKEN });
+  await server.ready;
 
   console.log('\nBeat A — bad signature is rejected (fail closed):');
   const bad = await post('/api/github/webhook', prPayload(), 'sha256=deadbeef');
@@ -77,14 +82,22 @@ async function run() {
   check('appears in Decide lane', item && item.lane === 'decide');
 
   console.log('\nBeat D — approve in the deck → scoped signed receipt:');
-  const appr = await (await fetch(`${BASE}/api/approve/${wh.json.id}`, { method: 'POST' })).json();
+  const appr = await api(`/api/approve/${wh.json.id}`, 'POST');
   check('approve returned a receipt_id', !!appr.receipt_id);
 
   console.log('\nBeat E — the offline gate verifies it (the bridge):');
-  check('gate GREEN with correct scope (exit 0)', gate(['--receipt-id', appr.receipt_id, '--scope', 'github:merge', '--scope-ref', SCOPE_REF]) === 0);
+  check('gate GREEN with correct scope and head SHA (exit 0)', gate(['--receipt-id', appr.receipt_id, '--scope', 'github:merge', '--scope-ref', SCOPE_REF, '--scope-sha', SHA]) === 0);
   check('gate REFUSES wrong PR ref (exit 1)', gate(['--receipt-id', appr.receipt_id, '--scope', 'github:merge', '--scope-ref', 'refs/pull/999/merge']) === 1);
 
-  server.close();
+  console.log('\nBeat F — a denied PR can never be approved afterwards:');
+  const body2 = prPayload({ pull_request: { ...JSON.parse(prPayload()).pull_request, number: PR + 1 } });
+  const wh2 = await post('/api/github/webhook', body2, sign(body2));
+  const denied = await fetch(`${BASE}/api/deny/${wh2.json.id}`, { method: 'POST', headers: AUTH });
+  const late = await fetch(`${BASE}/api/approve/${wh2.json.id}`, { method: 'POST', headers: AUTH });
+  check('deny accepted (200)', denied.status === 200);
+  check('approve after deny refused (409)', late.status === 409);
+
+  await server.close();
   console.log(`\n${failed === 0 ? '✅ ALL BEATS PASS' : '❌ FAILURES'} — ${passed} passed, ${failed} failed`);
 }
 

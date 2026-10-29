@@ -21,8 +21,16 @@ export async function interceptToolCall(
   }
 
   const toolName = jsonRpcMessage.params?.name;
-  const policy = getToolPolicy(toolName);
-  
+  let policy: ToolPolicy | null;
+  let policyHash: string | undefined;
+  try {
+    policy = getToolPolicy(toolName);
+    policyHash = loadPolicy().policy_hash;
+  } catch (err: any) {
+    // No policy means no basis to allow anything.
+    return { allowed: false, reason: err.message };
+  }
+
   if (policy?.protected) {
     const args = jsonRpcMessage.params?.arguments || {};
     const authorization = args._authorization;
@@ -49,7 +57,7 @@ export async function interceptToolCall(
 
     try {
       await verifyAuthorization(payload, token, publicKeyPem, policy, expectedKeyId);
-      return { allowed: true, payload, token, policy, policy_hash: loadPolicy().policy_hash };
+      return { allowed: true, payload, token, policy, policy_hash: policyHash };
     } catch (err: any) {
       return { allowed: false, reason: err.message };
     }

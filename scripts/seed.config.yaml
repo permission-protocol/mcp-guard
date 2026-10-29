@@ -15,6 +15,7 @@ rules:
     action: require_approval
     reversibility: reversible
     cap_usd: 50
+    amount_arg: amount_usd             # the argument the spend tool actually charges
     verify_threshold: 70
   - id: reauth
     tool: instantly_reauth

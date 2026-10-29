@@ -193,8 +193,6 @@
   .btn.hold:hover{background:var(--red-soft)}
   .btn.deny{background:transparent;color:var(--ink-faint);box-shadow:inset 0 0 0 1px var(--line);flex:0 0 60px}
   .btn.deny:hover{color:var(--ink-dim);box-shadow:inset 0 0 0 1px var(--line-bright)}
-  .btn.undo{background:transparent;color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line);flex:0 0 66px}
-  .btn.undo:hover{background:var(--brass-soft)}
   .btn.primary{background:linear-gradient(180deg,rgba(227,173,87,.26),rgba(227,173,87,.12));color:var(--amber);box-shadow:inset 0 0 0 1px var(--brass-line)}
   .btn.primary:hover{box-shadow:inset 0 0 0 1px var(--brass),0 6px 18px -10px rgba(227,173,87,.8)}
 
@@ -299,7 +297,7 @@
     .actions{flex-wrap:wrap;gap:7px}
     .actions .btn{min-width:0}
     .actions .btn.approve{flex:1 1 100%;order:-1;padding:14px 0;font-size:14px}
-    .actions .btn.hold,.actions .btn.deny,.actions .btn.undo{flex:1 1 0;padding:11px 0;font-size:12.5px}
+    .actions .btn.hold,.actions .btn.deny{flex:1 1 0;padding:11px 0;font-size:12.5px}
     .btn:hover{transform:none}
     .lane-h{padding:15px 14px 9px}
     .colhead{padding:14px 14px 2px}
@@ -413,6 +411,26 @@
 const BASE_URL = new URLSearchParams(location.search).get('api')
   || (location.origin && location.origin !== "null" ? location.origin
       : (location.hostname ? `${location.protocol}//${location.hostname}:7700` : "http://localhost:7700"));
+// --- approval API access token ---
+// The deck prints a URL ending in #t=<token>. The fragment never leaves the browser;
+// keep it for this tab and send it as a bearer token on every /api call.
+const TOKEN = (() => {
+  const m = location.hash.match(/(?:^#|&)t=([^&]+)/);
+  if (m){
+    const t = decodeURIComponent(m[1]);
+    try { sessionStorage.setItem("pp-deck-token", t); } catch (e) {}
+    history.replaceState(null, "", location.pathname + location.search);
+    return t;
+  }
+  try { return sessionStorage.getItem("pp-deck-token"); } catch (e) { return null; }
+})();
+const AUTH = TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+let authWarned = false;
+function authFailed(){
+  if (authWarned) return;
+  authWarned = true;
+  toast("No access token. Open the deck URL printed in the terminal (it ends with #t=…).", true);
+}
 const POLL_MS = 1000;          // fallback poll interval
 const SSE_GRACE_MS = 3500;     // if SSE doesn't open in this window, fall back to polling
 
@@ -457,7 +475,7 @@ function consequenceFor(it){
     else txt = "Irreversible — no undo once it runs";
     return `<div class="conseq danger"><span class="ic">⊘</span>${esc(txt)}</div>`;
   }
-  if (t.includes("mail")) txt = "Recoverable — undo window before it leaves";
+  if (t.includes("mail")) txt = "Recoverable — a countdown before it leaves; Hold stops it";
   else if (t.includes("merge") || t.includes("_pr")) txt = "Revertable with a follow-up PR";
   else if (t.includes("spend") || t.includes("pay")) txt = "Refundable charge, under the cap";
   else if (t.includes("deploy")) txt = "Rollback available";
@@ -570,7 +588,7 @@ function setConn(mode){
 // ============================================================
 // STATE — single source of truth: the latest QueueItem[]
 // ============================================================
-let items = [];        // QueueItem[] currently rendered (status === pending OR within undo window)
+let items = [];        // QueueItem[] currently rendered (status === pending)
 let lastSig = null;    // structural signature of the last render (excl. live countdowns)
 let lastReceipt = null; // {receiptId,item} of the most recent approval — tap the toast to view
 const localCountdown = {}; // id -> remaining secs, ticked locally between server updates
@@ -581,7 +599,7 @@ const localCountdown = {}; // id -> remaining secs, ticked locally between serve
 function signature(list){
   return list.map(it => [
     it.id, it.status, it.lane, it.reversibility, it.confidence,
-    it.receipt_id, it.summary, it.countdown_seconds, it._undoable ? 1 : 0
+    it.receipt_id, it.summary, it.countdown_seconds
   ].join("~")).join("|");
 }
 
@@ -589,12 +607,8 @@ function signature(list){
 // RENDER
 // ============================================================
 function render(){
-  // only show actionable items: pending, plus reversible items in their undo window
-  const visible = items.filter(it =>
-    it.status === "pending" ||
-    ((it.status === "approved" || it.status === "auto_released") && it.lane === "verify") ||
-    it._undoable
-  );
+  // only show actionable items
+  const visible = items.filter(it => it.status === "pending");
 
   const byLane = { decide: [], unblock: [], verify: [] };
   for (const it of visible){
@@ -720,7 +734,7 @@ function cardHtml(it){
     const pct = Math.max(0, Math.min(100, (remaining / total) * 100));
     const countdown = hasCountdown ? `
       <div class="countdown" data-cd>
-        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — undo anytime</span>
+        <span class="lbl">↺ auto-sends in <b data-clock>${fmtClock(remaining)}</b> — Hold stops it</span>
         <span class="bar"><i data-fill style="width:${pct}%"></i></span>
       </div>` : "";
     const approveLabel = hasCountdown ? "Send now" : "Approve";
@@ -770,8 +784,6 @@ function cardHtml(it){
   const chue = Math.round(18 + (cval / 100) * 122); // continuous amber(18°)→green(140°), no threshold step
   const confMeter = it.confidence != null
     ? `<div class="confmeter"><i style="width:${cval}%;background:hsl(${chue} 62% 52%)"></i></div>` : "";
-  const undoable = (it.status === "pending" || it._undoable || it.status === "approved" || it.status === "auto_released")
-    && it.reversibility === "reversible";
   return `
   <div class="card check" data-id="${esc(it.id)}">
     <div class="card-top">
@@ -785,7 +797,6 @@ function cardHtml(it){
     ${artifact}
     <div class="actions">
       <button class="btn approve" data-act="approve">Looks right</button>
-      ${undoable ? `<button class="btn undo" data-act="undo">Undo</button>` : ""}
     </div>
   </div>`;
 }
@@ -895,12 +906,11 @@ function wireHold(btn, onConfirm){
   btn.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") cancel(); });
 }
 
-const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny", undo:"undo" };
+const ACTION_PATH = { approve:"approve", hold:"hold", deny:"deny" };
 const ACTION_MSG = {
   approve:"Approved — receipt signed · tap to view",
   hold:"Held — countdown stopped, it won't send",
-  deny:"Denied — caller notified",
-  undo:"Undone — action rolled back"
+  deny:"Denied — caller notified"
 };
 
 function doAction(id, act, card){
@@ -923,7 +933,7 @@ function doAction(id, act, card){
     toast(ACTION_MSG.hold);
     render();
   } else {
-    // approve / deny / undo => the card leaves the deck
+    // approve / deny => the card leaves the deck
     card.classList.add("leaving");
     toast(ACTION_MSG[act], false, act === "approve" ? "receipt" : "");
     setTimeout(() => {
@@ -947,8 +957,13 @@ function doAction(id, act, card){
     return;
   }
 
-  fetch(`${BASE_URL}/api/${path}/${encodeURIComponent(id)}`, { method:"POST" })
-    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json().catch(() => ({})); })
+  fetch(`${BASE_URL}/api/${path}/${encodeURIComponent(id)}`, { method:"POST", headers: AUTH })
+    .then(r => {
+      if (r.status === 401) authFailed();
+      if (r.status === 409) throw new Error("already decided");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json().catch(() => ({}));
+    })
     .then(data => {
       if (act === "approve" && data && data.receipt_id){
         lastReceipt = { receiptId: data.receipt_id, item };
@@ -979,30 +994,50 @@ function startPolling(reason){
 function stopPolling(){ clearInterval(pollTimer); pollTimer = null; }
 
 function pollOnce(){
-  fetch(`${BASE_URL}/api/pending`, { cache:"no-store" })
-    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  fetch(`${BASE_URL}/api/pending`, { cache:"no-store", headers: AUTH })
+    .then(r => { if (r.status === 401) authFailed(); if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(data => { if (pollTimer || !sseOpened) setConn("poll"); $("brandPulse").classList.remove("off"); ingest(data); })
     .catch(() => { setConn("down"); $("brandPulse").classList.add("off"); });
 }
 
+// The stream needs the bearer header, which EventSource cannot send, so read the
+// text/event-stream body with fetch and parse `event: queue` frames by hand.
 function startSSE(){
-  if (typeof EventSource === "undefined"){ startPolling(); return; }
-  try {
-    sse = new EventSource(`${BASE_URL}/api/stream`);
-  } catch (e){ startPolling(); return; }
-
-  sse.addEventListener("queue", (ev) => {
-    try { ingest(JSON.parse(ev.data)); } catch (e){ /* ignore malformed frame */ }
-  });
-  sse.onopen = () => { sseOpened = true; stopPolling(); setConn("live"); $("brandPulse").classList.remove("off"); };
-  sse.onerror = () => {
-    // SSE dropped or never connected — fall back to polling
-    if (sse){ sse.close(); sse = null; }
+  if (!TOKEN || typeof ReadableStream === "undefined"){ startPolling(); return; }
+  const controller = new AbortController();
+  sse = controller;
+  const fail = () => {
+    if (sse !== controller) return;
+    sse = null;
     sseOpened = false;
     startPolling("down");
   };
+  fetch(`${BASE_URL}/api/stream`, { headers: AUTH, cache:"no-store", signal: controller.signal })
+    .then(async (res) => {
+      if (res.status === 401) authFailed();
+      if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+      sseOpened = true; stopPolling(); setConn("live"); $("brandPulse").classList.remove("off");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;){
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buf.indexOf("\n\n")) >= 0){
+          const frame = buf.slice(0, sep); buf = buf.slice(sep + 2);
+          const lines = frame.split("\n");
+          if (!lines.includes("event: queue")) continue;
+          const data = lines.filter(l => l.startsWith("data: ")).map(l => l.slice(6)).join("\n");
+          try { ingest(JSON.parse(data)); } catch (e){ /* ignore malformed frame */ }
+        }
+      }
+      fail();
+    })
+    .catch(fail);
 
-  // if SSE hasn't opened within the grace window, start polling so the UI is never blank
+  // if the stream hasn't opened within the grace window, start polling so the UI is never blank
   setTimeout(() => { if (!sseOpened) startPolling(); }, SSE_GRACE_MS);
 }
 

@@ -1,74 +1,89 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createReceipt } from '../receipt.js';
-import type { Decision } from '../engine.js';
+import { readFileSync } from 'node:fs';
+import { issueReceipt, emitReceipt, signingBytes, hashArgs, SIGNING_DOMAIN, type ReceiptInput } from '../receipt.js';
+import { currentKeyId } from '../signer.js';
+import { isolateKeys } from './helpers.js';
 
-describe('Receipt Emitter', () => {
-  it('generates a valid receipt with all fields', () => {
-    const decision: Decision = {
-      decision: 'blocked',
-      rule_id: 'block-delete',
-      reason: 'Matched rule "block-delete"',
+const SENTINEL = 'sk_live_SENTINEL_9f8e7d';
+
+function input(over: Partial<ReceiptInput> = {}): ReceiptInput {
+  return {
+    method: 'tools/call',
+    tool: 'send_email',
+    args: { to: 'a@b.com', body: `password is ${SENTINEL}` },
+    decision: { decision: 'allowed', rule_id: 'r', reason: 'Matched rule "r"' },
+    approval: { kind: 'human', id: 'rod', via: 'local-token' },
+    actor: 'agent-1',
+    mode: 'enforce',
+    policy_sha256: 'abc',
+    ttl_seconds: 900,
+    target_server: 'node server.js',
+    ...over,
+  };
+}
+
+describe('Receipt v2', () => {
+  beforeEach(() => { isolateKeys(); });
+
+  it('has exactly the documented envelope fields', () => {
+    const r = issueReceipt(input({ scope: { scope: 'deploy:staging', scope_sha: 'abc' } }));
+    assert.deepEqual(Object.keys(r.envelope).sort(), [
+      'actor', 'approval', 'args_sha256', 'decision', 'expires_at', 'issued_at', 'key_id', 'method', 'mode',
+      'nonce', 'policy_sha256', 'receipt_id', 'rule_id', 'scope', 'tool', 'v',
+    ]);
+    assert.equal(r.envelope.v, 2);
+    assert.equal(r.envelope.key_id, currentKeyId());
+    assert.equal(r.signature.key_id, currentKeyId());
+    assert.deepEqual(r.envelope.scope, { scope: 'deploy:staging', ref: null, sha: 'abc' });
+    assert.ok(!('verified' in r.signature), 'no self-reported verified flag');
+  });
+
+  it('signs the domain-separated canonical envelope', () => {
+    const r = issueReceipt(input());
+    const bytes = signingBytes(r.envelope);
+    assert.ok(bytes.startsWith(SIGNING_DOMAIN));
+    // canonical: key order does not matter
+    const shuffled = Object.fromEntries(Object.entries(r.envelope).reverse()) as typeof r.envelope;
+    assert.equal(signingBytes(shuffled), bytes);
+  });
+
+  it('golden vector: signing bytes for a fixed envelope', () => {
+    const env = {
+      v: 2 as const, receipt_id: 'rcpt_mg_x', method: 'tools/call', tool: 'deploy', args_sha256: 'h',
+      scope: { scope: 'deploy:production', ref: null, sha: 'abc' }, decision: 'allowed' as const,
+      approval: { kind: 'human' as const, id: 'rod', via: 'local-token' }, actor: 'a', rule_id: 'r',
+      policy_sha256: 'p', mode: 'enforce' as const, issued_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-01T00:15:00.000Z', nonce: 'n', key_id: 'pp-dev-0000000000000000',
     };
-
-    const receipt = createReceipt('agent-1', 'delete_user_data', decision, { name: 'delete_user_data', arguments: {} });
-
-    assert.ok(receipt.receipt_id, 'has receipt_id');
-    assert.match(receipt.receipt_id, /^rcpt_dg_[a-z0-9]+_[a-f0-9]{12}$/, 'receipt_id uses deploy-gate prefix');
-    assert.ok(receipt.timestamp, 'has timestamp');
-    assert.doesNotThrow(() => new Date(receipt.timestamp), 'timestamp is valid ISO');
-    assert.equal(receipt.agent_id, 'agent-1');
-    assert.equal(receipt.tool_name, 'delete_user_data');
-    assert.equal(receipt.decision, 'blocked');
-    assert.equal(receipt.status, 'DENIED');
-    assert.equal(receipt.action, 'delete_user_data');
-    assert.equal(receipt.actor, 'agent-1');
-    assert.equal(receipt.policy, 'block-delete');
-    assert.equal(receipt.risk_tier, 'critical');
-    assert.match(receipt.summary, /AI summary:/);
-    assert.equal(receipt.signature.verified, false);
-    assert.equal(receipt.issuer, 'permissionprotocol.com');
-    assert.equal(receipt.receipt_version, 1);
-    assert.equal(receipt.url, `https://app.permissionprotocol.com/r/${receipt.receipt_id}`);
-    assert.equal(receipt.viewer_url, receipt.url);
-    assert.equal(receipt.enrichmentSnapshot.summary, receipt.summary);
-    assert.ok(receipt.enrichmentSnapshot.riskSignals.length > 0);
-    assert.ok(receipt.enrichmentSnapshot.verificationSteps.length >= 3);
-    assert.equal(receipt.diff.files[0]?.filename, 'arguments.json');
-    assert.match(receipt.diff.files[0]?.patch ?? '', /diff --git a\/arguments\.json b\/arguments\.json/);
-    assert.equal(receipt.policy_details.matched_rule_id, 'block-delete');
-    assert.equal(receipt.policy_details.outcome, 'blocked');
-    assert.doesNotThrow(() => JSON.parse(receipt.request_json), 'request_json is valid JSON');
-    assert.equal(receipt.reason, 'Matched rule "block-delete"');
-    assert.equal(receipt.rule_id, 'block-delete');
-    assert.equal(typeof receipt.request_payload_hash, 'string');
-    assert.equal(receipt.request_payload_hash.length, 64, 'SHA-256 hex is 64 chars');
-    assert.equal(receipt.target_server, 'unknown');
-    assert.equal(receipt.mode, 'enforce');
+    assert.equal(
+      signingBytes(env),
+      'pp-mcp-guard-receipt-v2\n{"actor":"a","approval":{"id":"rod","kind":"human","via":"local-token"},"args_sha256":"h","decision":"allowed","expires_at":"2026-01-01T00:15:00.000Z","issued_at":"2026-01-01T00:00:00.000Z","key_id":"pp-dev-0000000000000000","method":"tools/call","mode":"enforce","nonce":"n","policy_sha256":"p","receipt_id":"rcpt_mg_x","rule_id":"r","scope":{"ref":null,"scope":"deploy:production","sha":"abc"},"tool":"deploy","v":2}',
+    );
   });
 
-  it('hashes different payloads differently', () => {
-    const decision: Decision = { decision: 'allowed', rule_id: null, reason: 'test' };
-    const r1 = createReceipt('a', 'tool', decision, { foo: 1 });
-    const r2 = createReceipt('a', 'tool', decision, { foo: 2 });
-    assert.notEqual(r1.request_payload_hash, r2.request_payload_hash);
+  it('expires after ttl_seconds', () => {
+    const now = new Date('2026-01-01T00:00:00Z');
+    const r = issueReceipt(input({ now, ttl_seconds: 60 }));
+    assert.equal(r.envelope.expires_at, '2026-01-01T00:01:00.000Z');
   });
 
-  it('generates unique receipt IDs', () => {
-    const decision: Decision = { decision: 'allowed', rule_id: null, reason: 'test' };
-    const r1 = createReceipt('a', 'tool', decision, {});
-    const r2 = createReceipt('a', 'tool', decision, {});
-    assert.notEqual(r1.receipt_id, r2.receipt_id);
+  it('hashes canonical arguments', () => {
+    assert.equal(hashArgs({ a: 1, b: 2 }), hashArgs({ b: 2, a: 1 }));
+    assert.equal(issueReceipt(input()).envelope.args_sha256, hashArgs(input().args));
   });
 
-  it('captures observe-mode warnings for held decisions', () => {
-    const decision: Decision = { decision: 'held_for_approval', rule_id: 'hold-prod', reason: 'Matched rule "hold-prod"' };
-    const receipt = createReceipt('agent-2', 'deploy_production', decision, { environment: 'production' }, 'server', 'observe');
-
-    assert.equal(receipt.status, 'AWAITING_APPROVAL');
-    assert.equal(receipt.mode, 'observe');
-    assert.equal(receipt.policy_details.enforcement_mode, 'observe');
-    assert.ok(receipt.enrichmentSnapshot.confidenceWarnings.some((warning) => warning.includes('Observe mode')));
-    assert.equal(receipt.diff.riskLevel, 'high');
+  it('never carries raw argument values (stderr, file)', () => {
+    const r = issueReceipt(input());
+    const path = process.env.PP_SHARED_RECEIPTS_PATH!;
+    const writes: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    (process.stderr as any).write = (chunk: any) => { writes.push(String(chunk)); return true; };
+    try { emitReceipt(r, path); } finally { (process.stderr as any).write = orig; }
+    const file = readFileSync(path, 'utf-8');
+    assert.ok(!JSON.stringify(r).includes(SENTINEL));
+    assert.ok(!file.includes(SENTINEL));
+    assert.ok(!writes.join('').includes(SENTINEL));
+    assert.deepEqual(r.display.arg_keys, ['body', 'to']);
   });
 });

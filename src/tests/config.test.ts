@@ -1,15 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { loadConfig } from '../config.js';
+import { loadConfig, parseConfig } from '../config.js';
+
+const ROOT = join(__dirname, '..', '..', '..');
 
 describe('Config Parser', () => {
   it('parses a valid config', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-test-'));
-    const path = join(dir, 'config.yaml');
-    writeFileSync(path, `
+    const config = parseConfig(`
 default_action: allow
 rules:
   - id: block-delete
@@ -18,44 +17,52 @@ rules:
   - id: hold-deploy
     tool: deploy_production
     action: require_approval
+  - id: hold-reads
+    method: resources/read
+    action: require_approval
 `);
-    const config = loadConfig(path);
     assert.equal(config.default_action, 'allow');
-    assert.equal(config.rules.length, 2);
-    assert.equal(config.rules[0].id, 'block-delete');
-    assert.equal(config.rules[0].tool, 'delete_user_data');
-    assert.equal(config.rules[0].action, 'block');
-    assert.equal(config.rules[1].action, 'require_approval');
-    assert.equal(config.mode, 'enforce'); // default
-    unlinkSync(path);
+    assert.equal(config.rules.length, 3);
+    assert.equal(config.rules[0].method, 'tools/call');
+    assert.equal(config.rules[2].method, 'resources/read');
+    assert.equal(config.mode, 'enforce');
+    assert.equal(config.approval_ttl_seconds, 900);
+    assert.equal(config.receipt_ttl_seconds, 900);
+    assert.match(config.policy_sha256, /^[0-9a-f]{64}$/);
   });
 
-  it('rejects invalid config (bad action)', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-test-'));
-    const path = join(dir, 'config.yaml');
-    writeFileSync(path, `
-default_action: allow
-rules:
-  - id: bad
-    tool: foo
-    action: nuke_it
-`);
-    assert.throws(() => loadConfig(path), /invalid action/i);
-    unlinkSync(path);
-  });
+  const bad: Array<[string, string, RegExp]> = [
+    ['unknown top-level key', 'default_action: allow\ntools: {}\nrules: []', /Unknown config key: "tools"/],
+    ['unknown rule key (typo)', 'default_action: allow\nrules:\n  - { id: s, tool: spend, action: require_approval, capusd: 5 }', /unknown key: "capusd"/],
+    ['duplicate tool rule', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: allow }\n  - { id: b, tool: x, action: block }', /duplicates another rule/],
+    ['duplicate method rule', 'default_action: allow\nrules:\n  - { id: a, method: prompts/get, action: allow }\n  - { id: b, method: prompts/get, action: block }', /duplicates another rule/],
+    ['duplicate id', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: allow }\n  - { id: a, tool: y, action: block }', /duplicates id/],
+    ['countdown on irreversible', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: require_approval, reversibility: irreversible, countdown_seconds: 5 }', /countdown_seconds requires reversibility/],
+    ['countdown without reversibility', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: require_approval, countdown_seconds: 5 }', /countdown_seconds requires reversibility/],
+    ['cap without amount_arg', 'default_action: allow\nrules:\n  - { id: a, tool: spend, action: require_approval, cap_usd: 50 }', /cap_usd requires amount_arg/],
+    ['amount_arg without cap', 'default_action: allow\nrules:\n  - { id: a, tool: spend, action: require_approval, amount_arg: amount }', /amount_arg is only valid with cap_usd/],
+    ['amount_arg reading _pp', 'default_action: allow\nrules:\n  - { id: a, tool: spend, action: require_approval, cap_usd: 5, amount_arg: _pp }', /cannot read agent metadata/],
+    ['tool on a non-tools method', 'default_action: allow\nrules:\n  - { id: a, method: prompts/get, tool: x, action: allow }', /applies only to tools\/call/],
+    ['bad action', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: maybe }', /invalid action/],
+    ['bad default_action', 'default_action: yolo\nrules: []', /Invalid default_action/],
+    ['bad ttl', 'default_action: allow\napproval_ttl_seconds: 0\nrules: []', /approval_ttl_seconds/],
+  ];
+  for (const [name, yaml, re] of bad) {
+    it(`rejects ${name}`, () => assert.throws(() => parseConfig(yaml), re));
+  }
 
   it('throws on missing file', () => {
-    assert.throws(() => loadConfig('/tmp/nonexistent-mcp-guard-config.yaml'), /Failed to read config/);
+    assert.throws(() => loadConfig('/nonexistent/path.yaml'), /Failed to read config file/);
   });
 
-  it('rejects config with invalid default_action', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-test-'));
-    const path = join(dir, 'config.yaml');
-    writeFileSync(path, `
-default_action: yolo
-rules: []
-`);
-    assert.throws(() => loadConfig(path), /Invalid default_action/);
-    unlinkSync(path);
+  it('every shipped config loads under the strict loader', () => {
+    const files = [
+      'example/pp.config.yaml',
+      'actions-mcp/pp.config.yaml',
+      'infra-mcp/pp.config.yaml',
+      ...readdirSync(join(ROOT, 'scripts')).filter((f) => f.endsWith('.config.yaml')).map((f) => `scripts/${f}`),
+    ];
+    assert.ok(files.length >= 6);
+    for (const f of files) assert.doesNotThrow(() => loadConfig(join(ROOT, f)), f);
   });
 });

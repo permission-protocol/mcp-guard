@@ -1,28 +1,44 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
-import type { Config } from './config.js';
+import { TOOLS_CALL, type Config, type Rule } from './config.js';
 import { evaluate, type Decision } from './engine.js';
-import { createReceipt, emitReceipt, signReceipt, type ScopeBinding } from './receipt.js';
+import { issueReceipt, emitReceipt, type Approval, type Receipt, type ScopeBinding } from './receipt.js';
+import { verifyReceipt } from './receipt-verify.js';
+import { currentKeyId, getPublicKeyPem } from './signer.js';
+import { ReplayCache, type PinnedKeys } from './verify-core.js';
 import {
   addPending,
   surfaceActed,
-  getAction,
-  resolveAction,
   setAutoReleaseHandler,
-  setUndoHandler,
+  setExpireHandler,
   type PendingAction,
   type PendingEnrichment,
 } from './pending.js';
-import { startApprovalServer, setOnApprove, pushReceipt, notifyQueueChange } from './approval-server.js';
+import { startApprovalServer, pushReceipt, notifyQueueChange } from './approval-server.js';
+import {
+  parseFrame,
+  errorLine,
+  isPassthrough,
+  toolCallTarget,
+  stripAgentMetadata,
+  BLOCKED,
+  HELD,
+  EXPIRED,
+  INVALID_PARAMS,
+  RELEASE_FAILED,
+  type JsonRpcMessage,
+} from './frame.js';
 
 /**
- * Permission Deck Slice 1 — derive a one-line summary + the literal artifact preview
- * from the tool name and args, so the console can render a human-readable card without
- * re-parsing raw JSON-RPC. e.g. send_email -> the body, spend -> "$N → payee".
+ * Derive a one-line summary + the literal artifact preview from the tool name and args,
+ * so the console can render a human-readable card. For capped spends the amount shown is
+ * the argument the rule caps (`amountArg`), the same one the classifier read.
  */
 export function derivePreview(
   toolName: string,
   toolArgs: Record<string, unknown> | undefined,
+  amountArg?: string,
 ): { summary: string; args_preview: string } {
   const args = (toolArgs ?? {}) as Record<string, any>;
   const str = (v: unknown): string => (v === undefined || v === null ? '' : String(v));
@@ -41,26 +57,25 @@ export function derivePreview(
       return { summary: 'Post to X', args_preview: text || JSON.stringify(args) };
     }
     case 'spend': {
-      const amount = args.amount_usd ?? args.amount;
+      const amount = amountArg ? args[amountArg] : (args.amount_usd ?? args.amount);
       const payee = str(args.payee ?? args.to ?? args.recipient ?? args.vendor);
       const amountStr = amount !== undefined ? `$${amount}` : '';
       const preview = `${amountStr}${payee ? ` → ${payee}` : ''}`.trim();
       return { summary: `Spend ${preview || JSON.stringify(args)}`, args_preview: preview || JSON.stringify(args) };
     }
-    default: {
-      const preview = JSON.stringify(args);
-      return { summary: `Call ${toolName}`, args_preview: preview };
-    }
+    default:
+      return { summary: `Call ${toolName}`, args_preview: JSON.stringify(args) };
   }
 }
 
-/** Build the enrichment record for addPending from a classified Decision + args. */
+/** Build the enrichment record for the queue from a classified Decision + args. */
 export function buildEnrichment(
   decision: Decision,
   toolName: string,
   toolArgs: Record<string, unknown> | undefined,
+  rule?: Rule | null,
 ): PendingEnrichment {
-  const { summary, args_preview } = derivePreview(toolName, toolArgs);
+  const { summary, args_preview } = derivePreview(toolName, toolArgs, rule?.amount_arg);
   return {
     lane: decision.lane ?? 'decide',
     reversibility: decision.reversibility ?? 'irreversible',
@@ -72,259 +87,259 @@ export function buildEnrichment(
 }
 
 /**
- * Permission Deck Slice 2 — derive a receipt scope binding from the tool + args.
- *
- * Maps the code/infra tools to the scope vocabulary the offline receipt-gate verifies:
- *   - merge_pr           -> scope `github:merge`, scope_ref `refs/pull/<n>/merge`, scope_sha from args
- *   - run_sql_migration  -> scope `sql:migrate:<env>`
- *   - deploy             -> scope `deploy:<env>`
- *
- * Comms/spend tools (send_email, post_x, spend, …) return undefined — no scope, so their
- * receipts stay Slice-1 back-compatible and verify with the original signing bytes.
+ * Derive a receipt scope binding from the tool + args, for the code/infra tools the
+ * offline receipt gate verifies:
+ *   - merge_pr           -> `github:merge`, ref `refs/pull/<n>/merge`
+ *   - run_sql_migration  -> `sql:migrate:<env>`
+ *   - deploy             -> `deploy:<env>`
+ * Other tools carry no scope.
  */
-export function deriveScope(
-  toolName: string,
-  toolArgs: Record<string, unknown> | undefined,
-): ScopeBinding | undefined {
+export function deriveScope(toolName: string, toolArgs: Record<string, unknown> | undefined): ScopeBinding | undefined {
   const args = (toolArgs ?? {}) as Record<string, any>;
-  const str = (v: unknown): string | undefined =>
-    v === undefined || v === null ? undefined : String(v);
+  const str = (v: unknown): string | undefined => (v === undefined || v === null ? undefined : String(v));
 
   switch (toolName) {
     case 'merge_pr': {
       const prNumber = str(args.pr_number ?? args.pr ?? args.number);
-      const scopeRef =
-        str(args.scope_ref) ??
-        (prNumber !== undefined ? `refs/pull/${prNumber}/merge` : undefined);
       return {
         scope: 'github:merge',
-        scope_ref: scopeRef,
-        scope_sha: str(args.scope_sha ?? args.merge_commit_sha ?? args.sha),
+        scope_ref: str(args.scope_ref) ?? (prNumber !== undefined ? `refs/pull/${prNumber}/merge` : undefined),
+        scope_sha: str(args.scope_sha ?? args.head_sha ?? args.sha),
       };
     }
-    case 'run_sql_migration': {
-      const env = str(args.env ?? args.environment) ?? 'unknown';
+    case 'run_sql_migration':
       return {
-        scope: `sql:migrate:${env}`,
+        scope: `sql:migrate:${str(args.env ?? args.environment) ?? 'unknown'}`,
         scope_ref: str(args.scope_ref ?? args.migration ?? args.migration_id),
         scope_sha: str(args.scope_sha ?? args.sha),
       };
-    }
-    case 'deploy': {
-      const env = str(args.env ?? args.environment) ?? 'unknown';
+    case 'deploy':
       return {
-        scope: `deploy:${env}`,
+        scope: `deploy:${str(args.env ?? args.environment) ?? 'unknown'}`,
         scope_ref: str(args.scope_ref ?? args.ref),
         scope_sha: str(args.scope_sha ?? args.sha),
       };
-    }
     default:
       return undefined;
   }
 }
 
-interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id?: string | number | null;
-  method: string;
-  params?: any;
+export interface ProxyOptions {
+  approvalPort?: number;
+  operator?: string;
 }
 
-interface JsonRpcError {
-  jsonrpc: '2.0';
-  id: string | number | null;
-  error: {
-    code: number;
-    message: string;
-  };
-}
-
-export function startProxy(config: Config, agentId: string, serverCommand: string[], approvalPort?: number): void {
+export function startProxy(config: Config, agentId: string, serverCommand: string[], opts: ProxyOptions = {}): void {
   if (serverCommand.length === 0) {
     process.stderr.write('[mcp-guard] Error: no server command provided after --\n');
     process.exit(1);
   }
 
-  const approvalEnabled = approvalPort !== undefined;
+  // Load the signing key up front: a missing or exposed key stops the guard here
+  // instead of failing open later.
+  const pinnedKeys: PinnedKeys = { [currentKeyId()]: getPublicKeyPem() };
+  const replayCache = new ReplayCache();
+  const targetServer = serverCommand.slice(0, 2).map((p) => basename(p)).join(' ');
+  const approvalEnabled = opts.approvalPort !== undefined;
 
-  // Start approval server if enabled
-  if (approvalEnabled) {
-    startApprovalServer(approvalPort);
-  }
-
-  const child: ChildProcess = spawn(serverCommand[0], serverCommand.slice(1), {
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
-
+  const child: ChildProcess = spawn(serverCommand[0], serverCommand.slice(1), { stdio: ['pipe', 'pipe', 'inherit'] });
   child.on('error', (err) => {
     process.stderr.write(`[mcp-guard] Failed to start server: ${err.message}\n`);
     process.exit(1);
   });
-
   child.on('exit', (code) => {
     process.stderr.write(`[mcp-guard] Server exited with code ${code}\n`);
     process.exit(code ?? 1);
   });
 
-  // Track pending approval responses waiting for child stdout
-  const pendingChildResponses: Map<string | number, (line: string) => void> = new Map();
+  const toClient = (line: string): void => { process.stdout.write(line + '\n'); };
+  const toServer = (msg: JsonRpcMessage): void => { child.stdin!.write(JSON.stringify(msg) + '\n'); };
 
-  // Forward child stdout → our stdout (or to pending resolver)
-  const childOut = createInterface({ input: child.stdout! });
-  childOut.on('line', (line) => {
-    // Check if this is a response to a forwarded approval
-    try {
-      const parsed = JSON.parse(line);
-      const id = parsed.id;
-      if (id != null && pendingChildResponses.has(id)) {
-        const resolver = pendingChildResponses.get(id)!;
-        pendingChildResponses.delete(id);
-        resolver(line);
-        return;
-      }
-    } catch {
-      // not JSON, pass through
-    }
-    process.stdout.write(line + '\n');
-  });
+  // Server → client traffic is passed through unchanged.
+  createInterface({ input: child.stdout! }).on('line', toClient);
 
-  /**
-   * Release an authorized action: issue a signed Ed25519 receipt, forward the original
-   * request to the child server, and stamp the receipt_id on the pending item. This is
-   * the single release path shared by manual approve and countdown auto-release.
-   */
-  function releaseAction(action: PendingAction, approvedBy: string): void {
-    const serverName = serverCommand.join(' ');
-    // Re-evaluate to get a Decision for the receipt; force outcome to allowed via sign.
-    const decision = evaluate(action.tool_name, action.tool_args, config);
-    const scopeBinding = deriveScope(action.tool_name, action.tool_args);
-    const receipt = createReceipt(action.agent_id, action.tool_name, decision, action.tool_args, serverName, config.mode, scopeBinding);
-    signReceipt(receipt, approvedBy);
-    action.receipt_id = receipt.receipt_id;
+  function record(
+    method: string,
+    tool: string | null,
+    args: Record<string, unknown> | undefined,
+    decision: Decision,
+    approval: Approval | null,
+    actor: string,
+  ): Receipt {
+    const receipt = issueReceipt({
+      method,
+      tool,
+      args,
+      decision,
+      approval,
+      actor,
+      mode: config.mode,
+      policy_sha256: config.policy_sha256,
+      ttl_seconds: config.receipt_ttl_seconds,
+      target_server: targetServer,
+      scope: tool ? deriveScope(tool, args) : undefined,
+    });
     emitReceipt(receipt);
     if (approvalEnabled) pushReceipt(receipt);
-
-    // Register a listener for the child's response, then forward the original request.
-    if (action.jsonrpcId != null) {
-      pendingChildResponses.set(action.jsonrpcId, (responseLine: string) => {
-        action.resolve(responseLine);
-      });
-    }
-    child.stdin!.write(action.originalLine + '\n');
+    return receipt;
   }
 
-  // Set up approval callback — when UI approves, forward original request to child
+  /**
+   * The single release path for held requests (manual approve and countdown): issue the
+   * signed receipt, verify it against the pinned key, and only then forward.
+   */
+  function release(action: PendingAction, approval: Approval): Receipt {
+    const tool = action.method === TOOLS_CALL ? action.tool_name : null;
+    const decision: Decision = {
+      decision: 'allowed',
+      rule_id: action.rule_id,
+      reason: `Released by ${approval.kind} "${approval.id}" (${approval.via})`,
+    };
+    const receipt = record(action.method, tool, action.tool_args, decision, approval, action.agent_id);
+    const check = verifyReceipt(receipt, pinnedKeys, { replayCache, allowPolicyApproval: true });
+    if (!check.valid) {
+      action.resolve(errorLine(action.jsonrpcId, RELEASE_FAILED, `Release refused: ${check.reasons.join(' ')}`));
+      throw new Error(`release refused for ${action.id}: ${check.reasons.join(' ')}`);
+    }
+    action.receipt_id = receipt.envelope.receipt_id;
+    child.stdin!.write(action.forwardLine + '\n');
+    return receipt;
+  }
+
   if (approvalEnabled) {
-    setOnApprove((actionId: string) => {
-      const action = getAction(actionId);
-      if (!action) return;
-      releaseAction(action, 'permission-deck-operator');
+    const server = startApprovalServer({
+      port: opts.approvalPort!,
+      operator: opts.operator,
+      hooks: { release },
+      receiptTtlSeconds: config.receipt_ttl_seconds,
+      policySha256: config.policy_sha256,
+    });
+    server.ready.catch((err) => {
+      process.stderr.write(`[mcp-guard] Approval server failed to start: ${err.message}\n`);
+      process.exit(1);
     });
 
-    // Countdown auto-release: classifier-marked reversible holds self-clear unless held.
-    setAutoReleaseHandler((actionId: string) => {
-      const action = resolveAction(actionId, 'auto_released');
-      if (!action) return;
-      process.stderr.write(`[mcp-guard] Auto-released (countdown) "${action.tool_name}" (${actionId})\n`);
-      releaseAction(action, 'auto-release-countdown');
+    setAutoReleaseHandler((action) => {
+      process.stderr.write(`[mcp-guard] Auto-released (countdown) "${action.tool_name}" (${action.id})\n`);
+      try {
+        release(action, { kind: 'policy', id: action.rule_id ?? 'default_action', via: 'countdown' });
+      } catch (err: any) {
+        process.stderr.write(`[mcp-guard] ${err.message}\n`);
+      }
       notifyQueueChange();
     });
 
-    // Undo: best-effort cancel of the forwarded stub (Slice 1 logs; real adapter no-op).
-    setUndoHandler((action: PendingAction) => {
-      process.stderr.write(`[mcp-guard] Undo requested for "${action.tool_name}" (${action.id}) — best-effort cancel\n`);
+    setExpireHandler((action) => {
+      process.stderr.write(`[mcp-guard] Expired without a decision: "${action.tool_name}" (${action.id})\n`);
+      if (action.kind === 'held') action.resolve(errorLine(action.jsonrpcId, EXPIRED, 'Approval request expired without a decision'));
+      notifyQueueChange();
     });
   }
 
-  // Read our stdin, inspect, and forward or reject
-  const stdinRL = createInterface({ input: process.stdin });
-  stdinRL.on('line', (line) => {
-    if (!line.trim()) return;
+  function gate(msg: JsonRpcMessage & { method: string }, isRequest: boolean): void {
+    const id = msg.id ?? null;
+    const reply = (line: string): void => { if (isRequest) toClient(line); };
 
-    let msg: JsonRpcRequest;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      // Not valid JSON — forward as-is
-      child.stdin!.write(line + '\n');
+    let tool: string | null = null;
+    let args: Record<string, unknown> | undefined;
+    if (msg.method === TOOLS_CALL) {
+      const target = toolCallTarget(msg.params);
+      if ('error' in target) { reply(errorLine(id, INVALID_PARAMS, target.error)); return; }
+      tool = target.name;
+      args = target.args;
+    }
+
+    const decision = evaluate(tool, args, config, msg.method);
+    const rule = decision.rule_id ? config.rules.find((r) => r.id === decision.rule_id) ?? null : null;
+    const forward = stripAgentMetadata(msg);
+    const forwardArgs = tool ? (forward.params as { arguments?: Record<string, unknown> }).arguments : undefined;
+    const label = tool ?? msg.method;
+    const policyApproval: Approval | null =
+      decision.decision === 'allowed'
+        ? { kind: 'policy', id: decision.rule_id ?? 'default_action', via: decision.lane === 'verify' ? 'standing_rule' : 'rule' }
+        : null;
+    const receipt = record(msg.method, tool, forwardArgs, decision, policyApproval, agentId);
+
+    if (!isRequest) {
+      // A notification gets no response, so it can neither be held nor told it was blocked.
+      if (decision.decision === 'allowed' || config.mode === 'observe') toServer(forward);
+      else process.stderr.write(`[mcp-guard] Dropped ${decision.decision} notification "${label}"\n`);
       return;
     }
 
-    if (msg.method === 'tools/call') {
-      const toolName: string = msg.params?.name ?? 'unknown';
-      const toolArgs: Record<string, unknown> | undefined = msg.params?.arguments;
-      const decision = evaluate(toolName, toolArgs, config);
-      const serverName = serverCommand.join(' ');
-      const scopeBinding = deriveScope(toolName, toolArgs);
-      const receipt = createReceipt(agentId, toolName, decision, msg.params, serverName, config.mode, scopeBinding);
-      emitReceipt(receipt);
-      if (approvalEnabled) pushReceipt(receipt);
-
-      // In observe mode, always forward (log only, don't block)
-      if (config.mode === 'observe') {
-        if (decision.decision !== 'allowed') {
-          process.stderr.write(`[mcp-guard] OBSERVE: would ${decision.decision === 'blocked' ? 'block' : 'hold'} "${toolName}" but forwarding (observe mode)\n`);
-        }
-        child.stdin!.write(line + '\n');
-      } else if (decision.decision === 'allowed') {
-        child.stdin!.write(line + '\n');
-        // Verify lane: the action acted under a standing rule (e.g. spend under cap).
-        // Surface it for post-hoc confirmation without holding or re-forwarding.
-        if (approvalEnabled && decision.lane === 'verify') {
-          const surfaced = surfaceActed(
-            toolName,
-            toolArgs,
-            agentId,
-            decision.rule_id ?? 'unknown',
-            buildEnrichment(decision, toolName, toolArgs),
-            receipt.receipt_id,
-          );
-          notifyQueueChange();
-          process.stderr.write(`[mcp-guard] Surfaced acted "${toolName}" in Verify (${surfaced.id})\n`);
-        }
-      } else if (decision.decision === 'blocked') {
-        const errResp: JsonRpcError = {
-          jsonrpc: '2.0',
-          id: msg.id ?? null,
-          error: {
-            code: -32001,
-            message: `Blocked: ${decision.reason}`,
-          },
-        };
-        process.stdout.write(JSON.stringify(errResp) + '\n');
-      } else {
-        // held_for_approval
-        if (approvalEnabled) {
-          // Hold the response — add to pending queue with classifier enrichment.
-          const pending = addPending(
-            toolName,
-            toolArgs,
-            agentId,
-            decision.rule_id ?? 'unknown',
-            line,
-            msg.id ?? null,
-            (responseLine: string) => {
-              process.stdout.write(responseLine + '\n');
-            },
-            buildEnrichment(decision, toolName, toolArgs),
-          );
-          process.stderr.write(`[mcp-guard] Held "${toolName}" for approval (${pending.id}) — approve at UI\n`);
-        } else {
-          // No approval server — return error immediately (original behavior)
-          const errResp: JsonRpcError = {
-            jsonrpc: '2.0',
-            id: msg.id ?? null,
-            error: {
-              code: -32002,
-              message: `Held for approval: ${decision.reason}`,
-            },
-          };
-          process.stdout.write(JSON.stringify(errResp) + '\n');
-        }
+    if (config.mode === 'observe') {
+      if (decision.decision !== 'allowed') {
+        process.stderr.write(`[mcp-guard] OBSERVE: would ${decision.decision === 'blocked' ? 'block' : 'hold'} "${label}" but forwarding (observe mode)\n`);
       }
-    } else {
-      // Pass through all non-tools/call methods
-      child.stdin!.write(line + '\n');
+      toServer(forward);
+      return;
+    }
+
+    if (decision.decision === 'allowed') {
+      toServer(forward);
+      if (approvalEnabled && decision.lane === 'verify') {
+        const surfaced = surfaceActed({
+          method: msg.method,
+          toolName: label,
+          toolArgs: forwardArgs,
+          agentId,
+          ruleId: decision.rule_id,
+          enrichment: buildEnrichment(decision, label, forwardArgs, rule),
+          receiptId: receipt.envelope.receipt_id,
+          ttlSeconds: config.approval_ttl_seconds,
+        });
+        notifyQueueChange();
+        process.stderr.write(`[mcp-guard] Surfaced acted "${label}" in Verify (${surfaced.id})\n`);
+      }
+      return;
+    }
+
+    if (decision.decision === 'blocked') {
+      toClient(errorLine(id, BLOCKED, `Blocked: ${decision.reason}`));
+      return;
+    }
+
+    // held_for_approval
+    if (!approvalEnabled) {
+      toClient(errorLine(id, HELD, `Held for approval: ${decision.reason}`));
+      return;
+    }
+    const pending = addPending({
+      method: msg.method,
+      toolName: label,
+      toolArgs: forwardArgs,
+      agentId,
+      ruleId: decision.rule_id,
+      forwardLine: JSON.stringify(forward),
+      jsonrpcId: id,
+      resolve: toClient,
+      enrichment: buildEnrichment(decision, label, forwardArgs, rule),
+      ttlSeconds: config.approval_ttl_seconds,
+    });
+    notifyQueueChange();
+    process.stderr.write(`[mcp-guard] Held "${label}" for approval (${pending.id})\n`);
+  }
+
+  // Client → server: parse, gate, and forward only what was evaluated.
+  const stdinRL = createInterface({ input: process.stdin });
+  stdinRL.on('line', (line) => {
+    if (!line.trim()) return;
+    const frame = parseFrame(line);
+    switch (frame.kind) {
+      case 'invalid':
+        toClient(errorLine(frame.id, frame.code, frame.message));
+        return;
+      case 'response':
+        toServer(frame.msg);
+        return;
+      case 'notification':
+        if (isPassthrough(frame.msg.method)) toServer(frame.msg);
+        else gate(frame.msg, false);
+        return;
+      case 'request':
+        if (isPassthrough(frame.msg.method)) toServer(frame.msg);
+        else gate(frame.msg, true);
+        return;
     }
   });
 
@@ -332,7 +347,6 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     child.stdin!.end();
   });
 
-  // Handle signals gracefully
   process.on('SIGINT', () => child.kill('SIGINT'));
   process.on('SIGTERM', () => child.kill('SIGTERM'));
 }

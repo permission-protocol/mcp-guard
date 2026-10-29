@@ -11,3 +11,6 @@ pp-receipts.jsonl
 console/*.png
 scripts/.demo*-receipts.jsonl
 deck-outbox.log
+
+# demo-pinned public keys (regenerated per run)
+scripts/.demo*.pub.pem

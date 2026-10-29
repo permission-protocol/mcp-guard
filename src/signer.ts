@@ -1,126 +1,125 @@
 import {
-  generateKeyPairSync,
-  sign as edSign,
+  createHash,
   createPrivateKey,
   createPublicKey,
+  generateKeyPairSync,
+  sign as edSign,
   type KeyObject,
 } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 /**
- * Permission Deck Slice 1 — local Ed25519 dev signer.
+ * Local Ed25519 dev signer.
  *
- * Generates (once) and loads a dev keypair under `mcp-guard/.keys/`. NEVER hardcodes
- * a secret: the private key is created locally on first use and persisted to disk
- * (gitignored). Used to sign issued receipts so the receipt `signature` block carries
- * a real, verifiable Ed25519 signature with key_id `pp-dev-1`.
+ * The keypair is generated once and kept in the operator's config directory
+ * (`$PP_KEYS_DIR`, else `$XDG_CONFIG_HOME/mcp-guard/keys`, else
+ * `~/.config/mcp-guard/keys`) — never in the working directory, which is usually the
+ * agent's workspace. The directory is 0700 and the private key 0600; a key with looser
+ * permissions is refused rather than used.
  *
- * This is the dev signer of the strategy memo's open-core boundary — the managed PP
- * signer replaces it later without changing the receipt shape.
+ * The key id is derived from the public key (`pp-dev-<fingerprint>`), so pinning a
+ * public key pins its id and a regenerated key can never pass as the old one.
+ *
+ * This is the dev signer of the open-core boundary; the managed PP signer replaces it.
  */
 
-export const DEV_KEY_ID = 'pp-dev-1';
 export const SIGN_ALGORITHM = 'ed25519';
+const PRIVATE_FILE = 'signing.private.pem';
+const PUBLIC_FILE = 'signing.public.pem';
 
-const KEYS_DIR = process.env.PP_KEYS_DIR || join(process.cwd(), '.keys');
-const PRIVATE_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.private.pem`);
-const PUBLIC_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.public.pem`);
-
-/**
- * Permission Deck Slice 2 — the stable, published public-key path.
- *
- * The offline verifier and CI receipt-gate read the dev public key from here. It is a
- * world-readable `.pub.pem` (0644) distinct from the signer's working `.public.pem`,
- * so "the published key" is an explicit, distributable artifact (the dev analogue of
- * `GET /api/v1/keys/current`). Only the PRIVATE key is secret.
- */
-export const PUBLISHED_PUBLIC_KEY_PATH = join(KEYS_DIR, `${DEV_KEY_ID}.pub.pem`);
-
-let cachedPrivate: KeyObject | null = null;
-let cachedPublic: KeyObject | null = null;
-
-/** Generate the dev keypair if absent; load it either way. Idempotent. */
-function ensureKeypair(): { privateKey: KeyObject; publicKey: KeyObject } {
-  if (cachedPrivate && cachedPublic) {
-    return { privateKey: cachedPrivate, publicKey: cachedPublic };
-  }
-
-  if (existsSync(PRIVATE_KEY_PATH) && existsSync(PUBLIC_KEY_PATH)) {
-    const privPem = readFileSync(PRIVATE_KEY_PATH, 'utf-8');
-    const pubPem = readFileSync(PUBLIC_KEY_PATH, 'utf-8');
-    cachedPrivate = createPrivateKey(privPem);
-    cachedPublic = createPublicKey(pubPem);
-    return { privateKey: cachedPrivate, publicKey: cachedPublic };
-  }
-
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-  const pubPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
-
-  mkdirSync(dirname(PRIVATE_KEY_PATH), { recursive: true });
-  writeFileSync(PRIVATE_KEY_PATH, privPem, { mode: 0o600 });
-  writeFileSync(PUBLIC_KEY_PATH, pubPem, { mode: 0o644 });
-  try {
-    chmodSync(PRIVATE_KEY_PATH, 0o600);
-  } catch {
-    // best effort on platforms without chmod semantics
-  }
-
-  cachedPrivate = privateKey;
-  cachedPublic = publicKey;
-  return { privateKey, publicKey };
+export class KeyPermissionError extends Error {
+  readonly code = 'PP_KEY_PERMISSIONS';
 }
 
-/** Sign arbitrary bytes with the dev Ed25519 key. Returns a hex signature. */
-export function signBytes(data: string | Buffer): string {
-  const { privateKey } = ensureKeypair();
-  const buf = typeof data === 'string' ? Buffer.from(data) : data;
-  return edSign(null, buf, privateKey).toString('hex');
+export function keysDir(): string {
+  if (process.env.PP_KEYS_DIR) return process.env.PP_KEYS_DIR;
+  const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(base, 'mcp-guard', 'keys');
 }
 
-/** The dev public key in SPKI PEM form (for verification). */
+/** `pp-dev-` + the first 16 hex chars of sha256(SPKI DER). */
+export function keyIdForPublicKey(publicKey: KeyObject | string): string {
+  const key = typeof publicKey === 'string' ? createPublicKey(publicKey) : publicKey;
+  const der = key.export({ type: 'spki', format: 'der' });
+  return 'pp-dev-' + createHash('sha256').update(der).digest('hex').slice(0, 16);
+}
+
+interface Keypair {
+  dir: string;
+  privateKey: KeyObject;
+  publicKey: KeyObject;
+  keyId: string;
+}
+
+let cached: Keypair | null = null;
+
+function assertPrivate(path: string, mask: number): void {
+  if (process.platform === 'win32') return;
+  const mode = statSync(path).mode & 0o777;
+  if (mode & mask) {
+    throw new KeyPermissionError(
+      `Refusing to use signing key material at ${path}: mode ${mode.toString(8)} is readable or writable by others (key must be 0600 in a directory only you can write)`,
+    );
+  }
+}
+
+function ensureKeypair(): Keypair {
+  const dir = keysDir();
+  if (cached && cached.dir === dir) return cached;
+
+  const privPath = join(dir, PRIVATE_FILE);
+  const pubPath = join(dir, PUBLIC_FILE);
+
+  let privateKey: KeyObject;
+  let publicKey: KeyObject;
+  if (existsSync(privPath)) {
+    assertPrivate(dir, 0o022);
+    assertPrivate(privPath, 0o077);
+    privateKey = createPrivateKey(readFileSync(privPath, 'utf-8'));
+    publicKey = createPublicKey(privateKey);
+  } else {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try { chmodSync(dir, 0o700); } catch { /* best effort on platforms without chmod */ }
+    const pair = generateKeyPairSync('ed25519');
+    privateKey = pair.privateKey;
+    publicKey = pair.publicKey;
+    writeFileSync(privPath, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), { mode: 0o600, flag: 'wx' });
+    writeFileSync(pubPath, publicKey.export({ type: 'spki', format: 'pem' }).toString(), { mode: 0o644 });
+  }
+
+  cached = { dir, privateKey, publicKey, keyId: keyIdForPublicKey(publicKey) };
+  return cached;
+}
+
+/** The active signing key id. */
+export function currentKeyId(): string {
+  return ensureKeypair().keyId;
+}
+
+/** The active public key in SPKI PEM form — what verifiers pin. */
 export function getPublicKeyPem(): string {
-  const { publicKey } = ensureKeypair();
-  return publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  return ensureKeypair().publicKey.export({ type: 'spki', format: 'pem' }).toString();
+}
+
+/** Sign bytes with the dev key. Returns the hex signature and the key id it belongs to. */
+export function signBytes(data: string | Buffer): { keyId: string; value: string } {
+  const { privateKey, keyId } = ensureKeypair();
+  const buf = typeof data === 'string' ? Buffer.from(data) : data;
+  return { keyId, value: edSign(null, buf, privateKey).toString('hex') };
 }
 
 /**
- * Permission Deck Slice 2 — write the dev public key to the stable published path
- * (`.keys/pp-dev-1.pub.pem`, 0644) and return that path. Idempotent: re-publishes the
- * current key each call so the file always matches the live signer. The verifier/CLI
- * read this path. Never writes the private key.
+ * Write the public key to `path` (0644) so it can be committed or distributed as the
+ * pinned trust anchor. Never writes the private key.
  */
-export function publishPublicKey(): string {
-  const pem = getPublicKeyPem();
-  mkdirSync(dirname(PUBLISHED_PUBLIC_KEY_PATH), { recursive: true });
-  writeFileSync(PUBLISHED_PUBLIC_KEY_PATH, pem, { mode: 0o644 });
-  try {
-    chmodSync(PUBLISHED_PUBLIC_KEY_PATH, 0o644);
-  } catch {
-    // best effort on platforms without chmod semantics
-  }
-  return PUBLISHED_PUBLIC_KEY_PATH;
+export function exportPublicKey(path: string): string {
+  writeFileSync(path, getPublicKeyPem(), { mode: 0o644 });
+  return path;
 }
 
-export interface ReceiptSignature {
-  algorithm: string;
-  key_id: string;
-  value: string;
-  verified: boolean;
-}
-
-/**
- * Produce a receipt signature block over the canonical signing bytes.
- * `signingBytes` should be a deterministic string identifying the authorized action
- * (e.g. receipt_id + payload hash) so the signature binds the exact decision.
- */
-export function signReceiptPayload(signingBytes: string): ReceiptSignature {
-  const value = signBytes(signingBytes);
-  return {
-    algorithm: SIGN_ALGORITHM,
-    key_id: DEV_KEY_ID,
-    value,
-    verified: true,
-  };
+/** Test/teardown helper: forget the cached keypair. */
+export function _resetSigner(): void {
+  cached = null;
 }

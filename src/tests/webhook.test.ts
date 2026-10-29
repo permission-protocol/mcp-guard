@@ -79,7 +79,7 @@ describe('External decision enqueue', () => {
     const sc = scopeForPr(ev);
     const enrichment: PendingEnrichment = { lane: 'decide', reversibility: 'reversible', summary: 'Merge #16', args_preview: JSON.stringify({ pr_number: 16 }) };
     const a = addExternalDecision({ toolName: 'merge_pr', agentId: 'github-webhook', ruleId: 'pr-needs-authority', enrichment, ...sc });
-    assert.equal(a.external, true);
+    assert.equal(a.kind, 'external');
     assert.equal(a.lane, 'decide');
     assert.equal(a.scope_ref, 'refs/pull/16/merge');
     assert.equal(getPending().length, 1);

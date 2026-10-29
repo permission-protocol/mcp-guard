@@ -1,4 +1,4 @@
-import type { Config, Rule, Reversibility } from './config.js';
+import { TOOLS_CALL, type Config, type Rule, type Reversibility } from './config.js';
 import { classify, extractMeta } from './classify.js';
 
 // Permission Deck Slice 1: which human lane an attention-requiring action lands in.
@@ -21,14 +21,18 @@ const ACTION_TO_DECISION = {
   require_approval: 'held_for_approval',
 } as const;
 
-export function evaluate(toolName: string, toolArgs: Record<string, unknown> | undefined, config: Config): Decision {
-  let matched: Rule | null = null;
-  for (const rule of config.rules) {
-    if (rule.tool === toolName) {
-      matched = rule;
-      break;
-    }
-  }
+/**
+ * Decide a gated request. `toolName` is the tool for `tools/call` and null for other
+ * methods; rules match on method plus (for tools/call) the exact tool name.
+ */
+export function evaluate(
+  toolName: string | null,
+  toolArgs: Record<string, unknown> | undefined,
+  config: Config,
+  method: string = TOOLS_CALL,
+): Decision {
+  const matched: Rule | null =
+    config.rules.find((rule) => (rule.method ?? TOOLS_CALL) === method && (method !== TOOLS_CALL || rule.tool === toolName)) ?? null;
 
   const base: Decision = matched
     ? {
@@ -43,5 +47,5 @@ export function evaluate(toolName: string, toolArgs: Record<string, unknown> | u
       };
 
   // Enrich with reversibility/confidence lane routing (Permission Deck).
-  return classify(base, matched, extractMeta(toolArgs));
+  return classify(base, matched, extractMeta(toolArgs), toolArgs);
 }
