@@ -8,7 +8,7 @@ echo "=== MCP Guard Demo ==="
 echo ""
 echo "Building..."
 cd "$ROOT_DIR"
-npm run build --silent 2>/dev/null
+[ -f dist/src/cli.js ] || npm run build --silent 2>/dev/null
 
 echo "Sending test requests through mcp-guard proxy..."
 echo ""

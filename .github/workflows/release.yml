@@ -1,0 +1,59 @@
+# Publish @permission-protocol/mcp-guard to npm.
+#
+# Uses npm trusted publishing (OIDC): no npm token is stored in this repository.
+# npm accepts the publish only from this workflow file in this repository, as
+# configured on the package's npm access settings. Provenance is attached.
+#
+# Run it manually from main after the version bump has merged:
+#   Actions → Release → Run workflow (branch: main)
+
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - name: Refuse to publish from anything but main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Release runs only from main (got $GITHUB_REF)"
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@11.6.0
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Refuse to republish an existing version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "@permission-protocol/mcp-guard@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::@permission-protocol/mcp-guard@$VERSION is already on npm. Bump the version first."
+            exit 1
+          fi
+
+      - run: npm publish --access public --provenance
