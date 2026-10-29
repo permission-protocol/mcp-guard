@@ -82,8 +82,10 @@ state, clear all four cards.
 |--------------------------------|------|
 | Approve / Send now / Looks right / Provide | `/api/approve/:id` |
 | Hold (reversible Decide)       | `/api/hold/:id` (stops the countdown; card becomes a hard hold) |
-| Deny                           | `/api/deny/:id` |
-| Undo (Verify, within window)   | `/api/undo/:id` |
+| Deny (not for Verify items: they already ran) | `/api/deny/:id` |
+
+Every call needs `Authorization: Bearer <token>`; the console reads the token from the
+`#t=` fragment of the URL the deck prints. Approving or denying an item twice returns 409.
 
 All actions update the UI optimistically; the authoritative state comes back on
 the next SSE/poll push. If a POST fails, a red toast shows and the console

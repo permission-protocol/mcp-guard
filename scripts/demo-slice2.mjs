@@ -5,15 +5,18 @@
 // is refused by the gate. Exit 0 = all beats pass.
 
 import { spawn, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7793;
-const BASE = `http://localhost:${PORT}`;
+const BASE = `http://127.0.0.1:${PORT}`;
 const OUTBOX = join(ROOT, 'infra-mcp', 'outbox.log');
 const RECEIPTS = join(ROOT, 'scripts', '.demo2-receipts.jsonl');
+const PUBKEY = join(ROOT, 'scripts', '.demo2.pub.pem');
+const TOKEN = randomBytes(32).toString('hex'); // approval API access token for this run
 const PR = { repo: 'pp/mcp-guard', pr_number: 16, scope_sha: 'abc123def456' };
 const SCOPE_REF = `refs/pull/${PR.pr_number}/merge`;
 
@@ -21,24 +24,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const outbox = () => (existsSync(OUTBOX) ? readFileSync(OUTBOX, 'utf8') : '');
 let passed = 0, failed = 0;
 const check = (n, c) => (c ? (console.log(`  ✓ ${n}`), passed++) : (console.log(`  ✗ ${n}`), failed++));
-const api = async (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m }).then((r) => r.json());
+const api = async (p, m = 'GET') => fetch(`${BASE}${p}`, { method: m, headers: { Authorization: `Bearer ${TOKEN}` } }).then((r) => r.json());
 
 // Run the CI gate exactly as a GitHub Action would; return its exit code.
 function gate(extraArgs) {
   try {
-    execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, ...extraArgs], { stdio: 'pipe' });
+    execFileSync('node', [join(ROOT, 'scripts/verify-receipt.mjs'), '--receipts-path', RECEIPTS, '--pubkey', PUBKEY, ...extraArgs], { stdio: 'pipe' });
     return 0;
   } catch (e) { return e.status ?? 1; }
 }
 
 for (const f of [OUTBOX, RECEIPTS]) if (existsSync(f)) rmSync(f);
+// Pin the guard's public key, exactly as a CI gate would.
+execFileSync('node', [join(ROOT, 'dist/src/cli.js'), 'export-key', PUBKEY], { stdio: 'pipe' });
 
 const guard = spawn(
   'node',
   [join(ROOT, 'dist/src/cli.js'), '--config', join(ROOT, 'infra-mcp/pp.config.yaml'),
    '--agent-id', 'charles', '--approval-port', String(PORT),
    '--', 'node', join(ROOT, 'infra-mcp/server.mjs')],
-  { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, PP_SHARED_RECEIPTS_PATH: RECEIPTS } },
+  { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, PP_SHARED_RECEIPTS_PATH: RECEIPTS, PP_APPROVAL_TOKEN: TOKEN } },
 );
 const send = (o) => guard.stdin.write(JSON.stringify(o) + '\n');
 let buf = '';

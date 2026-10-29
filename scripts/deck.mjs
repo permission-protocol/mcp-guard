@@ -3,11 +3,12 @@
 // combined 6-tool demo server, serves the console on 7701, seeds a realistic mixed
 // queue across all three lanes, and stays up so you can open it and actually use it.
 //
-//   npm run deck      then open  http://localhost:7701
+//   npm run deck      then open the URL it prints (it carries the access token after #t=)
 //
-// Approve / Hold / Deny / Undo all work live; approvals issue signed receipts.
+// Approve / Hold / Deny work live; approvals issue signed receipts.
 
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,9 @@ import { dirname, join, extname } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API_PORT = 7700;
 const UI_PORT = 7701;
+// One access token per run: the guard requires it on every /api call, and the browser
+// receives it only in the URL fragment printed below.
+const TOKEN = randomBytes(32).toString('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 1) Guard + approval API, wrapping the combined demo MCP server.
@@ -24,7 +28,7 @@ const guard = spawn(
   [join(ROOT, 'dist/src/cli.js'), '--config', join(ROOT, 'scripts/deck.config.yaml'),
    '--agent-id', 'charles', '--approval-port', String(API_PORT),
    '--', 'node', join(ROOT, 'scripts/deck-demo-mcp.mjs')],
-  { stdio: ['pipe', 'pipe', 'inherit'] },
+  { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, PP_APPROVAL_TOKEN: TOKEN } },
 );
 guard.stdout.on('data', () => {}); // drain
 const send = (o) => guard.stdin.write(JSON.stringify(o) + '\n');
@@ -34,14 +38,15 @@ const send = (o) => guard.stdin.write(JSON.stringify(o) + '\n');
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 function proxyApi(req, res) {
   const preq = httpRequest(
-    { hostname: 'localhost', port: API_PORT, path: req.url, method: req.method,
-      headers: { ...req.headers, host: `localhost:${API_PORT}` } },
+    { hostname: '127.0.0.1', port: API_PORT, path: req.url, method: req.method,
+      headers: { ...req.headers, host: `127.0.0.1:${API_PORT}` } },
     (pres) => { res.writeHead(pres.statusCode, pres.headers); pres.pipe(res); },
   );
   preq.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('deck backend unreachable'); });
   req.pipe(preq);
 }
-// Optional HTTP Basic Auth so a public tunnel stays "just me".
+// Optional HTTP Basic Auth for the console files when exposed through a tunnel.
+// /api is always protected by the guard's own bearer token.
 const AUTH_USER = process.env.DECK_USER || 'rod';
 const AUTH_PASS = process.env.DECK_PASS || '';
 function authed(req) {
@@ -53,17 +58,17 @@ function authed(req) {
 }
 
 createServer((req, res) => {
+  if (req.url.startsWith('/api/')) return proxyApi(req, res); // the guard checks the bearer token
   if (!authed(req)) {
     res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Permission Deck"' });
     return res.end('Authentication required');
   }
-  if (req.url.startsWith('/api')) return proxyApi(req, res);
   const rel = (req.url === '/' || req.url.startsWith('/?')) ? '/index.html' : req.url.split('?')[0];
   const file = join(ROOT, 'console', rel);
   if (!file.startsWith(join(ROOT, 'console')) || !existsSync(file)) { res.writeHead(404); return res.end('not found'); }
   res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'text/plain' });
   res.end(readFileSync(file));
-}).listen(UI_PORT);
+}).listen(UI_PORT, '127.0.0.1');
 
 // 3) Seed a realistic mixed queue across all lanes.
 async function seed() {
@@ -80,7 +85,7 @@ async function seed() {
   ];
   calls.forEach((params, i) => send({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params }));
   await sleep(500);
-  process.stderr.write(`\n  ✅ Live Permission Deck is up.\n     Open:  http://localhost:${UI_PORT}\n     (approval API on :${API_PORT}; Ctrl-C to stop)\n\n`);
+  process.stderr.write(`\n  ✅ Live Permission Deck is up.\n     Open:  http://127.0.0.1:${UI_PORT}/#t=${TOKEN}\n     (approval API on 127.0.0.1:${API_PORT}; Ctrl-C to stop)\n\n`);
 }
 seed();
 

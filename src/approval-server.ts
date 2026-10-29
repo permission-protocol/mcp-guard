@@ -1,62 +1,70 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { userInfo } from 'node:os';
 import {
   getPending,
   getAction,
-  resolveAction,
-  acknowledgeAction,
+  transition,
   addExternalDecision,
-  holdAction,
-  undoAction,
   countdownRemaining,
   type PendingAction,
+  type TransitionResult,
 } from './pending.js';
-import type { Lane, Decision } from './engine.js';
+import type { Lane } from './engine.js';
 import type { Reversibility } from './config.js';
+import { DEFAULT_RECEIPT_TTL_SECONDS } from './config.js';
 import { getApprovalHTML } from './approval-ui.js';
-import { createReceipt, signReceipt, emitReceipt, type Receipt } from './receipt.js';
+import { issueReceipt, emitReceipt, type Approval, type Receipt } from './receipt.js';
 import { verifyGithubSignature, parsePrEvent, shouldGate, scopeForPr } from './webhook.js';
-import { postCommitStatus, authorizedStatus } from './github-status.js';
+import { errorLine, DENIED } from './frame.js';
 
-/** Recent receipts store (ring buffer) */
-const recentReceipts: Receipt[] = [];
+/**
+ * The local approval channel.
+ *
+ * - Listens on 127.0.0.1 only and rejects any Host header but its own (DNS rebinding).
+ * - Sends no CORS headers: other origins cannot read or drive it.
+ * - Every /api route except the GitHub webhook needs `Authorization: Bearer <token>`.
+ *   The token is generated per process (or supplied via PP_APPROVAL_TOKEN) and reaches
+ *   the browser only in the URL fragment printed at startup; GET / holds no secret.
+ * - Every decision goes through the pending-queue state machine, so final states hold.
+ */
+
+export const MIN_TOKEN_LENGTH = 32;
+const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_RECEIPTS = 50;
+const MAX_DELIVERIES = 1000;
+
+const recentReceipts: Receipt[] = [];
 
 export function pushReceipt(receipt: Receipt): void {
   recentReceipts.push(receipt);
   if (recentReceipts.length > MAX_RECEIPTS) recentReceipts.shift();
 }
 
-/** Callback invoked when an action is approved — proxy registers this */
-let onApproveCallback: ((id: string) => void) | null = null;
-
-export function setOnApprove(cb: (id: string) => void): void {
-  onApproveCallback = cb;
+export interface ApprovalHooks {
+  /** Release a held request the human approved: sign, forward, return the receipt. */
+  release?: (action: PendingAction, approval: Approval) => Receipt;
 }
 
-/** Optional hook fired after an external (webhook) decision is approved + receipted.
- *  Real deployments use this to post the receipt id / a commit status back to GitHub. */
-let onExternalApprove: ((action: PendingAction, receipt: Receipt) => void) | null = null;
-export function setOnExternalApprove(cb: (action: PendingAction, receipt: Receipt) => void): void {
-  onExternalApprove = cb;
+export interface ApprovalServerOptions {
+  port: number;
+  /** Bearer token; defaults to PP_APPROVAL_TOKEN, else 32 random bytes. */
+  token?: string;
+  /** Recorded as the approver on human decisions; defaults to the OS username. */
+  operator?: string;
+  hooks?: ApprovalHooks;
+  /** For receipts issued on webhook-sourced decisions. */
+  receiptTtlSeconds?: number;
+  policySha256?: string;
 }
 
-/** Issue + sign a scoped receipt for an external (webhook-sourced) decision. No forward. */
-function issueExternalReceipt(action: PendingAction, approvedBy: string): Receipt {
-  const decision: Decision = {
-    decision: 'allowed',
-    rule_id: action.rule_id,
-    reason: 'Approved by a human in the Permission Deck (GitHub webhook)',
-    lane: action.lane,
-    reversibility: action.reversibility,
-  };
-  const scopeBinding = { scope: action.scope, scope_ref: action.scope_ref, scope_sha: action.scope_sha };
-  const receipt = createReceipt(action.agent_id, action.tool_name, decision, action.tool_args, 'github-webhook', 'enforce', scopeBinding);
-  signReceipt(receipt, approvedBy);
-  action.receipt_id = receipt.receipt_id;
-  emitReceipt(receipt);
-  pushReceipt(receipt);
-  if (onExternalApprove) onExternalApprove(action, receipt);
-  return receipt;
+export interface ApprovalServerHandle {
+  token: string;
+  operator: string;
+  /** Resolves with the bound port once listening. */
+  ready: Promise<number>;
+  close: () => Promise<void>;
 }
 
 /** The QueueItem shape from the API contract (backend ⇄ console). */
@@ -70,14 +78,19 @@ export interface QueueItem {
   confidence?: number;
   summary: string;
   args_preview: string;
+  /** Every argument the server will receive, so the approver sees all of it. */
+  args_full: string;
+  /** What an approval authorizes, when the receipt is scoped (merge, migration, deploy). */
+  scope?: { scope: string; ref: string | null; sha: string | null };
   agent_id: string;
-  rule_id: string;
+  rule_id: string | null;
   status: PendingAction['status'];
+  acted: boolean;
   created_at: string;
+  expires_at?: string;
   receipt_id?: string;
 }
 
-/** Project a PendingAction into the contract QueueItem, computing countdown_remaining. */
 export function toQueueItem(p: PendingAction): QueueItem {
   const remaining = countdownRemaining(p);
   return {
@@ -85,20 +98,23 @@ export function toQueueItem(p: PendingAction): QueueItem {
     tool_name: p.tool_name,
     lane: p.lane,
     reversibility: p.reversibility,
-    ...(p.countdown_seconds !== undefined ? { countdown_seconds: p.countdown_seconds } : {}),
-    ...(remaining !== undefined ? { countdown_remaining: remaining } : {}),
+    // Countdown fields appear only while a countdown is live (a held item has none).
+    ...(remaining !== undefined ? { countdown_seconds: p.countdown_seconds, countdown_remaining: remaining } : {}),
     ...(p.confidence !== undefined ? { confidence: p.confidence } : {}),
     summary: p.summary,
     args_preview: p.args_preview,
+    args_full: JSON.stringify(p.tool_args, null, 2),
+    ...(p.scope ? { scope: { scope: p.scope, ref: p.scope_ref ?? null, sha: p.scope_sha ?? null } } : {}),
     agent_id: p.agent_id,
     rule_id: p.rule_id,
     status: p.status,
+    acted: p.kind === 'acted',
     created_at: p.created_at,
+    ...(p.expires_at !== undefined ? { expires_at: p.expires_at } : {}),
     ...(p.receipt_id !== undefined ? { receipt_id: p.receipt_id } : {}),
   };
 }
 
-/** Current pending queue as contract QueueItems. */
 export function pendingQueue(): QueueItem[] {
   return getPending().map(toQueueItem);
 }
@@ -111,11 +127,7 @@ function broadcastQueue(): void {
   if (sseClients.size === 0) return;
   const payload = `event: queue\ndata: ${JSON.stringify(pendingQueue())}\n\n`;
   for (const client of sseClients) {
-    try {
-      client.write(payload);
-    } catch {
-      // drop on error; cleanup happens on 'close'
-    }
+    try { client.write(payload); } catch { /* cleanup happens on 'close' */ }
   }
 }
 
@@ -124,258 +136,264 @@ export function notifyQueueChange(): void {
   broadcastQueue();
 }
 
-function parseBody(req: IncomingMessage): Promise<string> {
+// --- HTTP helpers -------------------------------------------------------------
+
+const BASE_HEADERS = {
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+};
+
+function json(res: ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
+    let size = 0;
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) { reject(new Error('body too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
 }
 
-function json(res: ServerResponse, status: number, data: unknown): void {
-  const body = JSON.stringify(data);
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-  });
-  res.end(body);
+function digest(s: string): Buffer {
+  return createHash('sha256').update(s).digest();
 }
 
-function text(res: ServerResponse, status: number, msg: string): void {
-  res.writeHead(status, { 'Content-Type': 'text/plain' });
-  res.end(msg);
+function transitionError(res: ServerResponse, r: Extract<TransitionResult, { ok: false }>): void {
+  if (r.error === 'not_found') { json(res, 404, { error: 'not_found' }); return; }
+  if (r.error === 'final') { json(res, 409, { error: 'already_resolved', status: r.action?.status }); return; }
+  json(res, 409, { error: 'not_allowed', status: r.action?.status });
 }
 
-export interface ApprovalServerHandle {
-  close: () => void;
-}
-
-export function startApprovalServer(port: number): ApprovalServerHandle {
-  // Close the webhook loop: when a GitHub-sourced merge is approved, post a green
-  // commit status back to GitHub so the PR's required check passes. Opt-in via token.
-  if (process.env.PP_GITHUB_TOKEN && !onExternalApprove) {
-    setOnExternalApprove(async (action, receipt) => {
-      const repo = (action.tool_args as any)?.repo;
-      const sha = action.scope_sha;
-      if (!repo || !sha) return;
-      try {
-        const r = await postCommitStatus(
-          repo, sha,
-          authorizedStatus(receipt.approved_by, receipt.receipt_id, receipt.viewer_url),
-          process.env.PP_GITHUB_TOKEN as string,
-        );
-        process.stderr.write(`[mcp-guard] Commit status → ${repo}@${sha.slice(0, 7)}: ${r.status}${r.ok ? ' ✓ check green' : ''}\n`);
-      } catch (err: any) {
-        process.stderr.write(`[mcp-guard] Commit status post failed: ${err.message}\n`);
-      }
-    });
+function resolveToken(explicit: string | undefined): { token: string; generated: boolean } {
+  const supplied = explicit ?? process.env.PP_APPROVAL_TOKEN;
+  if (supplied !== undefined) {
+    if (supplied.length < MIN_TOKEN_LENGTH) {
+      throw new Error(`Approval token must be at least ${MIN_TOKEN_LENGTH} characters`);
+    }
+    return { token: supplied, generated: false };
   }
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const url = req.url ?? '/';
-    const method = req.method ?? 'GET';
+  return { token: randomBytes(32).toString('base64url'), generated: true };
+}
 
-    // CORS preflight
-    if (method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
-      res.end();
+function defaultOperator(): string {
+  try { return userInfo().username || 'operator'; } catch { return 'operator'; }
+}
+
+export function startApprovalServer(opts: ApprovalServerOptions): ApprovalServerHandle {
+  const { token, generated } = resolveToken(opts.token);
+  const tokenDigest = digest(token);
+  const operator = opts.operator || defaultOperator();
+  const approval: Approval = { kind: 'human', id: operator, via: 'local-token' };
+  const hooks = opts.hooks ?? {};
+  const seenDeliveries = new Set<string>();
+  let boundPort = opts.port;
+
+  function hostAllowed(req: IncomingMessage): boolean {
+    const host = req.headers.host;
+    return host === `127.0.0.1:${boundPort}` || host === `localhost:${boundPort}`;
+  }
+
+  function authorized(req: IncomingMessage): boolean {
+    const h = req.headers.authorization;
+    if (typeof h !== 'string' || !h.startsWith('Bearer ')) return false;
+    return timingSafeEqual(digest(h.slice(7)), tokenDigest);
+  }
+
+  function issueExternalReceipt(action: PendingAction): Receipt {
+    const receipt = issueReceipt({
+      method: 'github/merge',
+      tool: action.tool_name,
+      args: action.tool_args,
+      decision: { decision: 'allowed', rule_id: action.rule_id, reason: 'Approved in the Permission Deck (GitHub webhook)' },
+      approval,
+      actor: action.agent_id,
+      mode: 'enforce',
+      policy_sha256: opts.policySha256 ?? 'github-webhook',
+      ttl_seconds: opts.receiptTtlSeconds ?? DEFAULT_RECEIPT_TTL_SECONDS,
+      target_server: 'github-webhook',
+      scope: { scope: action.scope, scope_ref: action.scope_ref, scope_sha: action.scope_sha },
+    });
+    action.receipt_id = receipt.envelope.receipt_id;
+    emitReceipt(receipt);
+    pushReceipt(receipt);
+    return receipt;
+  }
+
+  async function handleApi(method: string, path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (method === 'GET' && path === '/api/pending') { json(res, 200, pendingQueue()); return; }
+
+    if (method === 'GET' && path === '/api/receipts') { json(res, 200, recentReceipts.slice().reverse()); return; }
+
+    if (method === 'GET' && path === '/api/stream') {
+      res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+      res.write(`event: queue\ndata: ${JSON.stringify(pendingQueue())}\n\n`);
+      sseClients.add(res);
+      req.on('close', () => sseClients.delete(res));
       return;
     }
 
+    const m = method === 'POST' ? path.match(/^\/api\/(approve|deny|hold)\/([a-f0-9-]{36})$/) : null;
+    if (!m) { json(res, 404, { error: 'not_found' }); return; }
+    const [, verb, id] = m;
+    const existing = getAction(id);
+    if (!existing) { json(res, 404, { error: 'not_found' }); return; }
+
+    if (verb === 'hold') {
+      const r = transition(id, 'hold');
+      if (!r.ok) { transitionError(res, r); return; }
+      process.stderr.write(`[mcp-guard] Held (countdown cancelled): ${r.action.tool_name} (${id})\n`);
+      notifyQueueChange();
+      json(res, 200, { id, status: 'pending' });
+      return;
+    }
+
+    if (verb === 'deny') {
+      const r = transition(id, 'deny');
+      if (!r.ok) { transitionError(res, r); return; }
+      process.stderr.write(`[mcp-guard] Denied by ${operator}: ${r.action.tool_name} (${id})\n`);
+      if (r.action.kind === 'held') r.action.resolve(errorLine(r.action.jsonrpcId, DENIED, `Denied by ${operator}`));
+      notifyQueueChange();
+      json(res, 200, { id, status: 'denied' });
+      return;
+    }
+
+    // approve
+    if (existing.kind === 'acted') {
+      const r = transition(id, 'acknowledge');
+      if (!r.ok) { transitionError(res, r); return; }
+      process.stderr.write(`[mcp-guard] Acknowledged (verify): ${r.action.tool_name} (${id})\n`);
+      notifyQueueChange();
+      json(res, 200, { id, status: 'acknowledged', receipt_id: r.action.receipt_id ?? null });
+      return;
+    }
+
+    const r = transition(id, 'approve');
+    if (!r.ok) { transitionError(res, r); return; }
+    let receipt: Receipt | undefined;
+    if (r.action.kind === 'external') {
+      receipt = issueExternalReceipt(r.action);
+    } else if (hooks.release) {
+      receipt = hooks.release(r.action, approval);
+    } else {
+      throw new Error('No release hook registered for held requests');
+    }
+    process.stderr.write(`[mcp-guard] Approved by ${operator}: ${r.action.tool_name} (${id}) → receipt ${receipt.envelope.receipt_id}\n`);
+    notifyQueueChange();
+    json(res, 200, { id, status: 'approved', receipt_id: receipt.envelope.receipt_id });
+  }
+
+  async function handleWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const raw = await readBody(req);
+    const sig = req.headers['x-hub-signature-256'] as string | undefined;
+    if (!verifyGithubSignature(process.env.PP_WEBHOOK_SECRET, raw, sig)) {
+      process.stderr.write('[mcp-guard] Webhook REJECTED — bad/missing signature\n');
+      json(res, 401, { error: 'invalid signature' });
+      return;
+    }
+    const delivery = req.headers['x-github-delivery'];
+    if (typeof delivery === 'string' && delivery) {
+      if (seenDeliveries.has(delivery)) { json(res, 200, { ignored: true, reason: 'duplicate delivery' }); return; }
+      seenDeliveries.add(delivery);
+      if (seenDeliveries.size > MAX_DELIVERIES) {
+        const oldest = seenDeliveries.values().next().value;
+        if (oldest !== undefined) seenDeliveries.delete(oldest);
+      }
+    }
+    let payload: any;
+    try { payload = JSON.parse(raw); } catch { json(res, 400, { error: 'invalid JSON' }); return; }
+    const ev = parsePrEvent(payload);
+    if (!ev) { json(res, 200, { ignored: true, reason: 'not a pull_request event' }); return; }
+    if (!shouldGate(ev)) { json(res, 200, { ignored: true, reason: 'no needs-authority label or irrelevant action' }); return; }
+    const sc = scopeForPr(ev);
+    const item = addExternalDecision({
+      toolName: 'merge_pr',
+      agentId: 'github-webhook',
+      ruleId: 'pr-needs-authority',
+      enrichment: {
+        lane: 'decide',
+        reversibility: 'reversible',
+        summary: `Merge ${ev.repo} #${ev.pr_number} · ${ev.title}`,
+        args_preview: JSON.stringify({ repo: ev.repo, pr_number: ev.pr_number, title: ev.title, head_sha: ev.head_sha, html_url: ev.html_url }),
+      },
+      toolArgs: { repo: ev.repo, pr_number: ev.pr_number, scope_sha: ev.head_sha },
+      ...sc,
+    });
+    process.stderr.write(`[mcp-guard] Webhook queued PR ${ev.repo}#${ev.pr_number} for authority (${item.id})\n`);
+    notifyQueueChange();
+    json(res, 202, { queued: true, id: item.id, scope_ref: sc.scope_ref });
+  }
+
+  const server = createServer(async (req, res) => {
+    const method = req.method ?? 'GET';
+    const path = (req.url ?? '/').split('?')[0];
     try {
-      // GET / — Approval UI
-      if (method === 'GET' && url === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
+      if (!hostAllowed(req)) { json(res, 421, { error: 'misdirected request' }); return; }
+
+      if (method === 'GET' && path === '/') {
+        res.writeHead(200, {
+          ...BASE_HEADERS,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+        });
         res.end(getApprovalHTML());
         return;
       }
 
-      // GET /api/pending — QueueItem[]
-      if (method === 'GET' && url === '/api/pending') {
-        json(res, 200, pendingQueue());
+      if (method === 'POST' && path === '/api/github/webhook') { await handleWebhook(req, res); return; }
+
+      if (path.startsWith('/api/')) {
+        if (!authorized(req)) { json(res, 401, { error: 'unauthorized' }); return; }
+        await handleApi(method, path, req, res);
         return;
       }
 
-      // GET /api/stream — SSE; emits `event: queue` on change and on a ~1s tick.
-      if (method === 'GET' && url === '/api/stream') {
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
-        });
-        // Prime the connection with the current queue.
-        res.write(`event: queue\ndata: ${JSON.stringify(pendingQueue())}\n\n`);
-        sseClients.add(res);
-        req.on('close', () => {
-          sseClients.delete(res);
-        });
-        return;
-      }
-
-      // POST /api/approve/:id
-      const approveMatch = url.match(/^\/api\/approve\/([a-f0-9-]+)$/);
-      if (method === 'POST' && approveMatch) {
-        const id = approveMatch[1];
-        // Verify lane: the action already executed — acknowledge, never re-forward.
-        const existing = getAction(id);
-        if (existing?.acted) {
-          const ack = acknowledgeAction(id);
-          if (!ack) {
-            json(res, 404, { error: 'Not found or already resolved' });
-            return;
-          }
-          process.stderr.write(`[mcp-guard] Acknowledged (verify): ${ack.tool_name} (${id})\n`);
-          notifyQueueChange();
-          json(res, 200, { id, status: 'approved', receipt_id: ack.receipt_id ?? null });
-          return;
-        }
-        // External (webhook) decision: issue a scoped receipt directly — no MCP forward.
-        if (existing?.external) {
-          const receipt = issueExternalReceipt(existing, 'permission-deck-operator');
-          resolveAction(id, 'approved');
-          process.stderr.write(`[mcp-guard] Approved (webhook): ${existing.tool_name} (${id}) → receipt ${receipt.receipt_id}\n`);
-          notifyQueueChange();
-          json(res, 200, { id, status: 'approved', receipt_id: receipt.receipt_id });
-          return;
-        }
-        const action = resolveAction(id, 'approved');
-        if (!action) {
-          json(res, 404, { error: 'Not found or already resolved' });
-          return;
-        }
-        process.stderr.write(`[mcp-guard] Approved: ${action.tool_name} (${id})\n`);
-        // Proxy issues + signs the receipt and sets action.receipt_id synchronously.
-        if (onApproveCallback) onApproveCallback(id);
-        notifyQueueChange();
-        json(res, 200, { id, status: 'approved', receipt_id: action.receipt_id ?? null });
-        return;
-      }
-
-      // POST /api/hold/:id — cancel a reversible countdown, keep pending.
-      const holdMatch = url.match(/^\/api\/hold\/([a-f0-9-]+)$/);
-      if (method === 'POST' && holdMatch) {
-        const id = holdMatch[1];
-        const action = holdAction(id);
-        if (!action) {
-          json(res, 404, { error: 'Not found or already resolved' });
-          return;
-        }
-        process.stderr.write(`[mcp-guard] Held (countdown cancelled): ${action.tool_name} (${id})\n`);
-        notifyQueueChange();
-        json(res, 200, { id, status: 'pending' });
-        return;
-      }
-
-      // POST /api/deny/:id
-      const denyMatch = url.match(/^\/api\/deny\/([a-f0-9-]+)$/);
-      if (method === 'POST' && denyMatch) {
-        const id = denyMatch[1];
-        const action = resolveAction(id, 'denied');
-        if (!action) {
-          json(res, 404, { error: 'Not found or already resolved' });
-          return;
-        }
-        process.stderr.write(`[mcp-guard] Denied: ${action.tool_name} (${id})\n`);
-        // Return JSON-RPC error to the waiting caller
-        const errResp = JSON.stringify({
-          jsonrpc: '2.0',
-          id: action.jsonrpcId,
-          error: { code: -32002, message: 'Denied by administrator' },
-        });
-        action.resolve(errResp);
-        notifyQueueChange();
-        json(res, 200, { id, status: 'denied' });
-        return;
-      }
-
-      // POST /api/undo/:id — valid only within the undo window after release.
-      const undoMatch = url.match(/^\/api\/undo\/([a-f0-9-]+)$/);
-      if (method === 'POST' && undoMatch) {
-        const id = undoMatch[1];
-        const action = undoAction(id);
-        if (!action) {
-          json(res, 409, { error: 'Undo window expired or item not undoable' });
-          return;
-        }
-        process.stderr.write(`[mcp-guard] Undone: ${action.tool_name} (${id})\n`);
-        notifyQueueChange();
-        json(res, 200, { id, status: 'undone' });
-        return;
-      }
-
-      // POST /api/github/webhook — Slice 2.5: enqueue a labeled PR as a Decide card.
-      if (method === 'POST' && url === '/api/github/webhook') {
-        const raw = await parseBody(req);
-        const secret = process.env.PP_WEBHOOK_SECRET;
-        const sig = (req.headers['x-hub-signature-256'] as string | undefined);
-        if (!verifyGithubSignature(secret, raw, sig)) {
-          process.stderr.write('[mcp-guard] Webhook REJECTED — bad/missing signature\n');
-          json(res, 401, { error: 'invalid signature' });
-          return;
-        }
-        let payload: any;
-        try { payload = JSON.parse(raw); } catch { json(res, 400, { error: 'invalid JSON' }); return; }
-        const ev = parsePrEvent(payload);
-        if (!ev) { json(res, 200, { ignored: true, reason: 'not a pull_request event' }); return; }
-        if (!shouldGate(ev)) { json(res, 200, { ignored: true, reason: `no ${'needs-authority'} label or irrelevant action` }); return; }
-        const sc = scopeForPr(ev);
-        const item = addExternalDecision({
-          toolName: 'merge_pr',
-          agentId: 'github-webhook',
-          ruleId: 'pr-needs-authority',
-          enrichment: {
-            lane: 'decide',
-            reversibility: 'reversible',
-            summary: `Merge ${ev.repo} #${ev.pr_number} · ${ev.title}`,
-            // args_preview is a string per the contract; the console JSON-parses structured blobs.
-            args_preview: JSON.stringify({ repo: ev.repo, pr_number: ev.pr_number, title: ev.title, head_sha: ev.head_sha, html_url: ev.html_url }),
-          },
-          toolArgs: { repo: ev.repo, pr_number: ev.pr_number, scope_sha: ev.head_sha },
-          ...sc,
-        });
-        process.stderr.write(`[mcp-guard] Webhook queued PR ${ev.repo}#${ev.pr_number} for authority (${item.id})\n`);
-        notifyQueueChange();
-        json(res, 202, { queued: true, id: item.id, scope_ref: sc.scope_ref });
-        return;
-      }
-
-      // GET /api/receipts
-      if (method === 'GET' && url === '/api/receipts') {
-        json(res, 200, recentReceipts.slice(-50).reverse());
-        return;
-      }
-
-      text(res, 404, 'Not found');
+      json(res, 404, { error: 'not_found' });
     } catch (err: any) {
-      text(res, 500, err.message ?? 'Internal error');
+      process.stderr.write(`[mcp-guard] Approval server error: ${err?.message ?? err}\n`);
+      if (!res.headersSent) json(res, 500, { error: 'internal_error' });
+      else res.end();
     }
   });
 
   // ~1s tick so countdown_remaining counts down live for SSE subscribers.
   const tick = setInterval(() => broadcastQueue(), 1000);
-  if (typeof tick.unref === 'function') tick.unref();
+  tick.unref?.();
 
-  server.listen(port, () => {
-    process.stderr.write(`[mcp-guard] Approval UI: http://localhost:${port}\n`);
+  const ready = new Promise<number>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(opts.port, '127.0.0.1', () => {
+      boundPort = (server.address() as AddressInfo).port;
+      const url = `http://127.0.0.1:${boundPort}/`;
+      process.stderr.write(
+        generated
+          ? `[mcp-guard] Approval UI: ${url}#t=${token}\n`
+          : `[mcp-guard] Approval UI: ${url} (token from PP_APPROVAL_TOKEN)\n`,
+      );
+      resolve(boundPort);
+    });
   });
 
   return {
-    close: () => {
-      clearInterval(tick);
-      for (const client of sseClients) {
-        try {
-          client.end();
-        } catch {
-          /* ignore */
-        }
-      }
-      sseClients.clear();
-      server.close();
-    },
+    token,
+    operator,
+    ready,
+    close: () =>
+      new Promise<void>((resolve) => {
+        clearInterval(tick);
+        for (const client of sseClients) { try { client.end(); } catch { /* ignore */ } }
+        sseClients.clear();
+        server.close(() => resolve());
+        server.closeAllConnections?.();
+      }),
   };
 }

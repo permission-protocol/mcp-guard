@@ -5,13 +5,15 @@
 // Exit 0 = all beats pass.
 
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 7791;
-const BASE = `http://localhost:${PORT}`;
+const BASE = `http://127.0.0.1:${PORT}`;
+const TOKEN = randomBytes(32).toString('hex'); // approval API access token for this run
 const OUTBOX = join(ROOT, 'actions-mcp', 'outbox.log');
 const RECEIPTS = join(ROOT, 'pp-receipts.jsonl');
 
@@ -23,7 +25,7 @@ function check(name, cond) {
   else { console.log(`  ✗ ${name}`); failed++; }
 }
 const api = async (path, method = 'GET') =>
-  fetch(`${BASE}${path}`, { method }).then((r) => r.json());
+  fetch(`${BASE}${path}`, { method, headers: { Authorization: `Bearer ${TOKEN}` } }).then((r) => r.json());
 
 // Clean prior run artifacts.
 for (const f of [OUTBOX, RECEIPTS]) if (existsSync(f)) rmSync(f);
@@ -37,7 +39,7 @@ const guard = spawn(
     '--approval-port', String(PORT),
     '--', 'node', join(ROOT, 'actions-mcp/server.mjs'),
   ],
-  { stdio: ['pipe', 'pipe', 'inherit'] },
+  { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, PP_APPROVAL_TOKEN: TOKEN } },
 );
 const send = (obj) => guard.stdin.write(JSON.stringify(obj) + '\n');
 
@@ -94,8 +96,8 @@ async function run() {
   await sleep(400);
   check('post_x executed AFTER approval (X POSTED in outbox)', /X POSTED/.test(outbox()));
   const receipts = await api('/api/receipts');
-  const signed = receipts.find((r) => r.signature && r.signature.verified === true && r.signature.algorithm === 'ed25519');
-  check('an Ed25519-signed, verified receipt exists', !!signed);
+  const signed = receipts.find((r) => r.envelope?.receipt_id === approve.receipt_id && r.signature?.alg === 'ed25519');
+  check('an Ed25519-signed receipt names the human approver', signed?.envelope.approval?.kind === 'human');
 
   console.log(`\n${failed === 0 ? '✅ ALL BEATS PASS' : '❌ FAILURES'} — ${passed} passed, ${failed} failed`);
 }

@@ -42,14 +42,12 @@ cat "$RESPONSES" | while IFS= read -r line; do
 done
 
 echo ""
-echo "--- Receipts (stderr) ---"
-grep "receipt:" "$RECEIPTS" | sed 's/\[mcp-guard\] receipt: //' | while IFS= read -r line; do
-  echo "$line" | python3 -m json.tool 2>/dev/null || echo "$line"
-done
+echo "--- Receipts (signed; full JSON in pp-receipts.jsonl) ---"
+grep "\[mcp-guard\] receipt " "$RECEIPTS" || true
 
 echo ""
 echo "--- Guard Log ---"
-grep -v "receipt:" "$RECEIPTS" || true
+grep -v "\[mcp-guard\] receipt " "$RECEIPTS" || true
 
 rm -f "$RESPONSES" "$RECEIPTS"
 echo ""
@@ -58,7 +56,7 @@ echo ""
 echo "To try the approval UI, run:"
 echo "  node dist/src/cli.js --config example/pp.config.yaml --approval-port 3100 --agent-id demo-agent -- node dist/example/server.js"
 echo ""
-echo "Then open http://localhost:3100 and send a require_approval tool call."
+echo "Then open the Approval UI URL it prints (it ends with #t=<token>) and send a require_approval tool call."
 echo "The proxy will hold the response until you approve or deny in the UI."
 echo ""
 echo "Done!"

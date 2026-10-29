@@ -17,4 +17,5 @@ rules:
     action: require_approval
     reversibility: reversible
     cap_usd: 50                        # under cap -> acts now, surfaces in Verify
+    amount_arg: amount_usd             # the argument the spend tool actually charges
     verify_threshold: 70

@@ -1,10 +1,11 @@
 import stableStringify from 'fast-json-stable-stringify';
 import crypto from 'crypto';
 import { CanonicalPayload, SignedToken } from './types';
-import { getToolPolicy, ToolPolicy } from './policy';
+import { ToolPolicy } from './policy';
+import { ReplayCache, verifyDetached } from '../verify-core.js';
 
-// Simple in-memory replay cache for the proxy
-const usedNonces = new Set<string>();
+// In-memory replay cache: each authorization is honored once per process.
+const usedNonces = new ReplayCache();
 
 export function buildAuthorizationSigningBytes(token: SignedToken): string {
   return stableStringify({
@@ -72,16 +73,15 @@ export async function verifyAuthorization(
     throw new Error('Payload hash mismatch - args were modified after approval');
   }
 
-  // 5. Verify Signature
-  const isValidSig = crypto.verify(
-    null,
-    Buffer.from(buildAuthorizationSigningBytes(token)),
-    publicKeyPem,
-    Buffer.from(token.signature, 'hex')
+  // 5. Verify Signature (shared core: pinned key for the expected key id only)
+  const sigError = verifyDetached(
+    buildAuthorizationSigningBytes(token),
+    token.signature,
+    token.key_id,
+    { [expectedKeyId]: publicKeyPem },
   );
-
-  if (!isValidSig) {
-    throw new Error('Cryptographic signature verification failed');
+  if (sigError) {
+    throw new Error(`Cryptographic signature verification failed: ${sigError}`);
   }
 
   // 6. Policy Enforcement (The Authority Plane)
@@ -90,7 +90,8 @@ export async function verifyAuthorization(
   const requiredApprovals = policy.required_approvals || 1;
   let validSignatures = 0;
   
-  for (const signer of token.signers) {
+  // Each distinct signer counts once: a repeated name is not a second approval.
+  for (const signer of new Set(token.signers)) {
     const isAllowedSigner = policy.allowed_signers ? policy.allowed_signers.includes(signer) : true;
     const hasAllowedRole = policy.allowed_roles ? token.roles.some(r => policy.allowed_roles!.includes(r)) : true;
     
@@ -125,11 +126,9 @@ export async function verifyAuthorization(
   }
 
   // 7. Replay Protection (Single-use)
-  const replayKey = `${payload.request_id}:${payload.nonce}`;
-  if (usedNonces.has(replayKey)) {
+  if (!usedNonces.use(`${payload.request_id}:${payload.nonce}`)) {
     throw new Error('Replay detected - authorization has already been used');
   }
-  usedNonces.add(replayKey);
 
   return true;
 }

@@ -21,7 +21,7 @@ const body = JSON.stringify({
 });
 const sig = 'sha256=' + crypto.createHmac('sha256', SECRET).update(body).digest('hex');
 
-const res = await fetch(`http://localhost:${PORT}/api/github/webhook`, {
+const res = await fetch(`http://127.0.0.1:${PORT}/api/github/webhook`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': sig },
   body,

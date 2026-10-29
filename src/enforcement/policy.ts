@@ -19,34 +19,48 @@ export interface PPConfig {
   policy_hash?: string;
 }
 
+/**
+ * A policy that cannot be loaded is an error, never "no tool is protected".
+ * Callers treat it as a denial.
+ */
+export class PolicyError extends Error {
+  constructor(readonly code: 'PP_POLICY_MISSING' | 'PP_POLICY_INVALID', message: string) {
+    super(message);
+  }
+}
+
 let cachedConfig: PPConfig | null = null;
 
 export function loadPolicy(configPathArg?: string): PPConfig {
   if (cachedConfig && !configPathArg) return cachedConfig;
-  
+
   const configPath = configPathArg || process.env.PP_CONFIG_PATH || path.join(process.cwd(), 'pp.config.yaml');
   if (!fs.existsSync(configPath)) {
-    return { tools: {} };
+    throw new PolicyError('PP_POLICY_MISSING', `Policy file not found: ${configPath}`);
   }
 
   const fileContents = fs.readFileSync(configPath, 'utf8');
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = parse(fileContents);
   } catch (err) {
-    console.error("Failed to parse pp.config.yaml", err);
-    parsed = {};
+    throw new PolicyError('PP_POLICY_INVALID', `Policy file is not valid YAML: ${configPath} (${(err as Error).message})`);
   }
-  
-  cachedConfig = (parsed as PPConfig) || { tools: {} };
-  
-  // Ensure tools object exists
-  if (!cachedConfig.tools) {
-    cachedConfig.tools = {};
+  const tools = (parsed as PPConfig | null)?.tools;
+  if (!tools || typeof tools !== 'object' || Array.isArray(tools)) {
+    throw new PolicyError('PP_POLICY_INVALID', `Policy file has no "tools" map: ${configPath}`);
   }
-  cachedConfig.policy_hash = crypto.createHash('sha256').update(fileContents).digest('hex').substring(0, 12);
-  
+
+  cachedConfig = {
+    tools,
+    policy_hash: crypto.createHash('sha256').update(fileContents).digest('hex').substring(0, 12),
+  };
   return cachedConfig;
+}
+
+/** Test helper: forget the cached policy. */
+export function _resetPolicyCache(): void {
+  cachedConfig = null;
 }
 
 export function getToolPolicy(toolName: string): ToolPolicy | null {

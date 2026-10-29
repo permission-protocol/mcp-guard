@@ -4,7 +4,7 @@ mode: enforce
 rules:
   - { id: post-x,    tool: post_x,            action: require_approval, reversibility: irreversible }
   - { id: send-email,tool: send_email,        action: require_approval, reversibility: reversible, countdown_seconds: 600 }
-  - { id: spend,     tool: spend,             action: require_approval, reversibility: reversible, cap_usd: 50, verify_threshold: 70 }
+  - { id: spend,     tool: spend,             action: require_approval, reversibility: reversible, cap_usd: 50, amount_arg: amount_usd, verify_threshold: 70 }
   - { id: merge-pr,  tool: merge_pr,          action: require_approval, reversibility: reversible }
   - { id: sql-prod,  tool: run_sql_migration, action: require_approval, reversibility: irreversible }
-  - { id: deploy,    tool: deploy,            action: require_approval, reversibility: reversible, countdown_seconds: 600 }
+  - { id: deploy,    tool: deploy,            action: require_approval, reversibility: reversible }
