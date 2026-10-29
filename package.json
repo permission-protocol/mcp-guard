@@ -2,6 +2,10 @@
   "name": "@permission-protocol/mcp-guard",
   "version": "0.2.0",
   "description": "MCP Guard blocks dangerous AI agent actions using a simple YAML config file.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/permission-protocol/mcp-guard.git"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -9,6 +13,18 @@
   "bin": {
     "mcp-guard": "bin/mcp-guard"
   },
+  "files": [
+    "bin",
+    "dist/src",
+    "!dist/src/tests",
+    "dist/example",
+    "example",
+    "templates",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "node --test dist/src/tests/*.test.js",
