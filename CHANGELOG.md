@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `mcp-guard verify` checks receipts in the org receipt standard (`jcs_v2` artifacts, as issued by Permission Protocol and verified by `@permission-protocol/verify`): `--keys <keys.json>` and `--trust KEY_ID=sha256:<fingerprint>`. The checks follow the receipt-spec order (key, payload hash, Ed25519 over the digest, canonical bytes, identity), then the gate checks read only from the signed payload: approved status, signed expiry, exact scope (`scope.capability`, `scope.ref`, `scope.commitSha`) and an attributed human decider for scoped actions. mcp-guard 0.2 receipts still verify with `--pubkey` and are labelled legacy. Signing in the new format follows in 0.3.0.
+- CI job `Audit regression`: replays the October 2026 audit attacks against the pre-fix commit (all must succeed) and the current code (all must be stopped) on every run.
+
+### Changed
+
+- Workflows and the receipt-gate template use `actions/checkout@v5` and `actions/setup-node@v5`; the template pins `@permission-protocol/mcp-guard@0.2.1`.
+
 ## 0.2.1 — security fix
 
 ### Fixed

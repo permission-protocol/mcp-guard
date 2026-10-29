@@ -172,6 +172,13 @@ mcp-guard verify --receipt-file receipt.json --pubkey .pp/mcp-guard.pub.pem \
   --scope deploy:production --scope-sha "$GITHUB_SHA"
 ```
 
+For receipts in the org receipt standard (`jcs_v2` artifacts, the format Permission Protocol issues), pass the key set instead of a PEM:
+
+```bash
+mcp-guard verify --receipt-file receipt.json --keys keys.json \
+  --trust KEY_ID=sha256:<fingerprint> --scope deploy:production --scope-sha "$GITHUB_SHA"
+```
+
 The verifier requires `--scope`, accepts only the keys you pin, requires an unexpired `allowed` receipt, checks scope exactly, and refuses scoped receipts that no human approved (pass `--allow-policy-approval` to accept them). Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key and receipt only from trusted places.
 
 ## CLI

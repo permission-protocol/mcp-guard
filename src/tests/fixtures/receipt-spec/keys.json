@@ -1,0 +1,14 @@
+{
+  "description": "Key set for the generated vectors, in the shape of https://app.permissionprotocol.com/.well-known/permission-protocol/keys.json. Test key only; it signs nothing outside this repository.",
+  "issuer": "https://github.com/permission-protocol/receipt-spec/test-vectors",
+  "keys": [
+    {
+      "key_id": "pp-test-2026-q2",
+      "alg": "ed25519",
+      "public_key_b64": "utC/MffkkEO2hXR37Ilq4ut4UpZwdrwmtbGw/eEymo0=",
+      "status": "active",
+      "created_at": "2026-04-30T00:00:00.000Z",
+      "revoked_at": null
+    }
+  ]
+}

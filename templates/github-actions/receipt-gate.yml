@@ -33,14 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Read the pinned public key from the default branch only
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: .pp/mcp-guard.pub.pem
           sparse-checkout-cone-mode: false
           path: trust
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -49,7 +49,7 @@ jobs:
           RECEIPT: ${{ inputs.receipt }}
         run: |
           printf '%s' "$RECEIPT" > "$RUNNER_TEMP/receipt.json"
-          npx --yes @permission-protocol/mcp-guard@0.2.0 verify \
+          npx --yes @permission-protocol/mcp-guard@0.2.1 verify \
             --receipt-file "$RUNNER_TEMP/receipt.json" \
             --pubkey trust/.pp/mcp-guard.pub.pem \
             --scope deploy:production \
@@ -59,6 +59,6 @@ jobs:
     needs: receipt-gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Deploy
         run: echo "Deploy $GITHUB_SHA here."
