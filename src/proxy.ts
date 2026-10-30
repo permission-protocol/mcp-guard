@@ -5,7 +5,7 @@ import { evaluate, type Decision } from './engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash, type IssuedReceipt, type ScopeBinding } from './issuer.js';
 import { SigningError } from './keystore.js';
 import { emitReceipt, emitHold } from './receipt-log.js';
-import { signHeld, forwardReleased } from './release.js';
+import { signHeld, forwardReleased, releaseOnCountdown } from './release.js';
 import { ReplayCache } from './verify-core.js';
 import {
   addPending,
@@ -22,6 +22,7 @@ import {
   isPassthrough,
   toolCallTarget,
   stripAgentMetadata,
+  serverInput,
   BLOCKED,
   HELD,
   EXPIRED,
@@ -200,17 +201,10 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
       process.exit(1);
     });
 
-    // A countdown is a policy decision: signed as policy, never as a person.
+    // A countdown is a policy decision: signed as policy, never as a person. If it
+    // cannot sign, the call stays held.
     setAutoReleaseHandler((action) => {
-      process.stderr.write(`[mcp-guard] Auto-released (countdown) "${action.tool_name}" (${action.id})\n`);
-      try {
-        const issued = signHeld(issuer, action, { kind: 'policy' }, 'APPROVED', 'COUNTDOWN_AUTO_RELEASE');
-        emitReceipt(issued);
-        forwardReleased(issuer, action, issued, replayCache, forwardLine);
-      } catch (err: any) {
-        if (err instanceof SigningError) action.resolve(errorLine(action.jsonrpcId, SIGNING_FAILED, `Not released: ${err.message}`));
-        process.stderr.write(`[mcp-guard] ${err.message}\n`);
-      }
+      releaseOnCountdown(issuer, action, replayCache, forwardLine);
       notifyQueueChange();
     });
 
@@ -249,11 +243,7 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     const forward = stripAgentMetadata(msg);
     // What the server will act on: tool arguments for tools/call, the params otherwise.
     // This is what the approver sees and what the receipt hashes.
-    const forwardArgs: Record<string, unknown> | undefined = tool
-      ? (forward.params as { arguments?: Record<string, unknown> }).arguments
-      : forward.params === undefined ? undefined
-      : Array.isArray(forward.params) ? { params: forward.params }
-      : (forward.params as Record<string, unknown>);
+    const forwardArgs = serverInput(forward, tool !== null);
     const label = tool ?? msg.method;
 
     const hold = (holdId: string | null): void => emitHold({

@@ -53,12 +53,19 @@ describe('Decision state machine', () => {
     assert.equal(getPending().length, 1);
   });
 
-  it('countdown auto-release moves the item to auto_released, then calls the handler', async () => {
-    let released: string | null = null;
-    setAutoReleaseHandler((a) => { released = a.status; });
-    add({ countdown_seconds: 0.05 });
+  it('a countdown calls the handler while the item is still pending (it signs before the item is final)', async () => {
+    let seen: string | null = null;
+    setAutoReleaseHandler((a) => { seen = a.status; });
+    const a = add({ countdown_seconds: 0.05 });
     await sleep(120);
-    assert.equal(released, 'auto_released');
+    assert.equal(seen, 'pending');
+    assert.equal(getAction(a.id)?.status, 'pending');
+  });
+
+  it('without a handler, a countdown moves the item to auto_released', async () => {
+    const a = add({ countdown_seconds: 0.05 });
+    await sleep(120);
+    assert.equal(getAction(a.id)?.status, 'auto_released');
   });
 
   it('hold cancels the countdown; the item stays pending', async () => {
@@ -100,7 +107,7 @@ describe('Decision state machine', () => {
 
   it('a manual approve racing the countdown releases exactly once', async () => {
     let autoReleases = 0;
-    setAutoReleaseHandler(() => { autoReleases++; });
+    setAutoReleaseHandler((x) => { if (transition(x.id, 'auto_release').ok) autoReleases++; });
     const a = add({ countdown_seconds: 0.05 });
     await sleep(45);
     const manual = transition(a.id, 'approve');

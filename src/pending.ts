@@ -90,7 +90,11 @@ export type TransitionResult =
 
 const queue: Map<string, PendingAction> = new Map();
 
-/** Called after a countdown has moved an item to `auto_released`; the proxy releases it. */
+/**
+ * Called when a countdown fires, while the item is still pending. The handler signs first,
+ * then moves it to `auto_released` (or back to held when it cannot sign). Without a
+ * handler the item moves to `auto_released` directly.
+ */
 let autoReleaseHandler: ((action: PendingAction) => void) | null = null;
 export function setAutoReleaseHandler(handler: ((action: PendingAction) => void) | null): void {
   autoReleaseHandler = handler;
@@ -216,8 +220,9 @@ export function addPending(input: HeldInput): PendingAction {
   if (action.reversibility === 'reversible' && countdown !== undefined && countdown > 0) {
     action.releaseAt = Date.now() + countdown * 1000;
     action.countdownTimer = setTimeout(() => {
-      const r = transition(action.id, 'auto_release');
-      if (r.ok && autoReleaseHandler) autoReleaseHandler(r.action);
+      if (action.status !== 'pending') return;
+      if (autoReleaseHandler) autoReleaseHandler(action);
+      else transition(action.id, 'auto_release');
     }, countdown * 1000);
     action.countdownTimer.unref?.();
   }

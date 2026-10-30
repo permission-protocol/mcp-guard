@@ -116,6 +116,13 @@ export function toolCallTarget(
   return { name: params.name, args: params.arguments as Record<string, unknown> | undefined };
 }
 
+/** What the server acts on, and what a receipt's inputHash covers: tool arguments for tools/call, the params otherwise. */
+export function serverInput(msg: JsonRpcMessage, isToolCall: boolean): Record<string, unknown> | undefined {
+  const params = msg.params;
+  if (isToolCall) return (params as { arguments?: Record<string, unknown> } | undefined)?.arguments;
+  return params === undefined ? undefined : Array.isArray(params) ? { params } : (params as Record<string, unknown>);
+}
+
 /** A copy of the message with Permission Deck agent metadata (`_pp`) removed from tool arguments. */
 export function stripAgentMetadata(msg: JsonRpcMessage): JsonRpcMessage {
   const params = msg.params;

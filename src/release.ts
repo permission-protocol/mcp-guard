@@ -1,10 +1,11 @@
 import { TOOLS_CALL } from './config.js';
 import type { Issuer, Decider, IssuedReceipt, ReasonCode } from './issuer.js';
 import { ruleReason } from './issuer.js';
-import type { PendingAction } from './pending.js';
-import { verifyArtifactReceipt, type ExpectedScope } from './receipt-verify.js';
+import { transition, type PendingAction } from './pending.js';
+import { verifyArtifactReceipt, type CallInput, type ExpectedScope } from './receipt-verify.js';
 import type { ReplayCache } from './verify-core.js';
-import { errorLine, RELEASE_FAILED } from './frame.js';
+import { emitReceipt } from './receipt-log.js';
+import { errorLine, serverInput, RELEASE_FAILED, type JsonRpcMessage } from './frame.js';
 
 /**
  * The single release path for held calls (console approve, countdown, webhook PR).
@@ -12,7 +13,8 @@ import { errorLine, RELEASE_FAILED } from './frame.js';
  * `signHeld` builds the receipt first and throws SigningError without side effects, so a
  * caller can sign BEFORE moving the item to a final state and leave it held on failure.
  * `forwardReleased` then verifies that receipt the way a gate would (own key set, pinned
- * by fingerprint, scope exact, single use) and forwards only if it passes.
+ * by fingerprint, scope exact, single use), bound to this queue item and to the exact
+ * call it forwards, and forwards only if it passes.
  */
 
 export function heldInput(action: PendingAction): { method: string; tool: string | null } {
@@ -38,6 +40,17 @@ export function signHeld(issuer: Issuer, action: PendingAction, decider: Decider
   });
 }
 
+/** The call the server will receive, read back from the line that is forwarded. */
+export function forwardedCall(action: PendingAction): CallInput | null {
+  let msg: JsonRpcMessage;
+  try { msg = JSON.parse(action.forwardLine); } catch { return null; }
+  if (!msg || typeof msg.method !== 'string') return null;
+  const isToolCall = msg.method === TOOLS_CALL;
+  const tool = isToolCall ? (msg.params as { name?: unknown } | undefined)?.name : msg.method;
+  if (typeof tool !== 'string') return null;
+  return { tool, operation: msg.method, input: serverInput(msg, isToolCall) };
+}
+
 /** Verify the release receipt against the guard's own pinned key; null when it passes. */
 export function checkRelease(issuer: Issuer, action: PendingAction, issued: IssuedReceipt, replayCache: ReplayCache): string | null {
   if (!issued.artifact) return issued.unsigned ? null : `receipt was not signed (${issued.signingFailed ?? 'no signature'})`;
@@ -47,6 +60,8 @@ export function checkRelease(issuer: Issuer, action: PendingAction, issued: Issu
   } catch (err) {
     return (err as Error).message;
   }
+  const call = forwardedCall(action);
+  if (!call) return 'the held call cannot be read back from its forwarded line';
   const expected: ExpectedScope | undefined = action.scope
     ? { scope: action.scope, ...(action.scope_ref ? { scope_ref: action.scope_ref } : {}), ...(action.scope_sha ? { scope_sha: action.scope_sha } : {}) }
     : undefined;
@@ -57,6 +72,9 @@ export function checkRelease(issuer: Issuer, action: PendingAction, issued: Issu
     allowDemo: true,
     replayCache,
     expected,
+    // Checked before the receipt is consumed: this decision, and the exact call forwarded.
+    call,
+    idemKey: `mcp-guard:${action.id}`,
   });
   return check.valid ? null : check.reasons.join(' ');
 }
@@ -79,4 +97,37 @@ export function forwardReleased(
   }
   action.receipt_id = issued.record.id;
   forward(action.forwardLine);
+}
+
+/**
+ * A countdown fired on a pending held call. Sign first; only then make it final. When it
+ * cannot sign, the countdown stops and the call stays held for an operator or expiry.
+ * Returns 'auto_released', 'pending' when it stayed held, or null when the countdown no
+ * longer applies (already decided, or put on hold).
+ */
+export function releaseOnCountdown(
+  issuer: Issuer,
+  action: PendingAction,
+  replayCache: ReplayCache,
+  forward: (line: string) => void,
+): 'auto_released' | 'pending' | null {
+  if (action.status !== 'pending' || action.releaseAt === undefined) return null;
+  let issued: IssuedReceipt;
+  try {
+    issued = signHeld(issuer, action, { kind: 'policy' }, 'APPROVED', 'COUNTDOWN_AUTO_RELEASE');
+  } catch (err) {
+    transition(action.id, 'hold');
+    process.stderr.write(`[mcp-guard] Countdown release of "${action.tool_name}" (${action.id}) refused, still held: ${(err as Error).message}\n`);
+    return 'pending';
+  }
+  const r = transition(action.id, 'auto_release');
+  if (!r.ok) return null;
+  process.stderr.write(`[mcp-guard] Auto-released (countdown) "${action.tool_name}" (${action.id})\n`);
+  emitReceipt(issued);
+  try {
+    forwardReleased(issuer, r.action, issued, replayCache, forward);
+  } catch (err) {
+    process.stderr.write(`[mcp-guard] ${(err as Error).message}\n`);
+  }
+  return 'auto_released';
 }

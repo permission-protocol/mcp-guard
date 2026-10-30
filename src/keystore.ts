@@ -2,7 +2,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject 
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { fingerprintOf, mcpgKeyId, rawPublicKey, MCPG_KEY_ID_PATTERN, type KeySet, type KeySetEntry } from './signing/keys.js';
+import { fingerprintOf, mcpgKeyId, rawPublicKey, resolveKey, KeyError, MCPG_KEY_ID_PATTERN, type KeySet, type KeySetEntry } from './signing/keys.js';
 
 /**
  * The operator's signing keys, created only by `mcp-guard keys init` / `keys rotate`.
@@ -81,17 +81,21 @@ function assertPrivate(path: string, mask: number): void {
   if (mode & mask) {
     throw new SigningError(
       'SIGNING_KEY_INVALID',
-      `refusing key material at ${path}: mode ${mode.toString(8)} is readable or writable by others (key must be 0600 in a directory only you can write)`,
+      `refusing key material at ${path}: mode ${mode.toString(8)} is ${mask & 0o044 ? 'readable or writable' : 'writable'} by others (the private key must be 0600, keys.json and the key directory writable only by you)`,
     );
   }
 }
 
 /**
  * Load the newest key in keys.json for signing. Throws SigningError: MISSING when there
- * is no key set or private key, INVALID when the key is unreadable, exposed, not Ed25519,
- * or not the key its id and key-set entry name, REVOKED when keys.json revokes it.
+ * is no key set or private key, INVALID when the key or key set is unreadable, writable
+ * by others, not Ed25519, an entry the verifier would reject, or not the key its id and
+ * key-set entry name, REVOKED when keys.json revokes it.
  */
 export function loadSigningKey(dir: string = keysDir()): SigningKey {
+  // keys.json decides which key signs and which are revoked: trust it only when no one else can write it.
+  if (existsSync(dir)) assertPrivate(dir, 0o022);
+  if (existsSync(join(dir, KEYS_FILE))) assertPrivate(join(dir, KEYS_FILE), 0o022);
   const keySet = readKeySet(dir);
   if (!keySet || keySet.keys.length === 0) {
     throw new SigningError('SIGNING_KEY_MISSING', `no signing key in ${join(dir, KEYS_FILE)}; ${FIX}`);
@@ -104,11 +108,17 @@ export function loadSigningKey(dir: string = keysDir()): SigningKey {
   if (entry.status === 'revoked' || (entry.revoked_at !== undefined && entry.revoked_at !== null)) {
     throw new SigningError('SIGNING_KEY_REVOKED', `newest key ${keyId} is revoked in ${join(dir, KEYS_FILE)}; run \`mcp-guard keys rotate\``);
   }
+  // Sign only with an entry the verifier accepts (listed once, ed25519, 32 bytes, id = fingerprint).
+  try {
+    resolveKey(keySet, keyId, null);
+  } catch (err) {
+    if (!(err instanceof KeyError)) throw err;
+    throw new SigningError(err.code === 'KEY_REVOKED' ? 'SIGNING_KEY_REVOKED' : 'SIGNING_KEY_INVALID', `keys.json: ${err.message}`);
+  }
   const pemPath = privatePath(dir, keyId);
   if (!existsSync(pemPath)) {
     throw new SigningError('SIGNING_KEY_MISSING', `private key for ${keyId} not found at ${pemPath}; ${FIX}`);
   }
-  assertPrivate(dir, 0o022);
   assertPrivate(pemPath, 0o077);
 
   let privateKey: KeyObject;
