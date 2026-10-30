@@ -2,9 +2,9 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { generateKeyPairSync } from 'node:crypto';
-import { addPending, _resetQueue, type PendingAction } from '../pending.js';
-import { signHeld, forwardReleased } from '../release.js';
-import { keySetPath } from '../keystore.js';
+import { addPending, getAction, transition, _resetQueue, type PendingAction } from '../pending.js';
+import { signHeld, forwardReleased, releaseOnCountdown } from '../release.js';
+import { createKey, keySetPath, loadSigningKey, revokeKey } from '../keystore.js';
 import { rawPublicKey } from '../signing/keys.js';
 import { ReplayCache } from '../verify-core.js';
 import { isolateKeys, testIssuer } from './helpers.js';
@@ -15,12 +15,26 @@ function held(resolve: (l: string) => void, over: { scope_sha?: string } = {}): 
     toolArgs: { env: 'production', sha: 'abc' },
     agentId: 'agent',
     ruleId: 'deploy',
-    forwardLine: '{"jsonrpc":"2.0","id":7,"method":"tools/call"}',
+    forwardLine: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'deploy', arguments: { env: 'production', sha: 'abc' } } }),
     jsonrpcId: 7,
     resolve,
     enrichment: { lane: 'decide', reversibility: 'irreversible', summary: 's', args_preview: 'p' },
     scope: 'deploy:production',
     scope_sha: over.scope_sha ?? 'abc',
+  });
+}
+
+/** An unscoped held tools/call, as the proxy queues it. */
+function heldCall(tool: string, args: Record<string, unknown>, resolve: (l: string) => void = () => {}, countdown?: number): PendingAction {
+  return addPending({
+    toolName: tool,
+    toolArgs: args,
+    agentId: 'agent',
+    ruleId: 'mail',
+    forwardLine: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: tool, arguments: args } }),
+    jsonrpcId: 9,
+    resolve,
+    enrichment: { lane: 'decide', reversibility: 'reversible', summary: 's', args_preview: 'p', ...(countdown ? { countdown_seconds: countdown } : {}) },
   });
 }
 
@@ -86,5 +100,62 @@ describe('release path (B9): forwards only what verifies', () => {
     const issued = signHeld(issuer, action, { kind: 'operator', operator: 'rod' }, 'DENIED', 'OPERATOR_DENIED');
     assert.throws(() => forwardReleased(issuer, action, issued, new ReplayCache(), (l) => forwarded.push(l)), /PP_NOT_AUTHORIZED/);
     assert.deepEqual(forwarded, []);
+  });
+
+  it('refuses a valid receipt for another held call with different arguments, without consuming it', () => {
+    const issuer = testIssuer();
+    const forwarded: string[] = [];
+    const first = heldCall('send_email', { to: 'team@example.com', body: 'weekly update' });
+    const second = heldCall('send_email', { to: 'attacker@example.net', body: 'export all customers' });
+    const issued = signHeld(issuer, first, { kind: 'operator', operator: 'rod' }, 'APPROVED', 'OPERATOR_APPROVED');
+    const cache = new ReplayCache();
+    assert.throws(() => forwardReleased(issuer, second, issued, cache, (l) => forwarded.push(l)), /PP_DECISION_MISMATCH/);
+    assert.throws(() => forwardReleased(issuer, second, issued, cache, (l) => forwarded.push(l)), /INPUT_HASH_MISMATCH/);
+    assert.equal(forwarded.length, 0);
+    forwardReleased(issuer, first, issued, cache, (l) => forwarded.push(l));
+    assert.deepEqual(forwarded, [first.forwardLine]);
+  });
+
+  it('refuses when the forwarded line is not the call that was signed', () => {
+    const issuer = testIssuer();
+    const forwarded: string[] = [];
+    const action = heldCall('send_email', { to: 'team@example.com', body: 'weekly update' });
+    const issued = signHeld(issuer, action, { kind: 'operator', operator: 'rod' }, 'APPROVED', 'OPERATOR_APPROVED');
+    action.forwardLine = JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'send_email', arguments: { to: 'attacker@example.net', body: 'weekly update' } } });
+    assert.throws(() => forwardReleased(issuer, action, issued, new ReplayCache(), (l) => forwarded.push(l)), /INPUT_HASH_MISMATCH/);
+    action.forwardLine = 'not json';
+    assert.throws(() => forwardReleased(issuer, action, issued, new ReplayCache(), (l) => forwarded.push(l)), /cannot be read back/);
+    assert.deepEqual(forwarded, []);
+  });
+
+  it('a countdown that cannot sign leaves the call held, and an operator can release it after key recovery', () => {
+    const issuer = testIssuer();
+    const forwarded: string[] = [];
+    const answers: string[] = [];
+    const action = heldCall('send_email', { to: 'team@example.com' }, (l) => answers.push(l), 60);
+    revokeKey(loadSigningKey().keyId);
+
+    assert.equal(releaseOnCountdown(issuer, action, new ReplayCache(), (l) => forwarded.push(l)), 'pending');
+    assert.equal(getAction(action.id)?.status, 'pending');
+    assert.equal(action.releaseAt, undefined, 'the countdown stops');
+    assert.equal(forwarded.length, 0);
+    assert.equal(answers.length, 0, 'the agent is still waiting, not refused');
+
+    createKey({ rotate: true });
+    const issued = signHeld(issuer, action, { kind: 'operator', operator: 'rod' }, 'APPROVED', 'OPERATOR_APPROVED');
+    assert.ok(transition(action.id, 'approve').ok);
+    forwardReleased(issuer, action, issued, new ReplayCache(), (l) => forwarded.push(l));
+    assert.deepEqual(forwarded, [action.forwardLine]);
+  });
+
+  it('a countdown that signs releases once and records auto_released', () => {
+    const issuer = testIssuer();
+    const forwarded: string[] = [];
+    const action = heldCall('send_email', { to: 'team@example.com' }, () => {}, 60);
+    const cache = new ReplayCache();
+    assert.equal(releaseOnCountdown(issuer, action, cache, (l) => forwarded.push(l)), 'auto_released');
+    assert.equal(getAction(action.id)?.status, 'auto_released');
+    assert.equal(releaseOnCountdown(issuer, action, cache, (l) => forwarded.push(l)), null, 'a final item is never released again');
+    assert.deepEqual(forwarded, [action.forwardLine]);
   });
 });

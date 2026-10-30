@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 — security fixes
+
+Four medium-severity findings from independent review of permission-protocol/mcp-guard#16. No receipt format change; gates need no new pin.
+
+### Fixed
+
+- **A held call could be released with another held call's receipt.** The release check bound scope and single use but not the call itself, so a valid receipt for one held call released a different held call with other arguments (shown at the internal release API; no external route to substitute the receipt was found). A release now verifies that the receipt is for this queue item (`idemKey`, `PP_DECISION_MISMATCH`) and that its signed `inputHash` recomputes from the exact line forwarded to the server (`INPUT_HASH_MISMATCH`), before the receipt is consumed.
+- **A `keys.json` others could write was trusted.** keys.json selects the signing key and records revocations, but only the key directory and private key were permission-checked, so another local user who could write an exposed keys.json could undo a revocation. The guard now refuses a group- or world-writable keys.json (`SIGNING_KEY_INVALID`). Keys created by `keys init` were not affected.
+- **A countdown that could not sign ended the held call.** The item became `auto_released` before signing, so a revoked or missing key left it final, unreleased and impossible to approve later. Countdowns now sign first; if signing is refused, the countdown stops and the call stays held for an operator decision or expiry.
+- **The signer used key-set entries its own verifier rejects.** A key whose entry named another `alg`, or a key id listed twice, still signed receipts that every verifier, including the guard's own release check, refused; policy-allowed calls still went through in enforce mode. The signer now applies the verifier's key-set rules and refuses such entries with `SIGNING_KEY_INVALID`.
+
 ## 0.3.0 — receipts in the org receipt standard (breaking)
 
 mcp-guard now signs the same receipt format the Permission Protocol app issues (`jcs_v2`, receipt-spec), so one verifier reads both. Design: Permission Protocol F-10 design note, "mcp-guard signing alignment".

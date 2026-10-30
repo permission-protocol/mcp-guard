@@ -105,4 +105,39 @@ describe('keystore: explicit keys, typed failures', () => {
     chmodSync(keysDir(), 0o700);
     assert.equal(loadSigningKey().keyId, key.keyId);
   });
+
+  it('SIGNING_KEY_INVALID: a keys.json others can write, so a revocation cannot be edited away', { skip: process.platform === 'win32' }, () => {
+    const key = createKey();
+    chmodSync(keysDir(), 0o755);
+    revokeKey(key.keyId);
+    chmodSync(keySetPath(), 0o666);
+    assert.equal(code(() => loadSigningKey()), 'SIGNING_KEY_INVALID', 'a writable revoked key set');
+    const set = JSON.parse(readFileSync(keySetPath(), 'utf-8'));
+    set.keys[0].status = 'active';
+    set.keys[0].revoked_at = null;
+    writeFileSync(keySetPath(), JSON.stringify(set));
+    assert.equal(code(() => loadSigningKey()), 'SIGNING_KEY_INVALID', 'the revocation edited away by another user');
+    chmodSync(keySetPath(), 0o620);
+    assert.equal(code(() => loadSigningKey()), 'SIGNING_KEY_INVALID', 'group-writable');
+    chmodSync(keySetPath(), 0o644);
+    assert.equal(loadSigningKey().keyId, key.keyId, 'the owner may still restore it');
+  });
+
+  it('SIGNING_KEY_INVALID: a key-set entry the verifier would reject (alg, duplicate id)', () => {
+    const key = createKey();
+    const good = readFileSync(keySetPath(), 'utf-8');
+
+    const rsa = JSON.parse(good);
+    rsa.keys[0].alg = 'rsa';
+    writeFileSync(keySetPath(), JSON.stringify(rsa));
+    assert.equal(code(() => loadSigningKey()), 'SIGNING_KEY_INVALID', 'alg is not ed25519');
+
+    const dup = JSON.parse(good);
+    dup.keys = [dup.keys[0], { ...dup.keys[0] }];
+    writeFileSync(keySetPath(), JSON.stringify(dup));
+    assert.equal(code(() => loadSigningKey()), 'SIGNING_KEY_INVALID', 'key id listed twice');
+
+    writeFileSync(keySetPath(), good);
+    assert.equal(loadSigningKey().keyId, key.keyId);
+  });
 });

@@ -70,7 +70,7 @@ jobs:
             exit 1
           fi
           printf '%s' "$RECEIPT" > "$RUNNER_TEMP/receipt.json"
-          npx --yes @permission-protocol/mcp-guard@0.3.0 verify \
+          npx --yes @permission-protocol/mcp-guard@0.3.1 verify \
             --receipt-file "$RUNNER_TEMP/receipt.json" \
             --keys trust/.pp/keys.json \
             --trust "$TRUST" \

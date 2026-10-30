@@ -148,6 +148,8 @@ export interface ArtifactVerifyOptions extends VerifyOptions {
   allowDemo?: boolean;
   /** When given, the signed inputHash must be this call's pp.hashable_payload.v1 hash. */
   call?: CallInput;
+  /** When given, the signed idemKey must be this one (the decision the receipt is for). */
+  idemKey?: string;
 }
 
 export interface ArtifactVerifyResult extends VerifyResult {
@@ -209,6 +211,10 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     if (payload.inputHash !== want) {
       reasons.push(`INPUT_HASH_MISMATCH: the signed inputHash is ${JSON.stringify(payload.inputHash ?? null)}, the call hashes to ${want}.`);
     }
+  }
+
+  if (opts.idemKey !== undefined && payload.idemKey !== opts.idemKey) {
+    reasons.push(`PP_DECISION_MISMATCH: the receipt is for decision ${JSON.stringify(payload.idemKey ?? null)}, not ${opts.idemKey}.`);
   }
 
   const scope = requestScope(payload);
