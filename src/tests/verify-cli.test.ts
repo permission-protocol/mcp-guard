@@ -101,6 +101,17 @@ describe('mcp-guard verify (receipt gate CLI)', () => {
     assert.match(r.out, /INPUT_HASH_MISMATCH/);
   });
 
+  it('--require-call refuses scoped verification without the exact call', () => {
+    const file = write('require-call.json', deploy(human));
+    assert.equal(gate(file, ['--require-call']).code, 2);
+    const call = write('require-call-good.json', {
+      tool: 'deploy',
+      operation: 'tools/call',
+      input: { env: 'production', sha: SHA }
+    });
+    assert.equal(gate(file, ['--require-call', '--call', call]).code, 0);
+  });
+
   it('refuses to run without a scope expectation or with an empty one', () => {
     const file = write('ok2.json', deploy(human));
     assert.equal(quiet(() => runVerify(['--receipt-file', file, '--keys', keySetPath(), '--trust', trust])).code, 2);
