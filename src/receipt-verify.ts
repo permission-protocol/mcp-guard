@@ -112,9 +112,9 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
       scope_sha: e.scope?.sha ?? null,
     };
     for (const field of ['scope', 'scope_ref', 'scope_sha'] as const) {
-      const want = opts.expected[field];
-      if (want !== undefined && actual[field] !== want) {
-        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want}" but receipt has ${field}="${actual[field] ?? ''}".`);
+      const want = opts.expected[field] ?? null;
+      if (actual[field] !== want) {
+        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want ?? ''}" but receipt has ${field}="${actual[field] ?? ''}".`);
       }
     }
   }
@@ -228,9 +228,9 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
       scope_sha: scope?.commitSha ?? null,
     };
     for (const field of ['scope', 'scope_ref', 'scope_sha'] as const) {
-      const want = opts.expected[field];
-      if (want !== undefined && actual[field] !== want) {
-        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want}" but the signed request has "${actual[field] ?? ''}".`);
+      const want = opts.expected[field] ?? null;
+      if (actual[field] !== want) {
+        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want ?? ''}" but the signed request has "${actual[field] ?? ''}".`);
       }
     }
   }
