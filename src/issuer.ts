@@ -144,6 +144,10 @@ export class Issuer {
     return this.opts.config.signing;
   }
 
+  get serverLabel(): string {
+    return this.opts.config.server_label;
+  }
+
   /** The current signing key, or a SigningError. */
   key(): SigningKey {
     return loadSigningKey(this.opts.keysDir ?? keysDir());
