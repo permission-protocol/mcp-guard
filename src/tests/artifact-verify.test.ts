@@ -128,6 +128,11 @@ describe('gate checks on jcs_v2 artifacts (the G7 cases)', () => {
     assert.ok(r.reasons.some((x) => x.startsWith('PP_SCOPE_MISMATCH')));
   });
 
+  it('a receipt restricted to a specific scope.ref is refused when expected omits scope_ref', () => {
+    const r = v(record({ requestJson: canonicalJsonText({ action: { tool: 'deploy' }, scope: { capability: 'deploy:production', ref: 'refs/heads/canary', commitSha: SHA } }) }));
+    assert.ok(r.reasons.some((x) => x.startsWith('PP_SCOPE_MISMATCH')));
+  });
+
   it('a countdown or policy release is refused for a scoped action unless policy approval is allowed', () => {
     const policy = record({ deciderId: 'system/mcp-guard-policy', deciderAuthMethod: 'policy', attributionConfidence: 'credentialed', resolutionType: null, reasonCodes: '["COUNTDOWN_AUTO_RELEASE"]' });
     assert.ok(v(policy).reasons.some((x) => x.startsWith('PP_APPROVAL_NOT_HUMAN')));
