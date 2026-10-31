@@ -138,6 +138,24 @@ describe('authorization policy enforcement', () => {
     const token = makeToken(payload, { key_id: 'pp-other' });
     await assert.rejects(() => verifyAuthorization(payload, token, publicKeyPem, policy), /Untrusted key_id/);
   });
+
+  it('rejects a two-approval policy when the second signer only holds a non-allowed role', async () => {
+    const payload = makePayload('mixed-roles');
+    const token = makeToken(payload, { signers: ['alice', 'mallory'], roles: ['admin', 'viewer'] });
+    await assert.rejects(
+      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['alice', 'mallory'], required_approvals: 2 }),
+      /Requires 2 valid approvals, found 1/,
+    );
+  });
+
+  it('rejects a future signed_at timestamp that attempts to bypass max_ttl_seconds', async () => {
+    const payload = { ...makePayload('future-signed-at'), expires_at: now + 86400 * 365 };
+    const token = makeToken(payload, { signed_at: now + 86400 * 365, expires_at: now + 86400 * 365 });
+    await assert.rejects(
+      () => verifyAuthorization(payload, token, publicKeyPem, policy),
+      /Invalid token timestamps/,
+    );
+  });
 });
 
 describe('policy loading fails closed', () => {
