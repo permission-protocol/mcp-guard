@@ -203,8 +203,11 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     reasons.push(`PP_EXPIRED: receipt expired at ${new Date(expires).toISOString()} (now ${now.toISOString()}).`);
   }
 
-  if (payload.scope === 'demo' && !opts.allowDemo) {
-    reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key (scope "demo") and authorizes nothing real.');
+  const demoKey =
+    typeof payload.signatureKeyId === 'string' &&
+    payload.signatureKeyId.startsWith('mcpg-demo-');
+  if ((payload.scope === 'demo' || demoKey) && !opts.allowDemo) {
+    reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key and authorizes nothing real.');
   }
   if (opts.call) {
     const want = hashablePayloadInputHash(opts.call.tool, opts.call.operation, opts.call.input);
