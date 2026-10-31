@@ -29,7 +29,7 @@
 #     --scope-sha <pull_request.head.sha>; a new push to the PR needs a new receipt.
 #
 # Wire-up: trigger this workflow with the receipt JSON the approver received, e.g.
-#   gh workflow run deploy.yml -f receipt="$(cat receipt.json)"
+#   gh workflow run deploy.yml -f receipt="$(cat receipt.json)" -f call="$(cat call.json)"
 
 name: Deploy (receipt-gated)
 
@@ -38,6 +38,9 @@ on:
     inputs:
       receipt:
         description: Signed mcp-guard receipt JSON for deploy:production at this commit
+        required: true
+      call:
+        description: Exact call JSON the receipt must authorize, e.g. {"tool":"deploy","operation":"tools/call","input":{"env":"production","sha":"..."}}
         required: true
 
 permissions:
@@ -63,6 +66,7 @@ jobs:
       - name: Verify the receipt (offline, fail closed)
         env:
           RECEIPT: ${{ inputs.receipt }}
+          CALL: ${{ inputs.call }}
           TRUST: ${{ vars.MCP_GUARD_TRUST }}
         run: |
           if [ -z "$TRUST" ]; then
@@ -70,10 +74,13 @@ jobs:
             exit 1
           fi
           printf '%s' "$RECEIPT" > "$RUNNER_TEMP/receipt.json"
+          printf '%s' "$CALL" > "$RUNNER_TEMP/call.json"
           npx --yes @permission-protocol/mcp-guard@0.3.1 verify \
             --receipt-file "$RUNNER_TEMP/receipt.json" \
             --keys trust/.pp/keys.json \
             --trust "$TRUST" \
+            --require-call \
+            --call "$RUNNER_TEMP/call.json" \
             --scope deploy:production \
             --scope-sha "$GITHUB_SHA"
 

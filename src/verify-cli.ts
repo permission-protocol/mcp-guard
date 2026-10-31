@@ -31,8 +31,9 @@ import type { PinnedKeys } from './verify-core.js';
 
 const USAGE = [
   'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]',
-  '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...] [--call <call.json>] [--allow-demo]',
+  '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...] [--require-call --call <call.json>] [--allow-demo]',
   '    --call: {"tool", "operation", "input"}; the signed inputHash must recompute from it',
+  '    --require-call: refuse scoped verification when --call is not supplied',
   '  legacy mcp-guard 0.2 receipts:  --accept-legacy --pubkey <pem> [--pubkey <pem> ...]',
 ].join('\n');
 
@@ -52,7 +53,7 @@ function parseArgs(argv: string[]): Args {
     const a = argv[i];
     if (!a.startsWith('--')) continue;
     const key = a.slice(2);
-    if (['allow-policy-approval', 'accept-legacy', 'allow-demo', 'help'].includes(key)) { bools.add(key); continue; }
+    if (['allow-policy-approval', 'accept-legacy', 'allow-demo', 'require-call', 'help'].includes(key)) { bools.add(key); continue; }
     const next = argv[i + 1];
     if (next === undefined || next.startsWith('--')) { flags[key] = ''; continue; }
     if (key === 'pubkey') pubkeys.push(next);
@@ -129,6 +130,7 @@ export function runVerify(argv: string[]): number {
     result = verifyReceipt(receipt as Receipt, keys, { expected, allowPolicyApproval });
     label = `VERIFIED (${LEGACY_SIGNED_FIELDS_NOTE})`;
   } else {
+    if (bools.has('require-call') && !flags.call) return fail('--require-call requires --call <call.json>: scoped verification must bind the exact action');
     if (!flags.keys) return fail('--keys <keys.json> is required: the gate verifies only against a key set you supply');
     const p = resolve(flags.keys);
     if (!existsSync(p)) return fail(`key set not found: ${p}`);
