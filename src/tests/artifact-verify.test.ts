@@ -5,6 +5,7 @@ import { buildArtifact, checkArtifact, type ReceiptArtifact } from '../signing/a
 import { canonicalizeJcsV2, canonicalJsonText } from '../signing/canonical.js';
 import { fingerprintOf, mcpgKeyId, rawPublicKey, parseTrust, type KeySet } from '../signing/keys.js';
 import { verifyArtifactReceipt } from '../receipt-verify.js';
+import { hashablePayloadInputHash } from '../issuer.js';
 import { ReplayCache } from '../verify-core.js';
 
 function keypair(demo = false) {
@@ -121,6 +122,15 @@ describe('gate checks on jcs_v2 artifacts (the G7 cases)', () => {
 
   it('a human-approved receipt for this scope and commit passes', () => {
     assert.deepEqual(v(record()).reasons, []);
+  });
+
+  it('exact-call verification binds the destination server resource', () => {
+    const input = { env: 'production', sha: SHA };
+    const rec = record({ inputHash: hashablePayloadInputHash('deploy', 'tools/call', input) });
+    const call = { tool: 'deploy', operation: 'tools/call', input };
+    assert.deepEqual(v(rec, { call: { ...call, resource: 'srv' } }).reasons, []);
+    const r = v(rec, { call: { ...call, resource: 'other-server' } });
+    assert.ok(r.reasons.some((x) => x.startsWith('PP_RESOURCE_MISMATCH')));
   });
 
   it('a receipt for another commit is refused', () => {

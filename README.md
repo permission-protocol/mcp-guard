@@ -206,7 +206,7 @@ The verifier requires `--scope`, trusts only the key set you give it (and, with 
 - scoped receipts no person approved (`--allow-policy-approval` accepts them);
 - receipts signed by a demo key (`--allow-demo`);
 - mcp-guard 0.2 receipts (`--accept-legacy --pubkey <pem>` accepts them, labelled legacy);
-- with `--call call.json` (`{"tool", "operation", "input"}`), a receipt whose `inputHash` does not recompute from the call.
+- with `--call call.json` (`{"tool", "operation", "resource", "input"}`), a receipt whose signed resource differs or whose `inputHash` does not recompute from the call.
 
 Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key set, pin and receipt only from trusted places.
 

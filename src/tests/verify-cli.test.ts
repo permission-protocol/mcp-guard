@@ -91,14 +91,18 @@ describe('mcp-guard verify (receipt gate CLI)', () => {
     process.env.PP_KEYS_DIR = join(dir, 'keys');
   });
 
-  it('--call: the signed inputHash must recompute from the call', () => {
+  it('--call: the signed resource and inputHash must match the call', () => {
     const file = write('call.json', deploy(human));
-    const good = write('good-call.json', { tool: 'deploy', operation: 'tools/call', input: { env: 'production', sha: SHA } });
-    const bad = write('bad-call.json', { tool: 'deploy', operation: 'tools/call', input: { env: 'production', sha: SHA, force: true } });
+    const good = write('good-call.json', { tool: 'deploy', operation: 'tools/call', resource: 'test-server', input: { env: 'production', sha: SHA } });
+    const bad = write('bad-call.json', { tool: 'deploy', operation: 'tools/call', resource: 'test-server', input: { env: 'production', sha: SHA, force: true } });
+    const otherServer = write('other-server-call.json', { tool: 'deploy', operation: 'tools/call', resource: 'other-server', input: { env: 'production', sha: SHA } });
     assert.equal(gate(file, ['--call', good]).code, 0);
     const r = gate(file, ['--call', bad]);
     assert.equal(r.code, 1);
     assert.match(r.out, /INPUT_HASH_MISMATCH/);
+    const substituted = gate(file, ['--call', otherServer]);
+    assert.equal(substituted.code, 1);
+    assert.match(substituted.out, /PP_RESOURCE_MISMATCH/);
   });
 
   it('refuses to run without a scope expectation or with an empty one', () => {

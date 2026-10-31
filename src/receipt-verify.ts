@@ -134,10 +134,11 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
 // payload, never from the artifact's unsigned convenience fields.
 // ---------------------------------------------------------------------------
 
-/** The call a receipt is checked against: its `inputHash` must recompute from it. */
+/** The call a receipt is checked against: its resource must match and its `inputHash` must recompute from it. */
 export interface CallInput {
   tool: string;
   operation: string;
+  resource: string;
   input: unknown;
 }
 
@@ -170,6 +171,16 @@ export function requestScope(payload: Record<string, unknown>): { capability: st
     ref: typeof s.ref === 'string' ? s.ref : null,
     commitSha: typeof s.commitSha === 'string' ? s.commitSha : null,
   };
+}
+
+function requestResource(payload: Record<string, unknown>): string | null {
+  if (typeof payload.requestJson !== 'string') return null;
+  try {
+    const resource = JSON.parse(payload.requestJson)?.action?.resource;
+    return typeof resource === 'string' ? resource : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A decision a person made, as opposed to a policy, a timer or an unattributed click. */
@@ -207,6 +218,10 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key (scope "demo") and authorizes nothing real.');
   }
   if (opts.call) {
+    const resource = requestResource(payload);
+    if (resource !== opts.call.resource) {
+      reasons.push(`PP_RESOURCE_MISMATCH: expected resource ${JSON.stringify(opts.call.resource)}, but the signed request has ${JSON.stringify(resource)}.`);
+    }
     const want = hashablePayloadInputHash(opts.call.tool, opts.call.operation, opts.call.input);
     if (payload.inputHash !== want) {
       reasons.push(`INPUT_HASH_MISMATCH: the signed inputHash is ${JSON.stringify(payload.inputHash ?? null)}, the call hashes to ${want}.`);
