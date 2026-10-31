@@ -32,7 +32,7 @@ import type { PinnedKeys } from './verify-core.js';
 const USAGE = [
   'usage: mcp-guard verify (--receipt-file <path> | --receipt-id <id> [--receipts-path <jsonl>]) --scope s [--scope-ref r] [--scope-sha h] [--allow-policy-approval]',
   '  org standard (jcs_v2) receipts: --keys <keys.json> [--trust KEY_ID=sha256:<hex> ...] [--call <call.json>] [--allow-demo]',
-  '    --call: {"tool", "operation", "input"}; the signed inputHash must recompute from it',
+  '    --call: {"tool", "operation", "resource", "input"}; the signed resource and inputHash must match it',
   '  legacy mcp-guard 0.2 receipts:  --accept-legacy --pubkey <pem> [--pubkey <pem> ...]',
 ].join('\n');
 
@@ -141,7 +141,9 @@ export function runVerify(argv: string[]): number {
       const cp = resolve(flags.call);
       if (!existsSync(cp)) return fail(`call file not found: ${cp}`);
       try { call = JSON.parse(readFileSync(cp, 'utf-8')); } catch (e: any) { return fail(`call file is not valid JSON: ${e.message}`); }
-      if (typeof call?.tool !== 'string' || typeof call?.operation !== 'string') return fail('call file must be {"tool": "...", "operation": "...", "input": ...}');
+      if (typeof call?.tool !== 'string' || typeof call?.operation !== 'string' || typeof call?.resource !== 'string' || !call.resource) {
+        return fail('call file must be {"tool": "...", "operation": "...", "resource": "...", "input": ...}');
+      }
     }
     result = verifyArtifactReceipt(receipt, keySet, { expected, allowPolicyApproval, trust: pins, call, allowDemo: bools.has('allow-demo') });
     label = pins ? 'VERIFIED (jcs_v2, key pinned by --trust)' : 'VERIFIED (jcs_v2; key taken from the key set file, not pinned)';
