@@ -123,6 +123,18 @@ describe('gate checks on jcs_v2 artifacts (the G7 cases)', () => {
     assert.deepEqual(v(record()).reasons, []);
   });
 
+  it('a demo key is refused even when the signed scope claims production', () => {
+    const demo = keypair(true);
+    const demoSet: KeySet = { keys: [demo.entry] };
+    const demoPins = new Map([[demo.keyId, demo.fp]]);
+    const artifact = buildArtifact(record({ signatureKeyId: demo.keyId }), demo.privateKey);
+    const result = verifyArtifactReceipt({ artifact }, demoSet, {
+      trust: demoPins,
+      expected: { scope: 'deploy:production', scope_sha: SHA }
+    });
+    assert.ok(result.reasons.some((x) => x.startsWith('PP_DEMO_RECEIPT')));
+  });
+
   it('a receipt for another commit is refused', () => {
     const r = v(record({ requestJson: canonicalJsonText({ action: { tool: 'deploy' }, scope: { capability: 'deploy:production', commitSha: 'f'.repeat(40) } }) }));
     assert.ok(r.reasons.some((x) => x.startsWith('PP_SCOPE_MISMATCH')));
