@@ -33,6 +33,7 @@
     "slice1": "npm run build && node scripts/demo-slice1.mjs",
     "slice2": "npm run build && node scripts/demo-slice2.mjs",
     "slice25": "npm run build && node scripts/demo-slice25.mjs",
+    "e2e:first-receipt": "npm run build && node scripts/e2e-first-receipt.mjs --stand-in",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
