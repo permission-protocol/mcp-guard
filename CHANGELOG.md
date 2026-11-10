@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0: signed approvals by a named human
+
+A held call can now be released by a receipt that a signed-in person signed in Permission Protocol, verified offline by the guard. Before this release every approval was local: decided on the guard's machine, with the approver's name taken from `--operator`.
+
+Requires Permission Protocol's MCP approval API (permission-protocol/app#1030). Until that is live in production, cloud mode against the production API gets an error answer and every held call is blocked.
+
+### Added
+
+- `cloud:` policy section (`api_url`, `environment`, `approval_timeout_seconds`, `trust_keys`). Absent, nothing changes except the label below.
+- Hold, request, verify, release: the guard computes the call's fingerprint locally (SHA-256 over canonical JSON of `{argsHash, server, tool}`), opens an approval request, polls with backoff, verifies the receipt against the pinned Permission Protocol key, redeems it once, then forwards. Raw arguments are never sent.
+- Offline receipt verification for the formats the app signs (`jcs_v2`, `jcs_v3`, `jcs_v4`): signature, canonical bytes, fingerprint equals the held call's, request id, human decider, approval, production scope, expiry, replay.
+- Permission Protocol's production signing keys pinned in the release (`src/cloud/pinned-keys.ts`). No key is fetched at decision time.
+- `PP_INSTALL_TOKEN` (or `~/.config/mcp-guard/install-token`, owner-only): a workspace API key with the single scope `mcp:guard`.
+- `{"cloud": ...}` lines in the receipts file: each cloud decision with its receipt id, receipt URL, signer and the signed receipt.
+- Error `-32007`: signed approvals are on but Permission Protocol could not be reached or trusted. Nothing was forwarded.
+
+### Changed
+
+- Local-only mode is labelled. Startup prints `Mode: local-only, unsigned by Permission Protocol`, and a held call's `-32002` message and stderr line carry the same label. Local receipts are still signed with the machine's own key, as in 0.3; the label says that no Permission Protocol signature and no authenticated approver stands behind them.
+
+### Fail closed
+
+A rejection, a frozen workspace (signed DENIED), a timeout, an API error, a receipt that fails any check, changed arguments, or a failed redeem all block the call. No environment variable disables verification. In enforce mode the guard refuses to start in cloud mode without a token.
+
+### Not in this release
+
+- `mcp-guard init` (device login, token in the OS keychain, client config wrapping). The token is set by hand for now.
+- Signed approvals do not use countdowns or the local approval UI.
+
 ## 0.3.1 — security fixes
 
 Four medium-severity findings from independent review of permission-protocol/mcp-guard#16. No receipt format change; gates need no new pin.

@@ -89,6 +89,7 @@ receipt_ttl_seconds: 3600    # receipts for unscoped actions expire after this (
 scoped_receipt_ttl_seconds: 900  # receipts for merge / migration / deploy expire after this (default 900)
 server_label: github-mcp     # names the MCP server in receipts (default "mcp-server"; never the command line)
 signing: required            # required (default) | off: unsigned records that no gate accepts
+# cloud: {}                  # optional: held calls need a named human's signature (see Signed approvals)
 
 rules:
   - id: unique-rule-id       # unique identifier
@@ -132,7 +133,7 @@ Use `observe` mode to audit what *would* be blocked before turning enforcement o
 | `block` | Reject immediately | `-32001` |
 | `require_approval` | Hold for approval (or reject without an approval UI) | `-32002` |
 
-Other errors the agent can receive: `-32003` denied by a human, `-32004` approval request expired, `-32005` release refused (receipt failed verification), `-32006` the decision could not be signed (missing, invalid or revoked key: nothing was forwarded), `-32700` / `-32600` / `-32602` malformed input.
+Other errors the agent can receive: `-32003` denied by a human, `-32004` approval request expired, `-32005` release refused (receipt failed verification), `-32006` the decision could not be signed (missing, invalid or revoked key: nothing was forwarded), `-32007` signed approvals are on but Permission Protocol could not be reached or trusted (nothing was forwarded), `-32700` / `-32600` / `-32602` malformed input.
 
 ## Receipts
 
@@ -226,6 +227,9 @@ mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | key
 mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
 mcp-guard export-key [out.pem]   # legacy 0.2 public key only, for --accept-legacy
 
+Environment:
+  PP_INSTALL_TOKEN        Install token for signed approvals (see Signed approvals)
+
 Options:
   --config <path>         Path to config file (default: ./pp.config.yaml)
   --agent-id <id>         Agent identifier for receipts (default: "unknown")
@@ -284,6 +288,49 @@ Open the exact URL printed at startup. The part after `#t=` is a per-process acc
 **Security of the approval channel:** it listens on 127.0.0.1 only, rejects any other `Host` header, sends no CORS headers, and requires the token on every API route except the HMAC-signed GitHub webhook. `PP_APPROVAL_TOKEN` (32+ characters) supplies the token instead of generating one. The wrapped server is started without any `PP_*` environment variables, so a tool that echoes its environment cannot leak the token.
 
 When `--approval-port` is **not** set, `require_approval` calls return `-32002` immediately.
+
+This flow is local-only: the approver's name is whatever `--operator` says, not an authenticated identity, and the receipt is signed by a key on this machine. For a signature by a named, signed-in person, see Signed approvals below.
+
+## Signed approvals (Permission Protocol account)
+
+Without an account, MCP Guard runs **local-only**: holds are decided on the machine that runs the guard, and nothing records which person approved. Startup and every held call say so: `local-only, unsigned by Permission Protocol`.
+
+With a `cloud:` section, a held call is released only by a receipt that a **named human signed** in Permission Protocol, and that anyone can verify with Permission Protocol's public key.
+
+```yaml
+# pp.config.yaml
+server_label: filesystem          # the server name the signer sees
+cloud:
+  environment: production         # development | staging | production. A label for the signer; it clears nothing
+  approval_timeout_seconds: 600   # how long a held call waits for a signature (30 to 3600, default 600)
+```
+
+```bash
+export PP_INSTALL_TOKEN=pp_live_...   # a workspace API key with the single scope mcp:guard
+mcp-guard --config pp.config.yaml --agent-id claude-code -- node my-mcp-server.js
+```
+
+Create the token in Permission Protocol under Settings > Developer access, with the scope `mcp:guard` and nothing else. It can open, read and redeem this install's own requests. It cannot approve anything. Instead of the variable you can put it in `~/.config/mcp-guard/install-token` (owner-readable only). The wrapped server never sees it.
+
+**What happens to a held call**
+
+1. The guard hashes the arguments locally and computes the call's fingerprint: SHA-256 over the canonical JSON of `{argsHash, server, tool}`. Raw arguments are not sent. A preview of them is, so the signer can read the call; Permission Protocol masks secrets in it and keeps at most 2 KB.
+2. It opens an approval request and prints the signing link to stderr. The signer opens it, signs in, and chooses Sign or Reject.
+3. It polls with backoff (1 s rising to 5 s) until a decision or the timeout.
+4. Before releasing, it verifies the receipt **offline**: the signature against the Permission Protocol key pinned in this release, the fingerprint against the one it computed from the held call, the request id, that the signer is a person, that the decision is an approval, and that the receipt has not expired (receipts expire 10 minutes after the signature).
+5. It redeems the receipt, which works once, then forwards the call.
+6. It appends a `{"cloud": ...}` line to the receipts file with the decision, the receipt id and URL, who signed, and the signed receipt itself. Never the arguments.
+
+**Fail closed.** The call is forwarded only after step 5 succeeds. A rejection, a frozen workspace, a timeout, an API error, a receipt that fails any check, or a redeem that does not succeed all leave it blocked (`-32003`, `-32004`, `-32005` or `-32007`). If the arguments differ from the ones that were signed, the fingerprint differs and the receipt is refused. No environment variable turns any of this off. In enforce mode the guard does not start without a token.
+
+**Pinned keys.** The production keys are compiled into the release (`src/cloud/pinned-keys.ts`); the guard never fetches a key when deciding. When Permission Protocol rotates its signing key, held calls are blocked until you upgrade to a release that pins the new key. To point at a non-production Permission Protocol, set `cloud.api_url` and list its keys in `cloud.trust_keys`; that list is refused for the production API.
+
+**Notes**
+
+- In cloud mode every `require_approval` call needs the signature. Countdowns (`countdown_seconds`) and the local approval UI do not release held calls.
+- `mode: observe` still forwards everything and asks no one.
+- Tool, server and agent names must be 1 to 128 characters of letters, digits and `_ . : / @ -`. A held call whose name has other characters is blocked.
+- While a signature is pending, a failed status check (network, 429, 5xx) is retried until the timeout. It can only end in a verified receipt or a block.
 
 ## Why not just use X?
 

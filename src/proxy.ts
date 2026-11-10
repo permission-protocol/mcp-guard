@@ -4,9 +4,15 @@ import { TOOLS_CALL, type Config, type Rule } from './config.js';
 import { evaluate, type Decision } from './engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash, type IssuedReceipt, type ScopeBinding } from './issuer.js';
 import { SigningError } from './keystore.js';
-import { emitReceipt, emitHold } from './receipt-log.js';
+import { emitReceipt, emitHold, emitCloudDecision } from './receipt-log.js';
 import { signHeld, forwardReleased, releaseOnCountdown } from './release.js';
 import { ReplayCache } from './verify-core.js';
+import { createCloudClient, type CloudClient } from './cloud/client.js';
+import { decideInCloud, type CloudOutcome } from './cloud/hold.js';
+import { fingerprintOfCall } from './cloud/fingerprint.js';
+import { PRODUCTION_API_URL, PRODUCTION_KEY_SET, pinsFor } from './cloud/pinned-keys.js';
+import { loadInstallToken } from './cloud/token.js';
+import type { KeySet } from './signing/keys.js';
 import {
   addPending,
   surfaceActed,
@@ -26,6 +32,9 @@ import {
   BLOCKED,
   HELD,
   EXPIRED,
+  DENIED,
+  RELEASE_FAILED,
+  APPROVAL_UNAVAILABLE,
   INVALID_PARAMS,
   SIGNING_FAILED,
   type JsonRpcMessage,
@@ -130,6 +139,9 @@ export interface ProxyOptions {
   operator?: string;
 }
 
+/** What local-only mode prints wherever it holds a call: no person signed through Permission Protocol. */
+export const LOCAL_ONLY_LABEL = 'local-only, unsigned by Permission Protocol';
+
 export function startProxy(config: Config, agentId: string, serverCommand: string[], opts: ProxyOptions = {}): void {
   if (serverCommand.length === 0) {
     process.stderr.write('[mcp-guard] Error: no server command provided after --\n');
@@ -152,6 +164,31 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
   }
   const replayCache = new ReplayCache();
   const approvalEnabled = opts.approvalPort !== undefined;
+
+  // Cloud approvals: a held call is released only by a receipt a named human signed
+  // through Permission Protocol, verified here against the pinned key. Configured in
+  // the policy file; the token is the only thing read from the environment, and
+  // nothing in the environment can turn verification off.
+  const cloud = config.cloud;
+  let cloudClient: CloudClient | null = null;
+  let cloudKeySet: KeySet = PRODUCTION_KEY_SET;
+  if (cloud) {
+    cloudKeySet = cloud.api_url === PRODUCTION_API_URL ? PRODUCTION_KEY_SET : { issuer: cloud.api_url, keys: cloud.trust_keys ?? [] };
+    try {
+      cloudClient = createCloudClient({ apiUrl: cloud.api_url, token: loadInstallToken() });
+      process.stderr.write(
+        `[mcp-guard] Cloud approvals on: held calls need a signature at ${cloud.api_url} (pinned keys: ${cloudKeySet.keys.map((k) => k.key_id).join(', ')})\n`,
+      );
+    } catch (err: any) {
+      // Enforce mode never runs without a way to get a signature. Observe mode forwards
+      // everything anyway, so it says so and carries on.
+      if (config.mode === 'enforce') throw err;
+      process.stderr.write(`[mcp-guard] WARNING: ${err.message}. Observe mode forwards calls; held calls are recorded, not sent for signature.\n`);
+    }
+  } else {
+    process.stderr.write(`[mcp-guard] Mode: ${LOCAL_ONLY_LABEL}. Holds are decided on this machine and no named approver is recorded. Add a "cloud:" section to the policy for signed approvals.\n`);
+  }
+  const cloudTrust = pinsFor(cloudKeySet);
 
   // The server (and anything the agent can make it echo) never sees the guard's own
   // secrets: approval token, webhook secret, receipt token, key location.
@@ -315,8 +352,16 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     }
 
     // held_for_approval
+    if (cloud) {
+      if (!cloudClient) {
+        toClient(errorLine(id, APPROVAL_UNAVAILABLE, 'Blocked: cloud approvals are configured but not available'));
+        return;
+      }
+      void holdInCloud(cloudClient, msg.method, tool, label, forward, forwardArgs, decision, id);
+      return;
+    }
     if (!approvalEnabled) {
-      toClient(errorLine(id, HELD, `Held for approval: ${decision.reason}`));
+      toClient(errorLine(id, HELD, `Held for approval (${LOCAL_ONLY_LABEL}): ${decision.reason}`));
       return;
     }
     const pending = addPending({
@@ -334,7 +379,92 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     });
     hold(pending.id);
     notifyQueueChange();
-    process.stderr.write(`[mcp-guard] Held "${label}" for approval (${pending.id})\n`);
+    process.stderr.write(`[mcp-guard] Held "${label}" for approval (${pending.id}) [${LOCAL_ONLY_LABEL}]\n`);
+  }
+
+  /**
+   * A held call in cloud mode. The call is forwarded in exactly one place, below, and
+   * only for a `released` outcome whose receipt fingerprint still equals the
+   * fingerprint of the line about to be written to the server. Every other path
+   * answers the client with an error and forwards nothing.
+   */
+  async function holdInCloud(
+    client: CloudClient,
+    method: string,
+    tool: string | null,
+    label: string,
+    forward: JsonRpcMessage,
+    forwardArgs: Record<string, unknown> | undefined,
+    decision: Decision,
+    id: JsonRpcMessage['id'] | null,
+  ): Promise<void> {
+    const rpcId = id ?? null;
+    const line = JSON.stringify(forward);
+    const server = config.server_label;
+    const record = (outcome: CloudOutcome): void => emitCloudDecision({
+      decision: outcome.kind,
+      requestId: outcome.requestId,
+      receiptId: outcome.kind === 'released' ? outcome.receipt.receiptId : outcome.kind === 'denied' ? outcome.receipt?.receiptId ?? null : null,
+      receiptUrl: outcome.kind === 'released' || outcome.kind === 'denied' ? outcome.receiptUrl : null,
+      fingerprint: outcome.fingerprint,
+      method,
+      tool,
+      server,
+      agentId,
+      ruleId: decision.rule_id,
+      decider: outcome.kind === 'released' ? outcome.receipt.decider : outcome.kind === 'denied' ? outcome.receipt?.decider ?? null : null,
+      reason: outcome.kind === 'released' ? null : outcome.reason,
+      code: outcome.kind === 'blocked' ? outcome.code : null,
+      at: new Date().toISOString(),
+      artifact: outcome.kind === 'released' || outcome.kind === 'denied' ? outcome.artifact : null,
+    });
+
+    let outcome: CloudOutcome;
+    try {
+      outcome = await decideInCloud({
+        client,
+        keySet: cloudKeySet,
+        trust: cloudTrust,
+        replayCache,
+        server,
+        tool: label,
+        args: forwardArgs,
+        agentId,
+        environment: cloud!.environment,
+        timeoutSeconds: cloud!.approval_timeout_seconds,
+        onPending: ({ requestId, approvalUrl }) => {
+          process.stderr.write(`[mcp-guard] Held "${label}" for signature (${requestId}). Sign or reject: ${approvalUrl ?? 'no approval URL returned'}\n`);
+        },
+      });
+    } catch (err: any) {
+      // decideInCloud does not throw; if it ever does, that is a block.
+      outcome = { kind: 'blocked', requestId: null, fingerprint: fingerprintOfCall(server, label, forwardArgs), code: 'INTERNAL', reason: String(err?.message ?? err) };
+    }
+
+    if (outcome.kind === 'released') {
+      // Last check, on the bytes about to be written: the receipt covers THIS line.
+      const frame = parseFrame(line);
+      const sending = frame.kind === 'request' ? serverInput(frame.msg, tool !== null) : undefined;
+      if (frame.kind !== 'request' || fingerprintOfCall(server, label, sending) !== outcome.receipt.fingerprint) {
+        outcome = { kind: 'blocked', requestId: outcome.requestId, fingerprint: outcome.fingerprint, code: 'RECEIPT_FINGERPRINT_MISMATCH', reason: 'The call changed after it was signed' };
+      }
+    }
+
+    record(outcome);
+    switch (outcome.kind) {
+      case 'released':
+        forwardLine(line);
+        return;
+      case 'denied':
+        toClient(errorLine(rpcId, DENIED, `Denied: ${outcome.reason}`));
+        return;
+      case 'expired':
+        toClient(errorLine(rpcId, EXPIRED, `Approval request expired without a signature: ${outcome.reason}`));
+        return;
+      case 'blocked':
+        toClient(errorLine(rpcId, outcome.code.startsWith('RECEIPT_') || outcome.code.startsWith('REDEEM_') ? RELEASE_FAILED : APPROVAL_UNAVAILABLE, `Blocked: ${outcome.reason}`));
+        return;
+    }
   }
 
   // Client → server: parse, gate, and forward only what was evaluated.

@@ -124,6 +124,11 @@ Run \`mcp-guard keys init\` once before the first run: every decision is signed,
 the guard refuses to start without a signing key (or set \`signing: off\` in the config
 for unsigned records that no gate accepts).
 
+Signed approvals: add a "cloud:" section to the config and set PP_INSTALL_TOKEN (a
+Permission Protocol API key with the scope mcp:guard). A held call is then released
+only by a receipt a named person signed, verified against the pinned key. Without
+it the guard is local-only and says so.
+
 The approval UI URL printed at startup carries its access token after "#t=".
 Open that exact URL; requests without the token are refused.
 

@@ -35,6 +35,8 @@ export const EXPIRED = -32004;
 export const RELEASE_FAILED = -32005;
 /** The guard could not sign the decision (missing, invalid or revoked key): nothing was forwarded. */
 export const SIGNING_FAILED = -32006;
+/** Cloud approvals: Permission Protocol could not be reached or its answer could not be trusted. Nothing was forwarded. */
+export const APPROVAL_UNAVAILABLE = -32007;
 
 /**
  * Methods that carry no action or data access of their own. Everything else — tools/call,
