@@ -63,10 +63,13 @@ describe('install token', () => {
   const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-token-'));
   const file = join(dir, 'install-token');
 
+  // These tests never touch the developer's real keychain.
+  const noKeychain = { run: () => ({ status: null, stdout: '' }) };
+
   it('comes from PP_INSTALL_TOKEN first, then the token file', () => {
-    assert.equal(loadInstallToken({ PP_INSTALL_TOKEN: ` ${TOKEN}\n` }, join(dir, 'missing')), TOKEN);
+    assert.equal(loadInstallToken({ PP_INSTALL_TOKEN: ` ${TOKEN}\n` }, join(dir, 'missing'), noKeychain), TOKEN);
     writeFileSync(file, `${TOKEN}\n`, { mode: 0o600 });
-    assert.equal(loadInstallToken({}, file), TOKEN);
+    assert.equal(loadInstallToken({}, file, noKeychain), TOKEN);
   });
 
   it('missing, malformed or exposed is a typed error, never an anonymous run', () => {
@@ -74,14 +77,14 @@ describe('install token', () => {
       try { fn(); } catch (err) { assert.ok(err instanceof InstallTokenError); return err.code; }
       return 'no error';
     };
-    assert.equal(code(() => loadInstallToken({}, join(dir, 'missing'))), 'INSTALL_TOKEN_MISSING');
+    assert.equal(code(() => loadInstallToken({}, join(dir, 'missing'), noKeychain)), 'INSTALL_TOKEN_MISSING');
     assert.equal(code(() => loadInstallToken({ PP_INSTALL_TOKEN: 'hunter2' }, file)), 'INSTALL_TOKEN_INVALID');
     assert.equal(code(() => loadInstallToken({ PP_INSTALL_TOKEN: 'sk_whatever_0123456789' }, file)), 'INSTALL_TOKEN_INVALID');
     if (process.platform !== 'win32') {
       const open = join(dir, 'open-token');
       writeFileSync(open, TOKEN);
       chmodSync(open, 0o644);
-      assert.equal(code(() => loadInstallToken({}, open)), 'INSTALL_TOKEN_EXPOSED');
+      assert.equal(code(() => loadInstallToken({}, open, noKeychain)), 'INSTALL_TOKEN_EXPOSED');
     }
   });
 });

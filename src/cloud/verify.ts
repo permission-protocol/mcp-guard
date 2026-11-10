@@ -88,6 +88,11 @@ export interface CloudVerifyOptions {
   now?: Date;
   /** Consumed last, only by a release. */
   replayCache?: ReplayCache;
+  /**
+   * Audit: check everything except whether the receipt is still within its ten-minute
+   * window. For reading a logged receipt later; never used to release a call.
+   */
+  audit?: boolean;
 }
 
 const SUPPORTED = new Set(['jcs_v2', 'jcs_v3', 'jcs_v4']);
@@ -186,8 +191,9 @@ export function verifyCloudReceipt(artifact: unknown, options: CloudVerifyOption
     const expiresAt = str(payload.expiresAt);
     const expiresMs = expiresAt ? Date.parse(expiresAt) : NaN;
     const now = (options.now ?? new Date()).getTime();
-    if (!Number.isFinite(expiresMs) || expiresMs <= now) return refuse('EXPIRED', `receipt expired at ${expiresAt ?? 'an unstated time'}`);
-    if (options.replayCache && options.replayCache.use(a.receipt_id!, expiresMs) !== 'ok') {
+    if (!Number.isFinite(expiresMs)) return refuse('EXPIRED', 'receipt states no expiry');
+    if (!options.audit && expiresMs <= now) return refuse('EXPIRED', `receipt expired at ${expiresAt}`);
+    if (!options.audit && options.replayCache && options.replayCache.use(a.receipt_id!, expiresMs) !== 'ok') {
       return refuse('REPLAYED', 'receipt was already used by this guard');
     }
   }

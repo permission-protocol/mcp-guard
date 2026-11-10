@@ -222,7 +222,9 @@ npx @permission-protocol/verify receipt.json --keys .pp/keys.json --trust "$MCP_
 ## CLI
 
 ```
+mcp-guard init                   # connect to Permission Protocol, wrap one MCP server, sign a first receipt
 mcp-guard [options] -- <server command>
+mcp-guard receipt verify <receipt id> [--receipts-path <file>] [--config <policy.yaml>]
 mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
 mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
 mcp-guard export-key [out.pem]   # legacy 0.2 public key only, for --accept-legacy
@@ -293,6 +295,16 @@ This flow is local-only: the approver's name is whatever `--operator` says, not 
 
 ## Signed approvals (Permission Protocol account)
 
+**Fastest way in:**
+
+```bash
+npx @permission-protocol/mcp-guard init
+```
+
+`init` opens a page where you connect this machine to your workspace (you need the owner or admin role; no secret is copied by hand), stores the install token in the OS keychain, finds the MCP servers Claude Code and Cursor are configured with, wraps the one you pick, writes a policy that holds one tool for a signature, and then holds a do-nothing test call so you sign your first receipt. It ends by printing the receipt, the command that verifies it again, and how long it all took. Your client's config file is copied aside before it is changed, and the copy's path is printed. `mcp-guard init --help` lists the options.
+
+The rest of this section is what `init` sets up, for doing it by hand.
+
 Without an account, MCP Guard runs **local-only**: holds are decided on the machine that runs the guard, and nothing records which person approved. Startup and every held call say so: `local-only, unsigned by Permission Protocol`.
 
 With a `cloud:` section, a held call is released only by a receipt that a **named human signed** in Permission Protocol, and that anyone can verify with Permission Protocol's public key.
@@ -310,7 +322,9 @@ export PP_INSTALL_TOKEN=pp_live_...   # a workspace API key with the single scop
 mcp-guard --config pp.config.yaml --agent-id claude-code -- node my-mcp-server.js
 ```
 
-Create the token in Permission Protocol under Settings > Developer access, with the scope `mcp:guard` and nothing else. It can open, read and redeem this install's own requests. It cannot approve anything. Instead of the variable you can put it in `~/.config/mcp-guard/install-token` (owner-readable only). The wrapped server never sees it.
+Create the token in Permission Protocol under Settings > Developer access, with the scope `mcp:guard` and nothing else. It can open, read and redeem this install's own requests. It cannot approve anything. The guard reads it from `PP_INSTALL_TOKEN`, then the OS keychain (where `init` puts it), then `~/.config/mcp-guard/install-token` (owner-readable only). The wrapped server never sees it.
+
+**Checking a receipt later.** `mcp-guard receipt verify <receipt id> --receipts-path <file>` re-verifies a logged receipt offline against the pinned keys and prints who signed what.
 
 **What happens to a held call**
 

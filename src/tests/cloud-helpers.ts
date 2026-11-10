@@ -128,6 +128,8 @@ export interface FakePp {
   /** Requests received, newest last. */
   calls: Array<{ method: string; path: string; authorization: string | null; body: any }>;
   redeemed: string[];
+  /** Device login: what the person in the browser does, after `pollsBeforeDecision` token polls. */
+  device: { decision: 'connect' | 'cancel' | 'never'; pollsBeforeDecision: number; workspace: { name: string; slug: string }; started: number };
   close(): Promise<void>;
 }
 
@@ -153,7 +155,11 @@ export async function startFakePp(token: string): Promise<FakePp> {
   const requests = new Map<string, FakeRequest>();
   let n = 0;
 
-  const state: FakePp = { url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], close: async () => undefined };
+  const state: FakePp = {
+    url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], close: async () => undefined,
+    device: { decision: 'connect', pollsBeforeDecision: 1, workspace: { name: 'Acme Eng', slug: 'acme-eng' }, started: 0 },
+  };
+  const devicePolls = new Map<string, number>();
 
   function view(r: FakeRequest): Record<string, unknown> {
     const base = { requestId: r.id, fingerprint: r.fingerprint };
@@ -197,6 +203,24 @@ export async function startFakePp(token: string): Promise<FakePp> {
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(json));
     };
+    // Device login: the guard has no token yet.
+    if (req.method === 'POST' && path === '/api/mcp/device/start') {
+      state.device.started += 1;
+      const deviceCode = `ppdc_${String(state.device.started).padStart(43, 'd')}`;
+      devicePolls.set(deviceCode, 0);
+      return send(201, {
+        deviceCode, userCode: 'ABCD-EFGH', verificationUrl: `${state.url}/mcp/connect`, verificationUrlComplete: `${state.url}/mcp/connect?code=ABCD-EFGH`, expiresInSec: 600, intervalSec: 1,
+      });
+    }
+    if (req.method === 'POST' && path === '/api/mcp/device/token') {
+      const polls = devicePolls.get(body?.deviceCode);
+      if (polls === undefined) return send(400, { error: { code: 'DEVICE_CODE_INVALID', message: 'That is not a device code.' } });
+      devicePolls.set(body.deviceCode, polls + 1);
+      if (state.device.decision === 'never' || polls < state.device.pollsBeforeDecision) return send(200, { status: 'pending', intervalSec: 1 });
+      if (state.device.decision === 'cancel') return send(403, { error: { code: 'DEVICE_LOGIN_CANCELLED', message: 'The login was cancelled in the browser.' } });
+      devicePolls.delete(body.deviceCode);
+      return send(200, { status: 'connected', token, tokenId: 'key_fake_1', workspace: state.device.workspace });
+    }
     if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'UNAUTHORIZED', message: 'bad token' } });
 
     if (req.method === 'POST' && path === '/api/mcp/approval-requests') {

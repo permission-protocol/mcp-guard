@@ -4,7 +4,7 @@
 
 A held call can now be released by a receipt that a signed-in person signed in Permission Protocol, verified offline by the guard. Before this release every approval was local: decided on the guard's machine, with the approver's name taken from `--operator`.
 
-Requires Permission Protocol's MCP approval API (permission-protocol/app#1030). Until that is live in production, cloud mode against the production API gets an error answer and every held call is blocked.
+Requires Permission Protocol's MCP approval API (permission-protocol/app#1030) and, for `init`, its device login endpoints. Until those are live in production, cloud mode against the production API gets an error answer and every held call is blocked, and `init` cannot log in.
 
 ### Added
 
@@ -15,6 +15,8 @@ Requires Permission Protocol's MCP approval API (permission-protocol/app#1030). 
 - `PP_INSTALL_TOKEN` (or `~/.config/mcp-guard/install-token`, owner-only): a workspace API key with the single scope `mcp:guard`.
 - `{"cloud": ...}` lines in the receipts file: each cloud decision with its receipt id, receipt URL, signer and the signed receipt.
 - Error `-32007`: signed approvals are on but Permission Protocol could not be reached or trusted. Nothing was forwarded.
+- `mcp-guard init`: device login in the browser (no secret is copied by hand), the install token stored in the OS keychain (macOS Keychain, or the Secret Service on Linux via `secret-tool`; otherwise a 0600 file, always on Windows), detection of Claude Code and Cursor MCP configs, one server wrapped (the config file is copied aside first), one hold rule written, then a self-test that holds a do-nothing call for a signature and prints the receipt, how to verify it, and the time from start to first signed receipt.
+- `mcp-guard receipt verify <receipt id>`: re-checks a logged Permission Protocol receipt offline against the pinned keys.
 
 ### Changed
 
@@ -26,8 +28,9 @@ A rejection, a frozen workspace (signed DENIED), a timeout, an API error, a rece
 
 ### Not in this release
 
-- `mcp-guard init` (device login, token in the OS keychain, client config wrapping). The token is set by hand for now.
 - Signed approvals do not use countdowns or the local approval UI.
+- `init` wraps stdio servers only, and one per run.
+- No Windows Credential Manager support: on Windows the token is kept in an owner-only file.
 
 ## 0.3.1 — security fixes
 
