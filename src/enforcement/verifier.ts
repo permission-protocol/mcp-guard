@@ -1,8 +1,15 @@
 import stableStringify from 'fast-json-stable-stringify';
 import crypto from 'crypto';
 import { CanonicalPayload, SignedToken } from './types';
-import { ToolPolicy } from './policy';
+import { ToolPolicy, assertEnforceablePolicy } from './policy';
 import { ReplayCache, verifyDetached } from '../verify-core.js';
+
+/** A token whose format cannot prove what the policy asks for. */
+export class AuthorizationError extends Error {
+  constructor(readonly code: 'PP_ROLE_NOT_BOUND', message: string) {
+    super(message);
+  }
+}
 
 // In-memory replay cache: each authorization is honored once per process.
 const usedNonces = new ReplayCache();
@@ -27,6 +34,9 @@ export async function verifyAuthorization(
   policy: ToolPolicy,
   expectedKeyId: string = 'pp-prod-1'
 ): Promise<boolean> {
+  // A policy this token format cannot enforce is refused before anything else (PolicyError).
+  assertEnforceablePolicy(policy);
+
   // 0. Schema Validation (Fail fast)
   if (!payload || typeof payload !== 'object') {
     throw new Error('Missing or invalid payload block');
@@ -40,6 +50,10 @@ export async function verifyAuthorization(
   }
   if (!token.request_id || !token.decision || !token.payload_hash || !token.signers || !token.roles || !token.signed_at || !token.expires_at || !token.key_id || !token.signature) {
     throw new Error('Malformed token schema: missing required fields');
+  }
+  if (!Array.isArray(token.signers) || !Array.isArray(token.roles)
+    || !token.signers.every((x) => typeof x === 'string') || !token.roles.every((x) => typeof x === 'string')) {
+    throw new Error('Malformed token schema: signers and roles must be arrays of strings');
   }
   if (token.request_id !== payload.request_id) {
     throw new Error('Request ID mismatch - token does not authorize this payload');
@@ -104,35 +118,27 @@ export async function verifyAuthorization(
 
   // 6. Policy Enforcement (The Authority Plane)
   
-  // A. Multi-Sig & Role-Based Auth
-  const requiredApprovals = policy.required_approvals || 1;
-  let validSignatures = 0;
+  // A. Signer & Role-Based Auth
+  // One signature, one approval: assertEnforceablePolicy refused required_approvals > 1.
+  const signers = [...new Set(token.signers)];
 
-  // Map each signer occurrence to its aligned role (or the single role when all signers share one role).
-  const rolesBySigner = new Map<string, Set<string>>();
-  for (let i = 0; i < token.signers.length; i++) {
-    const signer = token.signers[i];
-    if (!rolesBySigner.has(signer)) rolesBySigner.set(signer, new Set());
-    if (token.roles.length === token.signers.length) {
-      rolesBySigner.get(signer)!.add(token.roles[i]);
-    } else if (token.roles.length === 1) {
-      rolesBySigner.get(signer)!.add(token.roles[0]);
-    }
+  // `roles` is one list for the whole token, not a role per signer. It is bound to a signer
+  // only when the token names exactly one; with several, a role held by one of them could
+  // be credited to another, so a role policy refuses such a token.
+  if (policy.allowed_roles && signers.length !== 1) {
+    throw new AuthorizationError(
+      'PP_ROLE_NOT_BOUND',
+      `Policy violation: allowed_roles needs a token with exactly one signer; this token lists ${signers.length} (${signers.join(', ')}) under one signature, so its roles cannot be bound to a signer`,
+    );
   }
 
-  // Each distinct signer counts once: a repeated name is not a second approval,
-  // and each counted signer must personally hold an allowed role.
-  for (const [signer, signerRoles] of rolesBySigner.entries()) {
+  const approved = signers.filter((signer) => {
     const isAllowedSigner = policy.allowed_signers ? policy.allowed_signers.includes(signer) : true;
-    const hasAllowedRole = policy.allowed_roles ? [...signerRoles].some(r => policy.allowed_roles!.includes(r)) : true;
-
-    if (isAllowedSigner && hasAllowedRole) {
-      validSignatures++;
-    }
-  }
-
-  if (validSignatures < requiredApprovals) {
-    throw new Error(`Policy violation: Requires ${requiredApprovals} valid approvals, found ${validSignatures}. Evaluated signers: ${token.signers.join(', ')}`);
+    const hasAllowedRole = policy.allowed_roles ? token.roles.some((r) => policy.allowed_roles!.includes(r)) : true;
+    return isAllowedSigner && hasAllowedRole;
+  });
+  if (approved.length < 1) {
+    throw new Error(`Policy violation: Requires 1 valid approval, found 0. Evaluated signers: ${token.signers.join(', ')}`);
   }
 
   // B. Basic Conditions

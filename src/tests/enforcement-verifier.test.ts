@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import stableStringify from 'fast-json-stable-stringify';
-import { buildAuthorizationSigningBytes, verifyAuthorization } from '../enforcement/verifier.js';
+import { AuthorizationError, buildAuthorizationSigningBytes, verifyAuthorization } from '../enforcement/verifier.js';
 import { loadPolicy, PolicyError, _resetPolicyCache, type ToolPolicy } from '../enforcement/policy.js';
 import { interceptToolCall } from '../enforcement/index.js';
 import type { CanonicalPayload, SignedToken } from '../enforcement/types.js';
@@ -116,35 +116,70 @@ describe('authorization token verification', () => {
 });
 
 describe('authorization policy enforcement', () => {
-  it('counts a repeated signer name once toward required_approvals', async () => {
-    const payload = makePayload('duplicate-signers');
-    const token = makeToken(payload, { signers: ['alice', 'alice'] });
-    await assert.rejects(
-      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, required_approvals: 2 }),
-      /Requires 2 valid approvals, found 1/,
-    );
-  });
-
-  it('accepts two distinct allowed signers for a two-approval policy', async () => {
-    const payload = makePayload('two-signers');
-    const token = makeToken(payload, { signers: ['alice', 'bob'] });
+  it('required_approvals: 1 still accepts one allowed signer holding an allowed role', async () => {
+    const payload = makePayload('one-approval');
     await assert.doesNotReject(
-      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['alice', 'bob'], required_approvals: 2 }),
+      () => verifyAuthorization(payload, makeToken(payload), publicKeyPem, { ...policy, required_approvals: 1 }),
     );
   });
 
-  it('rejects a token signed under a different key id', async () => {
-    const payload = makePayload('other-key-id');
-    const token = makeToken(payload, { key_id: 'pp-other' });
-    await assert.rejects(() => verifyAuthorization(payload, token, publicKeyPem, policy), /Untrusted key_id/);
+  it('refuses a 3-of-3 policy: three names under one signature and one key are not three approvals', async () => {
+    const payload = makePayload('three-of-three');
+    const token = makeToken(payload, { signers: ['alice', 'bob', 'carol'] });
+    await assert.rejects(
+      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_roles: undefined, allowed_signers: ['alice', 'bob', 'carol'], required_approvals: 3 }),
+      (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_UNSUPPORTED',
+    );
   });
 
-  it('rejects a two-approval policy when the second signer only holds a non-allowed role', async () => {
-    const payload = makePayload('mixed-roles');
-    const token = makeToken(payload, { signers: ['alice', 'mallory'], roles: ['admin', 'viewer'] });
+  it('refuses any required_approvals above 1, and a repeated name never counts twice', async () => {
+    for (const [id, signers] of [['two-distinct', ['alice', 'bob']], ['duplicate-signers', ['alice', 'alice']]] as const) {
+      const payload = makePayload(id);
+      const token = makeToken(payload, { signers: [...signers] });
+      await assert.rejects(
+        () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_roles: undefined, allowed_signers: ['alice', 'bob'], required_approvals: 2 }),
+        (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_UNSUPPORTED',
+      );
+    }
+  });
+
+  it('refuses invalid required_approvals and allowed lists given as strings', async () => {
+    const payload = makePayload('invalid-policy');
+    const token = makeToken(payload);
+    for (const bad of [{ required_approvals: 0 }, { required_approvals: 1.5 }, { required_approvals: '1' }, { allowed_roles: 'admin' }, { allowed_signers: 'alice' }]) {
+      await assert.rejects(
+        () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, ...(bad as any) }),
+        (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_INVALID',
+      );
+    }
+  });
+
+  it('refuses a signer who does not hold an allowed role', async () => {
+    const payload = makePayload('signer-without-role');
+    const token = makeToken(payload, { signers: ['mallory'], roles: ['viewer'] });
     await assert.rejects(
-      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['alice', 'mallory'], required_approvals: 2 }),
-      /Requires 2 valid approvals, found 1/,
+      () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['mallory'] }),
+      /Requires 1 valid approval, found 0/,
+    );
+  });
+
+  it("refuses to credit one signer's role to another: a multi-signer token under a role policy", async () => {
+    // alice holds admin; mallory is an allowed signer without it. The token's roles are one list.
+    for (const [id, roles] of [['global-role', ['admin']], ['aligned-roles', ['admin', 'viewer']]] as const) {
+      const payload = makePayload(id);
+      const token = makeToken(payload, { signers: ['alice', 'mallory'], roles: [...roles] });
+      await assert.rejects(
+        () => verifyAuthorization(payload, token, publicKeyPem, { ...policy, allowed_signers: ['mallory'] }),
+        (e: any) => e instanceof AuthorizationError && e.code === 'PP_ROLE_NOT_BOUND',
+      );
+    }
+  });
+
+  it('without a role policy, one allowed signer among several is one approval', async () => {
+    const payload = makePayload('signers-no-roles');
+    const token = makeToken(payload, { signers: ['alice', 'bob'], roles: [] });
+    await assert.doesNotReject(
+      () => verifyAuthorization(payload, token, publicKeyPem, { protected: true, allowed_signers: ['bob'], max_ttl_seconds: 300 }),
     );
   });
 
@@ -155,6 +190,45 @@ describe('authorization policy enforcement', () => {
       () => verifyAuthorization(payload, token, publicKeyPem, policy),
       /Invalid token timestamps/,
     );
+  });
+
+  it('rejects a token signed under a different key id', async () => {
+    const payload = makePayload('other-key-id');
+    const token = makeToken(payload, { key_id: 'pp-other' });
+    await assert.rejects(() => verifyAuthorization(payload, token, publicKeyPem, policy), /Untrusted key_id/);
+  });
+});
+
+describe('interceptToolCall enforces the same policy limits', () => {
+  const saved = process.env.PP_CONFIG_PATH;
+  after(() => {
+    if (saved === undefined) delete process.env.PP_CONFIG_PATH; else process.env.PP_CONFIG_PATH = saved;
+    _resetPolicyCache();
+  });
+  const usePolicy = (yaml: string) => {
+    _resetPolicyCache();
+    const dir = mkdtempSync(join(tmpdir(), 'pp-intercept-'));
+    process.env.PP_CONFIG_PATH = join(dir, 'pp.config.yaml');
+    writeFileSync(process.env.PP_CONFIG_PATH, yaml);
+  };
+  const call = (id: string, signers = ['alice']) => {
+    const payload = { ...makePayload(id), action: 'deploy' };
+    const token = makeToken(payload, { signers });
+    return { method: 'tools/call', params: { name: 'deploy', arguments: { ...payload.args, _authorization: { payload, token } } } };
+  };
+
+  it('a 3-approval policy is refused at load, and interceptToolCall does not allow the call', async () => {
+    usePolicy('tools:\n  deploy:\n    protected: true\n    allowed_signers: [alice, bob, carol]\n    required_approvals: 3\n');
+    assert.throws(() => loadPolicy(), (e: any) => e instanceof PolicyError && e.code === 'PP_POLICY_UNSUPPORTED');
+    const r = await interceptToolCall(call('intercept-3', ['alice', 'bob', 'carol']), publicKeyPem);
+    assert.equal(r.allowed, false);
+    assert.match(r.reason ?? '', /required_approvals 3 is not supported/);
+  });
+
+  it('a 1-approval policy still allows a valid authorization', async () => {
+    usePolicy('tools:\n  deploy:\n    protected: true\n    allowed_signers: [alice]\n    allowed_roles: [admin]\n    required_approvals: 1\n');
+    const r = await interceptToolCall(call('intercept-1'), publicKeyPem);
+    assert.equal(r.allowed, true, r.reason);
   });
 });
 
