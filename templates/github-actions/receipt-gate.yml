@@ -30,6 +30,12 @@
 #
 # Wire-up: trigger this workflow with the receipt JSON the approver received, e.g.
 #   gh workflow run deploy.yml -f receipt="$(cat receipt.json)"
+#
+# Exact-call binding (optional): `--require-call --call call.json` also checks the signed
+# server resource and inputHash against {"tool","operation","resource","input"}. Build that
+# file in this job from trusted values (the tool, server label, env and $GITHUB_SHA your
+# deploy actually uses). Never take it from the dispatch input: whoever supplies the
+# receipt could supply a matching call, and the check would bind nothing.
 
 name: Deploy (receipt-gated)
 

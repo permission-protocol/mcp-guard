@@ -3,7 +3,8 @@
  * Black-box replay of the October 2026 audit proofs of concept against a built
  * mcp-guard checkout (argv[2] = its root). Used by CI against the pre-fix commit
  * 1480615 (every attack must SUCCEED) and the current code (every attack must be
- * STOPPED), so the evidence for the fix is re-proven on every run.
+ * STOPPED), so the evidence for the fix is re-proven on every run. E1 and E2 replay a
+ * later, privately reported enforcement-module flaw that 1480615 also has.
  *
  *   node scripts/audit-poc.mjs <root> --expect vulnerable|fixed
  *
@@ -118,6 +119,25 @@ if (isJcs) {
   f.request_payload_hash = `${r.request_payload_hash}.scope=${r.scope}.scope_ref=.scope_sha=x`;
   f.scope = 'deploy:production'; f.scope_ref = 'refs/heads/main'; f.scope_sha = 'GOODSHA';
   record('F3 a staging approval re-split into deploy:production verifies', verifyReceiptOffline(f, getPublicKeyPem(), { scope: 'deploy:production', scope_ref: 'refs/heads/main', scope_sha: 'GOODSHA' }).valid);
+}
+
+// Enforcement module: one SignedToken (one signature, one key) presented as several approvals.
+{
+  const { verifyAuthorization, buildAuthorizationSigningBytes } = require(join(ROOT, 'dist/src/enforcement/verifier.js'));
+  const stableStringify = require('fast-json-stable-stringify');
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const pem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const t = Math.floor(Date.now() / 1000);
+  const authorize = async (id, signers, roles, policy) => {
+    const payload = { request_id: `req-${id}`, action: 'deploy', args: { env: 'production' }, issued_at: t, expires_at: t + 120, nonce: `nonce-${id}` };
+    const token = { request_id: payload.request_id, decision: 'approved', payload_hash: 'sha256:' + crypto.createHash('sha256').update(stableStringify(payload)).digest('hex'), signers, roles, signed_at: t, expires_at: t + 120, key_id: 'pp-prod-1', signature: '' };
+    token.signature = crypto.sign(null, Buffer.from(buildAuthorizationSigningBytes(token)), privateKey).toString('hex');
+    try { return (await verifyAuthorization(payload, token, pem, policy, 'pp-prod-1')) === true; } catch { return false; }
+  };
+  record('E1 one key satisfies a 3-of-3 policy by listing three signer names',
+    await authorize('e1', ['alice', 'bob', 'carol'], [], { protected: true, allowed_signers: ['alice', 'bob', 'carol'], required_approvals: 3 }));
+  record("E2 a signer without the required role is credited with another signer's role",
+    await authorize('e2', ['alice', 'mallory'], ['admin'], { protected: true, allowed_signers: ['mallory'], allowed_roles: ['admin'], required_approvals: 1 }));
 }
 
 let ok = true;

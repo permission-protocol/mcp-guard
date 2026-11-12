@@ -41,14 +41,14 @@ export function signHeld(issuer: Issuer, action: PendingAction, decider: Decider
 }
 
 /** The call the server will receive, read back from the line that is forwarded. */
-export function forwardedCall(action: PendingAction): CallInput | null {
+export function forwardedCall(action: PendingAction, resource: string): CallInput | null {
   let msg: JsonRpcMessage;
   try { msg = JSON.parse(action.forwardLine); } catch { return null; }
   if (!msg || typeof msg.method !== 'string') return null;
   const isToolCall = msg.method === TOOLS_CALL;
   const tool = isToolCall ? (msg.params as { name?: unknown } | undefined)?.name : msg.method;
   if (typeof tool !== 'string') return null;
-  return { tool, operation: msg.method, input: serverInput(msg, isToolCall) };
+  return { tool, operation: msg.method, resource, input: serverInput(msg, isToolCall) };
 }
 
 /** Verify the release receipt against the guard's own pinned key; null when it passes. */
@@ -60,7 +60,7 @@ export function checkRelease(issuer: Issuer, action: PendingAction, issued: Issu
   } catch (err) {
     return (err as Error).message;
   }
-  const call = forwardedCall(action);
+  const call = forwardedCall(action, action.kind === 'external' ? 'github-webhook' : issuer.serverLabel);
   if (!call) return 'the held call cannot be read back from its forwarded line';
   const expected: ExpectedScope | undefined = action.scope
     ? { scope: action.scope, ...(action.scope_ref ? { scope_ref: action.scope_ref } : {}), ...(action.scope_sha ? { scope_sha: action.scope_sha } : {}) }

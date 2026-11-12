@@ -1,4 +1,4 @@
-import { fingerprintOf, type KeySet, type KeySetEntry, type TrustPins } from '../signing/keys.js';
+import { fingerprintOf, isDemoKeyId, type KeySet, type KeySetEntry, type TrustPins } from '../signing/keys.js';
 
 /**
  * Permission Protocol's production receipt-signing keys, pinned in this release.
@@ -31,7 +31,5 @@ export function pinsFor(keySet: KeySet): TrustPins {
   return pins;
 }
 
-/** Permission Protocol's demo signing keys never authorize a real call. */
-export function isDemoKeyId(keyId: string): boolean {
-  return keyId.startsWith('pp-demo-');
-}
+/** Demo signing keys (Permission Protocol's `pp-demo-`, mcp-guard's `mcpg-demo-`) never authorize a real call. */
+export { isDemoKeyId };

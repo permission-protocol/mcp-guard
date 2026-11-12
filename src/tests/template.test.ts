@@ -35,6 +35,9 @@ describe('receipt-gate template (B8)', () => {
       assert.ok(!verify.run.includes(flag), `template must not pass ${flag}`);
     }
     assert.equal(verify.env.RECEIPT, '${{ inputs.receipt }}');
+    // A call taken from the dispatch input comes from whoever supplies the receipt: it binds nothing.
+    assert.equal(wf.on.workflow_dispatch.inputs.call, undefined, 'the call must not come from the dispatch input');
+    assert.ok(!Object.values(verify.env).some((v) => String(v).includes('inputs.call')));
     assert.match(verify.run, /--scope deploy:production/);
     assert.match(verify.run, /--scope-sha "\$GITHUB_SHA"/);
   });

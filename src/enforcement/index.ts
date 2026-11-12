@@ -1,6 +1,6 @@
 import { CanonicalPayload, SignedToken } from './types';
-import { loadPolicy, getToolPolicy, ToolPolicy } from './policy';
-import { verifyAuthorization } from './verifier';
+import { loadPolicy, getToolPolicy, ToolPolicy, PolicyError, assertEnforceablePolicy } from './policy';
+import { verifyAuthorization, AuthorizationError } from './verifier';
 
 export {
   CanonicalPayload,
@@ -8,7 +8,10 @@ export {
   ToolPolicy,
   loadPolicy,
   getToolPolicy,
-  verifyAuthorization
+  verifyAuthorization,
+  PolicyError,
+  AuthorizationError,
+  assertEnforceablePolicy
 };
 
 export async function interceptToolCall(
