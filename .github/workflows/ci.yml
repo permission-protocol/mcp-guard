@@ -31,6 +31,11 @@ jobs:
           node scripts/demo-slice2.mjs
           node scripts/demo-slice25.mjs
 
+      # mcp-guard init on an empty config directory against a stand-in Permission
+      # Protocol: fails unless the receipt verifies and it took under ten minutes.
+      - name: Fresh machine to first signed receipt
+        run: node scripts/e2e-first-receipt.mjs --stand-in
+
   audit-regression:
     name: Audit regression
     runs-on: ubuntu-latest

@@ -274,14 +274,15 @@ describe('cloud approvals fail closed', () => {
 
   it('no install token: enforce mode refuses to start', async () => {
     const fake = await startFakePp(TOKEN);
-    const guard = startGuard(policy(fake.url, fake), { PP_INSTALL_TOKEN: undefined, XDG_CONFIG_HOME: undefined });
+    // No variable, no keychain, and a config directory with no token file.
+    const guard = startGuard(policy(fake.url, fake), { PP_INSTALL_TOKEN: undefined, XDG_CONFIG_HOME: undefined, MCP_GUARD_TOKEN_STORE: 'file' });
     try {
       const code = await new Promise<number | null>((resolve) => {
         guard.proc.on('exit', resolve);
         setTimeout(() => resolve(-1), 5_000);
       });
       assert.equal(code, 1);
-      assert.match(guard.stderr(), /no install token: set PP_INSTALL_TOKEN/);
+      assert.match(guard.stderr(), /no install token: run `mcp-guard init`, or set PP_INSTALL_TOKEN/);
       assert.equal(guard.serverLog().length, 0);
     } finally {
       guard.stop();
