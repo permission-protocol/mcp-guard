@@ -58,6 +58,8 @@ export interface Cmd {
   viaXargs: boolean;
   /** An earlier `cd` left the working tree, so relative paths are not inside it. */
   cwdUnknown: boolean;
+  /** The command whose output this one reads through a pipe, when known. */
+  upstream?: Cmd;
 }
 
 export interface ShellAnalysis {
@@ -644,6 +646,9 @@ export function analyzeShell(text: string): ShellAnalysis {
   analyzeInto(text, 0, st);
   // A `cd` that leaves the tree makes later relative paths unknown.
   let away = false;
+  st.out.forEach((c, i) => {
+    if (c.pipedIn && i > 0) c.upstream = st.out[i - 1];
+  });
   for (const c of st.out) {
     c.cwdUnknown = away;
     if (c.name === 'cd' || c.name === 'pushd') {

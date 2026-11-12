@@ -105,10 +105,14 @@ Catches:
 - `git push` with `--force`, `-f`, `--force-with-lease`, `--force-if-includes`, `+refspec`; to `main` / `master` (any refspec form); `--delete`, `:branch`, `--mirror`, `--all`.
 - `dd of=...`, `mkfs*`, `mke2fs`, `mkswap`, `wipefs`, `shred`, redirects into block devices.
 - `find ... -delete`, `find ... -exec rm|shred|unlink`.
+- `rm` fed by `xargs` (any flags): a definite match when the list comes from a `find` rooted outside the tree; allowed when it comes straight from a filtered `find` rooted inside the tree (`find . -name '*.o' | xargs rm`); otherwise (`cat list | xargs rm`, `xargs rm < list`, unfiltered `find . | xargs rm`, `find / | grep x | xargs rm`) it fails safe.
+- `truncate` shrinking a file outside the tree (absolute, `~`, `..`); `-s +N` / `-s >N` only extend and are allowed.
+- `mv` onto `/dev/null` or a block device, `cp` onto a block device.
+- Overwrite redirects (`>`, `>|`, `&>`, not `>>`) and `tee` without `-a` onto absolute paths or `~` / `$HOME` paths. `/dev/*`, `/tmp/<name>` and `/var/tmp/<name>` are allowed.
 - `chmod`/`chown`/`chgrp -R` on `/`, top-level system paths (depth 2 or less), `~` (depth 1 or less), `..`.
 - Destructive SQL through `psql -c`, `mysql -e`, `sqlite3 db "..."`, `clickhouse-client -q`, heredocs and here-strings; SQL piped into a client fails safe.
 
-Not caught: plain `git push` / `git push origin HEAD` while on `main` (the current branch is not known without I/O); `git reset --hard`, `git clean -fdx`, `git branch -D`; non-recursive `rm` of single files; Windows commands (`del /s`, `Remove-Item -Recurse`); destructive scripts run from files (`./cleanup.sh`, `make clean`, `npm run reset`); `docker`/`kubectl exec` into containers; `find . -name '*.pyc' -delete` is caught (a false positive by design).
+Not caught: plain `git push` / `git push origin HEAD` while on `main` (the current branch is not known without I/O); overwrite redirects onto relative paths (`> ../x`) or a fully dynamic target (`> "$OUT"`); `>>` appends; `mv` or `cp` of data over another file (`mv a /etc/passwd`); `truncate` inside the tree; `git reset --hard`, `git clean -fdx`, `git branch -D`; non-recursive `rm` of single files; Windows commands (`del /s`, `Remove-Item -Recurse`); destructive scripts run from files (`./cleanup.sh`, `make clean`, `npm run reset`); `docker`/`kubectl exec` into containers; `find . -name '*.pyc' -delete` is caught (a false positive by design).
 
 ### `terraform_destroy`
 

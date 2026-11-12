@@ -9,7 +9,7 @@
 import { overShell } from './combine.js';
 import { classifyPath, hasFlag, hasShort, operands, positionals, DYN, type Cmd, type Word } from './shell.js';
 import { sqlDestructive } from './sql.js';
-import { found, unparseable, type DetectorResult } from './types.js';
+import { found, NOT_MATCHED, unparseable, type DetectorResult } from './types.js';
 
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 const DISK_DEVICE = /^\/dev\/(sd|hd|vd|xvd|nvme|disk|rdisk|mmcblk|md|dm-|mapper\/|loop)/;
@@ -35,8 +35,8 @@ function rm(cmd: Cmd): DetectorResult | null {
     targets.push(w);
   }
   if (noPreserveRoot) return found('rm_recursive', '/');
+  if (cmd.viaXargs) return xargsTargets(cmd);
   if (!recursive && !maybeRecursive) return null;
-  if (cmd.viaXargs) return { ...unparseable('dynamic_argument', 'rm_recursive') };
   let uncertain: DetectorResult | null = null;
   for (const t of targets) {
     const { cls } = classifyPath(t, cmd.cwdUnknown);
@@ -46,6 +46,90 @@ function rm(cmd: Cmd): DetectorResult | null {
     return found('rm_recursive', t.text);
   }
   return uncertain;
+}
+
+/** Roots of a find command: operands before the first expression. */
+function findRoots(cmd: Cmd): Word[] {
+  const roots: Word[] = [];
+  for (const w of cmd.args) {
+    if (w.text.startsWith('-') || w.text === '(' || w.text === '!') break;
+    roots.push(w);
+  }
+  return roots;
+}
+
+/**
+ * rm fed by xargs: the targets come from stdin. Allowed only when the list comes straight
+ * from a filtered find rooted inside the working tree; a dangerous find root is a definite
+ * match; anything else fails safe.
+ */
+function xargsTargets(cmd: Cmd): DetectorResult {
+  const up = cmd.upstream;
+  if (up && up.name === 'find' && !cmd.cwdUnknown) {
+    const roots = findRoots(up);
+    const filtered = up.args.length > roots.length;
+    const classes = (roots.length ? roots : [{ text: '.', dynamic: false, vars: [], home: false, glob: false, quoted: false }]).map((r) => ({ r, ...classifyPath(r, up.cwdUnknown) }));
+    const danger = classes.find((c) => !['inside', 'tree_root', 'temp', 'dynamic'].includes(c.cls));
+    if (danger) return found('rm_xargs', danger.r.text);
+    if (filtered && classes.every((c) => c.cls === 'inside' || c.cls === 'tree_root' || c.cls === 'temp')) return NOT_MATCHED;
+  }
+  return unparseable('dynamic_argument', 'rm_xargs');
+}
+
+function truncateFile(cmd: Cmd): DetectorResult | null {
+  let size: string | undefined;
+  for (let k = 0; k < cmd.args.length; k++) {
+    const t = cmd.args[k].text;
+    if (t === '-s' || t === '--size') size = cmd.args[k + 1]?.text;
+    else if (t.startsWith('--size=')) size = t.slice(7);
+    else if (/^-s./.test(t)) size = t.slice(2);
+  }
+  if (size !== undefined && /^[+>]/.test(size)) return null; // only extends
+  const ops: Word[] = [];
+  for (let k = 0; k < cmd.args.length; k++) {
+    const t = cmd.args[k].text;
+    if (t === '-s' || t === '--size' || t === '-r' || t === '--reference') { k++; continue; }
+    if (t.startsWith('-')) continue;
+    ops.push(cmd.args[k]);
+  }
+  let uncertain: DetectorResult | null = null;
+  for (const p of ops) {
+    const { cls } = classifyPath(p, cmd.cwdUnknown);
+    if (cls === 'inside' || cls === 'temp' || cls === 'tree_root') continue;
+    if (cls === 'dynamic') { uncertain ??= unparseable('dynamic_argument', 'truncate_file'); continue; }
+    return found('truncate_file', p.text);
+  }
+  return uncertain;
+}
+
+/** mv / cp onto /dev/null or a block device. */
+function moveToDevice(cmd: Cmd): DetectorResult | null {
+  const tFlag = cmd.args.findIndex((w) => w.text === '-t' || w.text === '--target-directory');
+  const eq = cmd.args.find((w) => w.text.startsWith('--target-directory='));
+  const ops = operands(cmd.args);
+  const dest = tFlag >= 0 ? cmd.args[tFlag + 1]?.text : eq ? eq.text.slice(eq.text.indexOf('=') + 1) : ops.length >= 2 ? ops[ops.length - 1].text : undefined;
+  if (!dest) return null;
+  if (dest === '/dev/null' || DISK_DEVICE.test(dest)) return found(cmd.name === 'mv' ? 'move_to_device' : 'disk_write', dest);
+  return null;
+}
+
+/** An absolute or home path an overwrite would clobber; /dev, /tmp and /var/tmp are left alone. */
+function clobberable(w: Word, cwdUnknown: boolean): boolean {
+  if (w.text.startsWith('/dev/')) return false;
+  const { cls } = classifyPath(w, cwdUnknown);
+  return cls === 'absolute' || cls === 'root' || cls === 'home';
+}
+
+function overwrite(cmd: Cmd): DetectorResult | null {
+  for (const r of cmd.redirects) {
+    if (!r.target || !['>', '>|', '&>'].includes(r.op)) continue;
+    if (clobberable(r.target, cmd.cwdUnknown)) return found('overwrite_redirect', r.target.text);
+  }
+  if (cmd.name === 'tee' && !cmd.args.some((w) => w.text === '--append' || /^-[A-Za-z]*a/.test(w.text))) {
+    const t = operands(cmd.args).find((w) => clobberable(w, cmd.cwdUnknown));
+    if (t) return found('overwrite_redirect', t.text);
+  }
+  return null;
 }
 
 function find(cmd: Cmd): DetectorResult | null {
@@ -183,9 +267,11 @@ function diskRedirect(cmd: Cmd): DetectorResult | null {
 }
 
 function check(cmd: Cmd): DetectorResult | null {
-  const viaRedirect = diskRedirect(cmd);
+  const viaRedirect = diskRedirect(cmd) ?? overwrite(cmd);
   if (viaRedirect) return viaRedirect;
   const name = cmd.name;
+  if (name === 'truncate') return truncateFile(cmd);
+  if (name === 'mv' || name === 'cp') return moveToDevice(cmd);
   if (name === 'rm') return rm(cmd);
   if (name === 'find') return find(cmd);
   if (name === 'git') return git(cmd);
