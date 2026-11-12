@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { canonicalJsonText } from '../signing/canonical.js';
+import { mcpgKeyId } from '../signing/keys.js';
 import { ReplayCache } from '../verify-core.js';
 import { argsHashOf, callFingerprint, fingerprintOfCall } from '../cloud/fingerprint.js';
 import { PRODUCTION_KEY_SET, isDemoKeyId, pinsFor } from '../cloud/pinned-keys.js';
@@ -186,6 +187,15 @@ describe('a real signature for something else', () => {
     const demo = testPpIssuer('pp-demo-k1');
     refused(mintCloudReceipt(demo, { fingerprint: FINGERPRINT, requestId: REQUEST_ID }), 'DEMO_KEY', { keySet: demo.keySet, trust: demo.trust });
     assert.equal(isDemoKeyId('pp-demo-k1'), true);
+  });
+
+  it("an mcp-guard demo key (mcpg-demo-) in a supplied key set, even claiming production scope", () => {
+    const base = testPpIssuer();
+    const keyId = mcpgKeyId(Buffer.from(base.publicKeyB64, 'base64'), true);
+    const keySet = { issuer: 'https://pp.test', keys: [{ key_id: keyId, alg: 'ed25519', public_key_b64: base.publicKeyB64 }] };
+    const demo = { ...base, keyId, keySet, trust: pinsFor(keySet) };
+    refused(mintCloudReceipt(demo, { fingerprint: FINGERPRINT, requestId: REQUEST_ID }), 'DEMO_KEY', { keySet, trust: demo.trust });
+    assert.equal(isDemoKeyId(keyId), true);
   });
 });
 

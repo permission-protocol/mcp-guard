@@ -1,7 +1,7 @@
 import { RECEIPT_VERSION, signingBytes, type Receipt, type ReceiptEnvelope } from './receipt.js';
 import { verifyDetached, type PinnedKeys, type ReplayCache } from './verify-core.js';
 import { checkArtifact } from './signing/artifact.js';
-import { fingerprintOf, type TrustPins } from './signing/keys.js';
+import { fingerprintOf, isDemoKeyId, type TrustPins } from './signing/keys.js';
 import { hashablePayloadInputHash } from './issuer.js';
 
 /**
@@ -112,9 +112,9 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
       scope_sha: e.scope?.sha ?? null,
     };
     for (const field of ['scope', 'scope_ref', 'scope_sha'] as const) {
-      const want = opts.expected[field];
-      if (want !== undefined && actual[field] !== want) {
-        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want}" but receipt has ${field}="${actual[field] ?? ''}".`);
+      const want = opts.expected[field] ?? null;
+      if (actual[field] !== want) {
+        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want ?? ''}" but receipt has ${field}="${actual[field] ?? ''}".`);
       }
     }
   }
@@ -134,10 +134,11 @@ export function verifyReceipt(receipt: Receipt, keys: PinnedKeys, opts: VerifyOp
 // payload, never from the artifact's unsigned convenience fields.
 // ---------------------------------------------------------------------------
 
-/** The call a receipt is checked against: its `inputHash` must recompute from it. */
+/** The call a receipt is checked against: its resource must match and its `inputHash` must recompute from it. */
 export interface CallInput {
   tool: string;
   operation: string;
+  resource: string;
   input: unknown;
 }
 
@@ -172,6 +173,16 @@ export function requestScope(payload: Record<string, unknown>): { capability: st
   };
 }
 
+function requestResource(payload: Record<string, unknown>): string | null {
+  if (typeof payload.requestJson !== 'string') return null;
+  try {
+    const resource = JSON.parse(payload.requestJson)?.action?.resource;
+    return typeof resource === 'string' ? resource : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A decision a person made, as opposed to a policy, a timer or an unattributed click. */
 function humanDecided(payload: Record<string, unknown>): boolean {
   return typeof payload.deciderId === 'string'
@@ -203,10 +214,15 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     reasons.push(`PP_EXPIRED: receipt expired at ${new Date(expires).toISOString()} (now ${now.toISOString()}).`);
   }
 
-  if (payload.scope === 'demo' && !opts.allowDemo) {
-    reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key (scope "demo") and authorizes nothing real.');
+  // The signed key id is the verifying key's id (checkArtifact refuses any other).
+  if ((payload.scope === 'demo' || isDemoKeyId(payload.signatureKeyId)) && !opts.allowDemo) {
+    reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key and authorizes nothing real.');
   }
   if (opts.call) {
+    const resource = requestResource(payload);
+    if (resource !== opts.call.resource) {
+      reasons.push(`PP_RESOURCE_MISMATCH: expected resource ${JSON.stringify(opts.call.resource)}, but the signed request has ${JSON.stringify(resource)}.`);
+    }
     const want = hashablePayloadInputHash(opts.call.tool, opts.call.operation, opts.call.input);
     if (payload.inputHash !== want) {
       reasons.push(`INPUT_HASH_MISMATCH: the signed inputHash is ${JSON.stringify(payload.inputHash ?? null)}, the call hashes to ${want}.`);
@@ -228,9 +244,9 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
       scope_sha: scope?.commitSha ?? null,
     };
     for (const field of ['scope', 'scope_ref', 'scope_sha'] as const) {
-      const want = opts.expected[field];
-      if (want !== undefined && actual[field] !== want) {
-        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want}" but the signed request has "${actual[field] ?? ''}".`);
+      const want = opts.expected[field] ?? null;
+      if (actual[field] !== want) {
+        reasons.push(`PP_SCOPE_MISMATCH: expected ${field}="${want ?? ''}" but the signed request has "${actual[field] ?? ''}".`);
       }
     }
   }

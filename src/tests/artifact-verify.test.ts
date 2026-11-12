@@ -5,6 +5,7 @@ import { buildArtifact, checkArtifact, type ReceiptArtifact } from '../signing/a
 import { canonicalizeJcsV2, canonicalJsonText } from '../signing/canonical.js';
 import { fingerprintOf, mcpgKeyId, rawPublicKey, parseTrust, type KeySet } from '../signing/keys.js';
 import { verifyArtifactReceipt } from '../receipt-verify.js';
+import { hashablePayloadInputHash } from '../issuer.js';
 import { ReplayCache } from '../verify-core.js';
 
 function keypair(demo = false) {
@@ -123,8 +124,46 @@ describe('gate checks on jcs_v2 artifacts (the G7 cases)', () => {
     assert.deepEqual(v(record()).reasons, []);
   });
 
+  it('a demo key is refused even when the signed scope claims production', () => {
+    const demo = keypair(true);
+    const demoSet: KeySet = { keys: [demo.entry] };
+    const demoPins = new Map([[demo.keyId, demo.fp]]);
+    const artifact = buildArtifact(record({ signatureKeyId: demo.keyId }), demo.privateKey);
+    const result = verifyArtifactReceipt({ artifact }, demoSet, {
+      trust: demoPins,
+      expected: { scope: 'deploy:production', scope_sha: SHA }
+    });
+    assert.ok(result.reasons.some((x) => x.startsWith('PP_DEMO_RECEIPT')));
+  });
+
+  it("a Permission Protocol demo key (pp-demo-) is refused even when the signed scope claims production", () => {
+    const base = keypair();
+    const entry = { ...base.entry, key_id: 'pp-demo-k1' };
+    const artifact = buildArtifact(record({ signatureKeyId: 'pp-demo-k1' }), base.privateKey);
+    const result = verifyArtifactReceipt({ artifact }, { keys: [entry] }, {
+      trust: new Map([['pp-demo-k1', base.fp]]),
+      expected: { scope: 'deploy:production', scope_sha: SHA },
+    });
+    assert.ok(result.reasons.some((x) => x.startsWith('PP_DEMO_RECEIPT')), result.reasons.join(' '));
+    assert.equal(verifyArtifactReceipt({ artifact }, { keys: [entry] }, { trust: new Map([['pp-demo-k1', base.fp]]), allowDemo: true }).valid, true);
+  });
+
+  it('exact-call verification binds the destination server resource', () => {
+    const input = { env: 'production', sha: SHA };
+    const rec = record({ inputHash: hashablePayloadInputHash('deploy', 'tools/call', input) });
+    const call = { tool: 'deploy', operation: 'tools/call', input };
+    assert.deepEqual(v(rec, { call: { ...call, resource: 'srv' } }).reasons, []);
+    const r = v(rec, { call: { ...call, resource: 'other-server' } });
+    assert.ok(r.reasons.some((x) => x.startsWith('PP_RESOURCE_MISMATCH')));
+  });
+
   it('a receipt for another commit is refused', () => {
     const r = v(record({ requestJson: canonicalJsonText({ action: { tool: 'deploy' }, scope: { capability: 'deploy:production', commitSha: 'f'.repeat(40) } }) }));
+    assert.ok(r.reasons.some((x) => x.startsWith('PP_SCOPE_MISMATCH')));
+  });
+
+  it('a receipt restricted to a specific scope.ref is refused when expected omits scope_ref', () => {
+    const r = v(record({ requestJson: canonicalJsonText({ action: { tool: 'deploy' }, scope: { capability: 'deploy:production', ref: 'refs/heads/canary', commitSha: SHA } }) }));
     assert.ok(r.reasons.some((x) => x.startsWith('PP_SCOPE_MISMATCH')));
   });
 

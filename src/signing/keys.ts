@@ -52,6 +52,14 @@ export function mcpgKeyId(rawKey: Buffer, demo = false): string {
   return `mcpg-${demo ? 'demo-' : ''}${createHash('sha256').update(rawKey).digest('hex').slice(0, 16)}`;
 }
 
+/**
+ * Demo signing keys never authorize a real action, whatever scope their receipt claims:
+ * mcp-guard's own (`mcpg-demo-`) and Permission Protocol's (`pp-demo-`).
+ */
+export function isDemoKeyId(keyId: unknown): boolean {
+  return typeof keyId === 'string' && (keyId.startsWith('mcpg-demo-') || keyId.startsWith('pp-demo-'));
+}
+
 /** Parse `--trust KEY_ID=sha256:<hex>` values. */
 export function parseTrust(values: string[]): TrustPins {
   const pins: TrustPins = new Map();

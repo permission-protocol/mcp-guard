@@ -202,12 +202,12 @@ mcp-guard verify --receipt-file receipt.json --keys .pp/keys.json \
   --trust "$MCP_GUARD_TRUST" --scope deploy:production --scope-sha "$GITHUB_SHA"
 ```
 
-The verifier requires `--scope`, trusts only the key set you give it (and, with `--trust`, only the pinned key), requires a signed `APPROVED` status and an unexpired signed `expiresAt`, checks scope exactly, and refuses:
+The verifier requires `--scope`, trusts only the key set you give it (and, with `--trust`, only the pinned key), requires a signed `APPROVED` status and an unexpired signed `expiresAt`, checks scope exactly (a receipt that names a `scope.ref` or commit the gate did not ask for is refused too), and refuses:
 
 - scoped receipts no person approved (`--allow-policy-approval` accepts them);
-- receipts signed by a demo key (`--allow-demo`);
+- receipts signed by a demo key (`mcpg-demo-*` or `pp-demo-*`), whatever scope they claim (`--allow-demo`);
 - mcp-guard 0.2 receipts (`--accept-legacy --pubkey <pem>` accepts them, labelled legacy);
-- with `--call call.json` (`{"tool", "operation", "input"}`), a receipt whose `inputHash` does not recompute from the call.
+- with `--call call.json` (`{"tool", "operation", "resource", "input"}`), a receipt whose signed resource differs or whose `inputHash` does not recompute from the call. `--require-call` makes `--call` mandatory. Build `call.json` from values the gate trusts, never from the input that delivers the receipt; a legacy 0.2 receipt cannot be checked this way and is refused.
 
 Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key set, pin and receipt only from trusted places.
 
