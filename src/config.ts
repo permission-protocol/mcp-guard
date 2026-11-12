@@ -3,8 +3,32 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { PRODUCTION_API_URL } from './cloud/pinned-keys.js';
 import type { KeySetEntry } from './signing/keys.js';
+import { DETECTOR_NAMES, isDetectorName, type DetectorName } from './detect/index.js';
 
 export type Action = 'allow' | 'block' | 'require_approval';
+
+/** A condition on one named top-level string argument. Exactly one of equals / contains / pattern. */
+export interface MatchCondition {
+  equals?: string;
+  contains?: string;
+  pattern?: string;
+  ignore_case?: boolean;
+  /** `pattern`, compiled once at load. */
+  regex?: RegExp;
+}
+
+/** Run a named detector over the listed arguments; the rule matches when it fires on any. */
+export interface DetectSpec {
+  detector: DetectorName;
+  args: string[];
+}
+
+/** Matches any tool, for rules narrowed by `match` or `detect`. */
+export const ANY_TOOL = '*';
+export const MAX_PATTERN_LENGTH = 512;
+const MAX_DETECT_ARGS = 16;
+const MATCH_KEYS = new Set(['equals', 'contains', 'pattern', 'ignore_case']);
+const DETECT_KEYS = new Set(['detector', 'args']);
 
 // Permission Deck Slice 1: reversibility is the primary risk axis.
 export type Reversibility = 'reversible' | 'irreversible';
@@ -15,6 +39,10 @@ export interface Rule {
   method?: string;
   /** Tool name; required for `tools/call` rules, forbidden for other methods. */
   tool?: string;
+  /** All conditions must hold. Keys are top-level argument names. */
+  match?: Record<string, MatchCondition>;
+  /** Narrow the rule to calls a detector flags. */
+  detect?: DetectSpec;
   action: Action;
   // --- Permission Deck classifier axes (all optional) ---
   reversibility?: Reversibility;  // reversible -> countdown auto-release; irreversible -> hard stop
@@ -88,7 +116,7 @@ const TOP_LEVEL_KEYS = new Set([
   'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing', 'cloud',
 ]);
 const RULE_KEYS = new Set([
-  'id', 'method', 'tool', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
+  'id', 'method', 'tool', 'match', 'detect', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
 ]);
 
 export function loadConfig(configPath: string): Config {
@@ -159,15 +187,31 @@ export function parseConfig(raw: string): Config {
     } else if (r.tool !== undefined) {
       throw new Error(`Rule ${i}: "tool" applies only to ${TOOLS_CALL} rules`);
     }
-    const target = `${method}\u0000${r.tool ?? ''}`;
-    if (seenTargets.has(target)) {
-      throw new Error(`Rule ${i} duplicates another rule for ${r.tool ? `tool "${r.tool}"` : `method "${method}"`}`);
-    }
-    seenTargets.add(target);
-
     if (!VALID_ACTIONS.includes(r.action)) {
       throw new Error(`Rule ${i} has invalid action: "${r.action}"`);
     }
+
+    const conditional = r.match !== undefined || r.detect !== undefined;
+    if (conditional && method !== TOOLS_CALL) {
+      throw new Error(`Rule ${i}: "match" and "detect" apply only to ${TOOLS_CALL} rules`);
+    }
+    if (r.tool === ANY_TOOL && !conditional) {
+      throw new Error(`Rule ${i}: tool "*" requires "match" or "detect" (a bare wildcard would match every call)`);
+    }
+    const match = r.match === undefined ? undefined : parseMatch(r.match, i);
+    const detect = r.detect === undefined ? undefined : parseDetect(r.detect, i);
+    if (detect && r.action === 'allow') {
+      throw new Error(`Rule ${i}: "detect" finds dangerous calls; it cannot be used with action "allow"`);
+    }
+
+    // First match wins. An unconditional rule for a target matches every call to it, so
+    // a second unconditional rule, or any later conditional rule, for that target is dead.
+    const target = `${method}\u0000${r.tool ?? ''}`;
+    if (seenTargets.has(target)) {
+      if (!conditional) throw new Error(`Rule ${i} duplicates another rule for ${r.tool ? `tool "${r.tool}"` : `method "${method}"`}`);
+      throw new Error(`Rule ${i} ("${r.id}") can never match: an earlier rule without match/detect already matches every call to tool "${r.tool}"`);
+    }
+    if (!conditional) seenTargets.add(target);
     if (r.reversibility !== undefined && !VALID_REVERSIBILITY.includes(r.reversibility)) {
       throw new Error(`Rule ${i} has invalid reversibility: "${r.reversibility}". Must be one of: ${VALID_REVERSIBILITY.join(', ')}`);
     }
@@ -197,6 +241,8 @@ export function parseConfig(raw: string): Config {
       id: r.id,
       method,
       ...(r.tool !== undefined ? { tool: r.tool } : {}),
+      ...(match ? { match } : {}),
+      ...(detect ? { detect } : {}),
       action: r.action as Action,
       ...(r.reversibility !== undefined ? { reversibility: r.reversibility as Reversibility } : {}),
       ...(r.countdown_seconds !== undefined ? { countdown_seconds: r.countdown_seconds } : {}),
@@ -218,6 +264,64 @@ export function parseConfig(raw: string): Config {
     policy_sha256: createHash('sha256').update(raw).digest('hex'),
     ...(parsed.cloud !== undefined ? { cloud: parseCloud(parsed.cloud) } : {}),
   };
+}
+
+function argName(v: unknown, where: string): string {
+  if (typeof v !== 'string' || !v) throw new Error(`${where}: argument names must be non-empty strings`);
+  if (v.startsWith('_pp')) throw new Error(`${where}: cannot read agent metadata (_pp)`);
+  return v;
+}
+
+function parseMatch(value: unknown, i: number): Record<string, MatchCondition> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Rule ${i}: "match" must map argument names to conditions`);
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (!entries.length) throw new Error(`Rule ${i}: "match" must name at least one argument`);
+  const out: Record<string, MatchCondition> = {};
+  for (const [arg, raw] of entries) {
+    const where = `Rule ${i} match.${arg}`;
+    argName(arg, `Rule ${i} match`);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${where} must be an object with one of: equals, contains, pattern`);
+    const cond = raw as Record<string, unknown>;
+    for (const key of Object.keys(cond)) {
+      if (!MATCH_KEYS.has(key)) throw new Error(`${where} has unknown key: "${key}"`);
+    }
+    const ops = (['equals', 'contains', 'pattern'] as const).filter((k) => cond[k] !== undefined);
+    if (ops.length !== 1) throw new Error(`${where} must have exactly one of: equals, contains, pattern`);
+    const op = ops[0];
+    if (typeof cond[op] !== 'string') throw new Error(`${where}.${op} must be a string`);
+    if (cond.ignore_case !== undefined && typeof cond.ignore_case !== 'boolean') throw new Error(`${where}.ignore_case must be true or false`);
+    const text = cond[op] as string;
+    const ignoreCase = cond.ignore_case === true;
+    const parsed: MatchCondition = { [op]: text, ...(ignoreCase ? { ignore_case: true } : {}) };
+    if (op === 'contains' && !text) throw new Error(`${where}.contains must not be empty`);
+    if (op === 'pattern') {
+      if (!text) throw new Error(`${where}.pattern must not be empty`);
+      if (text.length > MAX_PATTERN_LENGTH) throw new Error(`${where}.pattern is longer than ${MAX_PATTERN_LENGTH} characters`);
+      try {
+        parsed.regex = new RegExp(text, ignoreCase ? 'i' : '');
+      } catch (err: any) {
+        throw new Error(`${where}.pattern is not a valid regular expression (${err.message})`);
+      }
+    }
+    out[arg] = parsed;
+  }
+  return out;
+}
+
+function parseDetect(value: unknown, i: number): DetectSpec {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Rule ${i}: "detect" must be an object with detector and args`);
+  const d = value as Record<string, unknown>;
+  for (const key of Object.keys(d)) {
+    if (!DETECT_KEYS.has(key)) throw new Error(`Rule ${i} detect has unknown key: "${key}"`);
+  }
+  if (!isDetectorName(d.detector)) {
+    throw new Error(`Rule ${i} detect.detector "${String(d.detector)}" is unknown. Must be one of: ${DETECTOR_NAMES.join(', ')}`);
+  }
+  if (!Array.isArray(d.args) || d.args.length === 0) throw new Error(`Rule ${i} detect.args must be a non-empty list of argument names`);
+  if (d.args.length > MAX_DETECT_ARGS) throw new Error(`Rule ${i} detect.args lists more than ${MAX_DETECT_ARGS} arguments`);
+  const args = d.args.map((a) => argName(a, `Rule ${i} detect.args`));
+  if (new Set(args).size !== args.length) throw new Error(`Rule ${i} detect.args lists an argument twice`);
+  return { detector: d.detector, args };
 }
 
 /** The origin of an API URL: https anywhere, http only on loopback. No path, query or credentials. */
