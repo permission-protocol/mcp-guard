@@ -111,6 +111,7 @@ describe('mcp-guard verify (receipt gate CLI)', () => {
     const call = write('require-call-good.json', {
       tool: 'deploy',
       operation: 'tools/call',
+      resource: 'test-server',
       input: { env: 'production', sha: SHA }
     });
     assert.equal(gate(file, ['--require-call', '--call', call]).code, 0);
@@ -155,5 +156,8 @@ describe('mcp-guard verify on demo and legacy receipts', () => {
     const accepted = quiet(() => runVerify([...base, '--accept-legacy']));
     assert.equal(accepted.code, 0, accepted.out);
     assert.match(accepted.out, /legacy mcp-guard 0\.2 receipt/);
+    // A legacy receipt signs no inputHash: an exact-call check is refused, never skipped.
+    assert.equal(quiet(() => runVerify([...base, '--accept-legacy', '--require-call'])).code, 2);
+    assert.equal(quiet(() => runVerify([...base, '--accept-legacy', '--call', join(FIXTURE, 'receipt.json')])).code, 2);
   });
 });

@@ -115,6 +115,8 @@ export function runVerify(argv: string[]): number {
       ciError(`No receipt = No deploy. This is intentional. Receipt ${receiptIdOf(receipt) ?? '(unknown)'} REFUSED:\n  - LEGACY_RECEIPT_REFUSED: this is an mcp-guard 0.2 receipt, not the org receipt standard. Re-approve the action with mcp-guard 0.3, or pass --accept-legacy with --pubkey to accept 0.2 receipts.`);
       return 1;
     }
+    // A 0.2 receipt carries no inputHash: an exact-call check cannot be done, so it is refused, never skipped.
+    if (flags.call !== undefined || bools.has('require-call')) return fail('--call / --require-call cannot be checked on a legacy mcp-guard 0.2 receipt: it does not sign the exact call');
     if (pubkeys.length === 0) return fail('--pubkey is required for a legacy mcp-guard 0.2 receipt: the gate verifies only against keys you pin');
     const keys: PinnedKeys = {};
     for (const k of pubkeys) {
@@ -139,6 +141,7 @@ export function runVerify(argv: string[]): number {
     let pins;
     try { pins = trust.length ? parseTrust(trust) : null; } catch (e: any) { return fail(e.message); }
     let call: CallInput | undefined;
+    if ('call' in flags && !flags.call) return fail('--call needs a value');
     if (flags.call) {
       const cp = resolve(flags.call);
       if (!existsSync(cp)) return fail(`call file not found: ${cp}`);

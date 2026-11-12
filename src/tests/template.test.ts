@@ -35,9 +35,9 @@ describe('receipt-gate template (B8)', () => {
       assert.ok(!verify.run.includes(flag), `template must not pass ${flag}`);
     }
     assert.equal(verify.env.RECEIPT, '${{ inputs.receipt }}');
-    assert.equal(verify.env.CALL, '${{ inputs.call }}');
-    assert.match(verify.run, /--require-call/);
-    assert.match(verify.run, /--call "\$RUNNER_TEMP\/call.json"/);
+    // A call taken from the dispatch input comes from whoever supplies the receipt: it binds nothing.
+    assert.equal(wf.on.workflow_dispatch.inputs.call, undefined, 'the call must not come from the dispatch input');
+    assert.ok(!Object.values(verify.env).some((v) => String(v).includes('inputs.call')));
     assert.match(verify.run, /--scope deploy:production/);
     assert.match(verify.run, /--scope-sha "\$GITHUB_SHA"/);
   });
@@ -57,10 +57,8 @@ describe('receipt-gate template (B8)', () => {
       })));
       return p;
     };
-    const callFile = join(dir, 'call.json');
-    writeFileSync(callFile, JSON.stringify({ tool: 'deploy', operation: 'tools/call', input: { env: 'production', sha } }));
     // The template's argv with its shell variables substituted.
-    const args = (file: string) => ['--receipt-file', file, '--keys', join(dir, 'trust', '.pp', 'keys.json'), '--trust', `${key.keyId}=${key.fingerprint}`, '--require-call', '--call', callFile, '--scope', 'deploy:production', '--scope-sha', sha];
+    const args = (file: string) => ['--receipt-file', file, '--keys', join(dir, 'trust', '.pp', 'keys.json'), '--trust', `${key.keyId}=${key.fingerprint}`, '--scope', 'deploy:production', '--scope-sha', sha];
     const log = console.log, err = console.error;
     console.log = () => {}; console.error = () => {};
     try {
