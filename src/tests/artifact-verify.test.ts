@@ -136,6 +136,18 @@ describe('gate checks on jcs_v2 artifacts (the G7 cases)', () => {
     assert.ok(result.reasons.some((x) => x.startsWith('PP_DEMO_RECEIPT')));
   });
 
+  it("a Permission Protocol demo key (pp-demo-) is refused even when the signed scope claims production", () => {
+    const base = keypair();
+    const entry = { ...base.entry, key_id: 'pp-demo-k1' };
+    const artifact = buildArtifact(record({ signatureKeyId: 'pp-demo-k1' }), base.privateKey);
+    const result = verifyArtifactReceipt({ artifact }, { keys: [entry] }, {
+      trust: new Map([['pp-demo-k1', base.fp]]),
+      expected: { scope: 'deploy:production', scope_sha: SHA },
+    });
+    assert.ok(result.reasons.some((x) => x.startsWith('PP_DEMO_RECEIPT')), result.reasons.join(' '));
+    assert.equal(verifyArtifactReceipt({ artifact }, { keys: [entry] }, { trust: new Map([['pp-demo-k1', base.fp]]), allowDemo: true }).valid, true);
+  });
+
   it('exact-call verification binds the destination server resource', () => {
     const input = { env: 'production', sha: SHA };
     const rec = record({ inputHash: hashablePayloadInputHash('deploy', 'tools/call', input) });

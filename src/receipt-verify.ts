@@ -1,7 +1,7 @@
 import { RECEIPT_VERSION, signingBytes, type Receipt, type ReceiptEnvelope } from './receipt.js';
 import { verifyDetached, type PinnedKeys, type ReplayCache } from './verify-core.js';
 import { checkArtifact } from './signing/artifact.js';
-import { fingerprintOf, type TrustPins } from './signing/keys.js';
+import { fingerprintOf, isDemoKeyId, type TrustPins } from './signing/keys.js';
 import { hashablePayloadInputHash } from './issuer.js';
 
 /**
@@ -214,10 +214,8 @@ export function verifyArtifactReceipt(envelope: unknown, keySet: unknown, opts: 
     reasons.push(`PP_EXPIRED: receipt expired at ${new Date(expires).toISOString()} (now ${now.toISOString()}).`);
   }
 
-  const demoKey =
-    typeof payload.signatureKeyId === 'string' &&
-    payload.signatureKeyId.startsWith('mcpg-demo-');
-  if ((payload.scope === 'demo' || demoKey) && !opts.allowDemo) {
+  // The signed key id is the verifying key's id (checkArtifact refuses any other).
+  if ((payload.scope === 'demo' || isDemoKeyId(payload.signatureKeyId)) && !opts.allowDemo) {
     reasons.push('PP_DEMO_RECEIPT: the receipt was signed by a demo key and authorizes nothing real.');
   }
   if (opts.call) {
