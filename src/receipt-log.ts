@@ -51,6 +51,39 @@ export function emitHold(hold: { id: string | null; method: string; tool: string
   append(JSON.stringify({ hold }), path);
 }
 
+/**
+ * One cloud decision on a held call, appended as a `{ "cloud": ... }` line: what was
+ * decided, the Permission Protocol receipt id and URL, who signed, and the signed
+ * artifact itself so the line verifies offline later. Never the arguments.
+ */
+export interface CloudDecisionLine {
+  decision: 'released' | 'denied' | 'expired' | 'blocked';
+  requestId: string | null;
+  receiptId: string | null;
+  receiptUrl: string | null;
+  fingerprint: string;
+  method: string;
+  tool: string | null;
+  server: string;
+  agentId: string;
+  ruleId: string | null;
+  decider: { id: string; display: string | null; authMethod: string | null } | null;
+  /** Why it was not released. */
+  reason: string | null;
+  /** The refusal code of a block. */
+  code: string | null;
+  at: string;
+  artifact: unknown | null;
+}
+
+export function emitCloudDecision(line: CloudDecisionLine, path: string = defaultReceiptsPath()): void {
+  const who = line.decider ? ` by ${line.decider.display ?? line.decider.id}` : '';
+  const receipt = line.receiptId ? ` receipt ${line.receiptId}` : ' no receipt';
+  const why = line.decision === 'released' ? '' : ` (${line.code ? `${line.code}: ` : ''}${line.reason ?? 'no reason given'})`;
+  process.stderr.write(`[mcp-guard] cloud ${line.decision.toUpperCase()} "${line.tool ?? line.method}"${who}:${receipt}${why}\n`);
+  append(JSON.stringify({ cloud: line }), path);
+}
+
 /** Test helper. */
 export function _resetReceiptLog(): void {
   recent.length = 0;

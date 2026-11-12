@@ -1,0 +1,36 @@
+{
+  "description": "A receipt the Permission Protocol app signed for an MCP Guard call (app PR 1030, local run, jcs_v3, test signing key). Captured from GET /api/mcp/approval-requests/{id}; public material only.",
+  "call": {
+    "server": "filesystem",
+    "tool": "delete_file",
+    "args": {
+      "path": "/srv/payroll/2026-11.csv",
+      "mode": "delete"
+    }
+  },
+  "requestId": "mcpreq_9680eba6437e2538c21dd5f9d9ae0ee6",
+  "fingerprint": "sha256:19688de56f2a322c5ebc0f1de6a017e5db9f59fbb60b1fd00441af1932af28a4",
+  "keySet": {
+    "issuer": "https://app.permissionprotocol.com",
+    "keys": [
+      {
+        "key_id": "pp_local_mcp_walk_k1",
+        "alg": "ed25519",
+        "public_key_b64": "t8I/t8vVGfjvT9pDEg/nbC0yjpkGOqWEhKD8hZ7Zff0="
+      }
+    ]
+  },
+  "artifact": {
+    "receipt_id": "cmwb3i2op00011dp1yk8an84h",
+    "status": "APPROVED",
+    "receipt_version": 3,
+    "canonicalization": "jcs_v3",
+    "key_id": "pp_local_mcp_walk_k1",
+    "alg": "ed25519",
+    "signed_payload_hash": "f9d1be401cdb88468754d2f508a9058100f4964324b0184731aaf1d4aec85b88",
+    "signature_b64": "i/pMAntX60jNwkRQ2HpChaI11v4FdvpORutYaOKNLSLVjKArkdokI+c2bnGEwaKMXm29zy8ItPlQuB5JJ8I/Dg==",
+    "payload_bytes_b64": "eyJhZ2VudElkIjoiY2xhdWRlLWNvZGUiLCJhdHRyaWJ1dGlvbkNvbmZpZGVuY2UiOiJjcmVkZW50aWFsZWQiLCJjYW5vbmljYWxpemF0aW9uIjoiamNzX3YzIiwiY3JlYXRlZEF0IjoiMjAyNi0xMS0xMFQxOTo0MDo1NC45MzdaIiwiZGVjaWRlckF1dGhNZXRob2QiOiJzZXNzaW9uIiwiZGVjaWRlckRpc3BsYXkiOiJNYXJpYSBTaWduZXIiLCJkZWNpZGVySWQiOiJ1c2VyOm1jcC13YWxrLW93bmVyIiwiZXhwaXJlc0F0IjoiMjAyNi0xMS0xMFQxOTo1MToyNC4wNjFaIiwiaWQiOiJjbXdiM2kyb3AwMDAxMWRwMXlrOGFuODRoIiwicG9saWN5VmVyc2lvbiI6InBvbF92MV9oYXJkY29kZWQiLCJwdWJsaWNQcm9qZWN0aW9uSnNvbiI6IntcImFjdGlvblwiOntcIm9wZXJhdGlvblwiOlwic2hhMjU2OjE5Njg4ZGU1NmYyYTMyMmM1ZWJjMGYxZGU2YTAxN2U1ZGI5ZjU5ZmJiNjBiMWZkMDA0NDFhZjE5MzJhZjI4YTRcIixcInRvb2xcIjpcIm1jcF9ndWFyZFwifSxcImNvbnRleHRcIjp7XCJlbnZpcm9ubWVudFwiOlwicHJvZHVjdGlvblwiLFwicmV2ZXJzaWJpbGl0eVwiOlwiSVJSRVZFUlNJQkxFXCJ9LFwiaW50ZW50XCI6e1wiY2F0ZWdvcnlcIjpcIm1jcF90b29sX2NhbGxcIixcIm5hbWVcIjpcIm1jcF90b29sX2NhbGxcIn0sXCJwcm9qZWN0aW9uXCI6XCJleGVjdXRlL3YxXCJ9IiwicmVhc29uQ29kZXMiOiJbXCJUT09MX0VGRkVDVDpleHRlcm5hbFwiLFwiREVDTEFSRURfT1BFUkFUSU9OX0lHTk9SRUQ6c2hhMjU2OjE5Njg4ZGU1NmYyYTMyMmM1ZWJjMGYxZGU2YTAxN2U1ZGI5ZjU5ZmJiNjBiMWZkMDA0NDFhZjE5MzJhZjI4YTRcIixcIklSUkVWRVJTSUJMRTpJUlJFVkVSU0lCTEVcIixcIlBST0RVQ1RJT05fRU5WXCIsXCJQUk9EVUNUSU9OX1JFUVVJUkVTX0FQUFJPVkFMXCJdIiwicmVjZWlwdFZlcnNpb24iOjMsInJlcXVlc3RDb21taXRtZW50Ijoic2hhMjU2OmM5ZThmZDdkZDFmMGE1YTYzYjZlMDhiZTE3M2JjOTI2MzAzMDA1NjFkMzdlZTMxMDNkMGExNjE2YWJmNmY4MjYiLCJyZXNvbHV0aW9uVHlwZSI6ImFsbG93X29uY2UiLCJyaXNrVGllciI6IkNfRVhFQ1VURV9XSVRIX0FQUFJPVkFMIiwicnVuSWQiOiJtY3ByZXFfOTY4MGViYTY0MzdlMjUzOGMyMWRkNWY5ZDlhZTBlZTYiLCJzY29wZSI6InByb2R1Y3Rpb24iLCJzaWduYXR1cmVBbGciOiJlZDI1NTE5Iiwic2lnbmF0dXJlS2V5SWQiOiJwcF9sb2NhbF9tY3Bfd2Fsa19rMSIsInN0YXR1cyI6IkFQUFJPVkVEIn0=",
+    "issued_at": "2026-11-10T19:40:54.937Z",
+    "expires_at": "2026-11-10T19:51:24.061Z"
+  }
+}

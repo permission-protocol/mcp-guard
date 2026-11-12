@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { PRODUCTION_API_URL } from './cloud/pinned-keys.js';
+import type { KeySetEntry } from './signing/keys.js';
 
 export type Action = 'allow' | 'block' | 'require_approval';
 
@@ -42,6 +44,25 @@ export interface Config {
   signing: SigningMode;
   /** sha256 of the policy source, bound into every receipt. */
   policy_sha256: string;
+  /** Present: held calls are decided by a named human through Permission Protocol. Absent: local-only. */
+  cloud?: CloudConfig;
+}
+
+export type CloudEnvironment = 'development' | 'staging' | 'production';
+
+export interface CloudConfig {
+  /** The Permission Protocol API. Defaults to production. */
+  api_url: string;
+  /** A label sent with each request and shown to the signer. It clears nothing. */
+  environment: CloudEnvironment;
+  /** How long a held call waits for a signature before it is refused. */
+  approval_timeout_seconds: number;
+  /**
+   * The receipt-signing keys to pin, ONLY for a non-production api_url (a staging or
+   * local Permission Protocol). For the production API the keys are pinned in the
+   * release (cloud/pinned-keys.ts) and naming any here is an error.
+   */
+  trust_keys?: KeySetEntry[];
 }
 
 export const DEFAULT_APPROVAL_TTL_SECONDS = 900;
@@ -52,13 +73,19 @@ export const MAX_RECEIPT_TTL_SECONDS = 86_400;
 export const DEFAULT_SERVER_LABEL = 'mcp-server';
 const SERVER_LABEL_PATTERN = /^[A-Za-z0-9._:/@-]{1,64}$/;
 export const TOOLS_CALL = 'tools/call';
+export const DEFAULT_CLOUD_APPROVAL_TIMEOUT_SECONDS = 600;
+export const MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS = 30;
+export const MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS = 3600;
+const CLOUD_ENVIRONMENTS: CloudEnvironment[] = ['development', 'staging', 'production'];
+const CLOUD_KEYS = new Set(['api_url', 'environment', 'approval_timeout_seconds', 'trust_keys']);
+const TRUST_KEY_KEYS = new Set(['key_id', 'alg', 'public_key_b64']);
 
 const VALID_ACTIONS: Action[] = ['allow', 'block', 'require_approval'];
 const VALID_MODES: Mode[] = ['enforce', 'observe'];
 const VALID_REVERSIBILITY: Reversibility[] = ['reversible', 'irreversible'];
 const VALID_SIGNING: SigningMode[] = ['required', 'off'];
 const TOP_LEVEL_KEYS = new Set([
-  'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing',
+  'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing', 'cloud',
 ]);
 const RULE_KEYS = new Set([
   'id', 'method', 'tool', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
@@ -189,7 +216,70 @@ export function parseConfig(raw: string): Config {
     server_label: serverLabel,
     signing,
     policy_sha256: createHash('sha256').update(raw).digest('hex'),
+    ...(parsed.cloud !== undefined ? { cloud: parseCloud(parsed.cloud) } : {}),
   };
+}
+
+/** The origin of an API URL: https anywhere, http only on loopback. No path, query or credentials. */
+function cloudOrigin(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('Invalid cloud.api_url: must be a URL');
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('Invalid cloud.api_url: must be a URL');
+  }
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('Invalid cloud.api_url: must be https (http is accepted only for localhost)');
+  }
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    throw new Error('Invalid cloud.api_url: must be an origin, without credentials, path, query or fragment');
+  }
+  return url.origin;
+}
+
+function parseCloud(value: unknown): CloudConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid cloud: must be an object');
+  const cloud = value as Record<string, unknown>;
+  for (const key of Object.keys(cloud)) {
+    if (!CLOUD_KEYS.has(key)) throw new Error(`Unknown cloud key: "${key}"`);
+  }
+  const apiUrl = cloud.api_url === undefined ? PRODUCTION_API_URL : cloudOrigin(cloud.api_url);
+  const environment = (cloud.environment ?? 'production') as CloudEnvironment;
+  if (!CLOUD_ENVIRONMENTS.includes(environment)) {
+    throw new Error(`Invalid cloud.environment: must be one of: ${CLOUD_ENVIRONMENTS.join(', ')}`);
+  }
+  const timeout = positiveInt(cloud.approval_timeout_seconds, 'cloud.approval_timeout_seconds', DEFAULT_CLOUD_APPROVAL_TIMEOUT_SECONDS);
+  if (timeout < MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS || timeout > MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS) {
+    throw new Error(`Invalid cloud.approval_timeout_seconds: ${MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS} to ${MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS}`);
+  }
+
+  const production = apiUrl === PRODUCTION_API_URL;
+  if (cloud.trust_keys === undefined) {
+    if (!production) throw new Error('cloud.trust_keys is required when cloud.api_url is not the production API: name the receipt-signing keys to pin');
+    return { api_url: apiUrl, environment, approval_timeout_seconds: timeout };
+  }
+  // The production keys are pinned in the release. A policy file cannot replace them.
+  if (production) throw new Error('cloud.trust_keys cannot be set for the production API: its keys are pinned in this release');
+  if (!Array.isArray(cloud.trust_keys) || cloud.trust_keys.length === 0) throw new Error('Invalid cloud.trust_keys: must be a non-empty list');
+  const seen = new Set<string>();
+  const trustKeys = cloud.trust_keys.map((entry: unknown, i: number): KeySetEntry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`cloud.trust_keys[${i}] must be an object`);
+    const key = entry as Record<string, unknown>;
+    for (const name of Object.keys(key)) {
+      if (!TRUST_KEY_KEYS.has(name)) throw new Error(`cloud.trust_keys[${i}] has unknown key: "${name}"`);
+    }
+    if (typeof key.key_id !== 'string' || !key.key_id) throw new Error(`cloud.trust_keys[${i}] missing key_id`);
+    if (seen.has(key.key_id)) throw new Error(`cloud.trust_keys[${i}] duplicates key_id "${key.key_id}"`);
+    seen.add(key.key_id);
+    if ((key.alg ?? 'ed25519') !== 'ed25519') throw new Error(`cloud.trust_keys[${i}]: alg must be ed25519`);
+    if (typeof key.public_key_b64 !== 'string' || Buffer.from(key.public_key_b64, 'base64').length !== 32) {
+      throw new Error(`cloud.trust_keys[${i}]: public_key_b64 must be a 32-byte Ed25519 public key in base64`);
+    }
+    return { key_id: key.key_id, alg: 'ed25519', public_key_b64: key.public_key_b64 };
+  });
+  return { api_url: apiUrl, environment, approval_timeout_seconds: timeout, trust_keys: trustKeys };
 }
 
 function receiptTtlSeconds(v: unknown, name: string, fallback: number): number {
