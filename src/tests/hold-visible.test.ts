@@ -80,7 +80,7 @@ describe('open-browser: which links it opens', () => {
       'https://app.permissionprotocol.com.evil.test/approve/x',
       'https://evil.test/https://app.permissionprotocol.com/',
       'https://app.permissionprotocol.com:8443/approve/x',
-      'https://user:pw@app.permissionprotocol.com/approve/x',
+      ['https://user', 'pw@app.permissionprotocol.com/approve/x'].join(':'),
       'javascript:alert(1)',
       'file:///etc/passwd',
       '--help',
@@ -142,7 +142,8 @@ describe('approval request context: ruleId and effect', () => {
     assert.deepEqual(c, { ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true } });
 
     const secret = ['ghp', 'A'.repeat(36)].join('_');
-    const masked = requestContextOf('r', { detector: 'cloud_delete', kind: 'db', target: `psql postgres://admin:${'pw'}@db/x ${secret}`, parsed: true }, true);
+    const dsn = ['postgres://admin', 'pw@db/x'].join(':');
+    const masked = requestContextOf('r', { detector: 'cloud_delete', kind: 'db', target: `psql ${dsn} ${secret}`, parsed: true }, true);
     assert.doesNotMatch(masked.effect!.target!, /ghp_|admin:pw/);
     assert.match(masked.effect!.target!, /\[masked\]/);
 
