@@ -19,7 +19,7 @@ Usage:
   mcp-guard hook uninstall [--project <dir>]
 
 Options:
-  --config <path>    Policy file (default: ./pp.config.yaml; install: relative to the project root)
+  --config <path>    Policy file (default: ./pp.config.yaml; install: relative to the project root, or absolute)
   --wait <seconds>   How long a held call waits for a signature in one hook run (default ${DEFAULT_HOOK_WAIT_SECONDS}, at most the policy's cloud.approval_timeout_seconds)
   --matcher <m>      Claude Code tools to guard (default "${DEFAULT_MATCHER}")
   --launcher <cmd>   How Claude Code starts mcp-guard (default "npx --no-install mcp-guard")

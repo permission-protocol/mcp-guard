@@ -186,6 +186,7 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
       server,
       tool: call.tool,
       args: call.args,
+      sendPreview: cloud.args_preview !== false,
       agentId: adapter.agentId,
       environment: cloud.environment,
       timeoutSeconds: waitSeconds,

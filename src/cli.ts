@@ -7,11 +7,18 @@ import { runReceipt } from './receipt-cli.js';
 import { runInit, terminalIo } from './init/init.js';
 import { runHook } from './hook/cli.js';
 import { runHeartbeatCli } from './heartbeat/cli.js';
+import { runReport } from './report/cli.js';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 export function main(): void {
   const args = process.argv.slice(2);
+
+  if (args[0] === '--version' || args[0] === '-V') {
+    console.log(JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8')).version);
+    process.exit(0);
+  }
 
   if (args[0] === 'demo') {
     // When running via npx @permission-protocol/mcp-guard demo
@@ -40,6 +47,11 @@ export function main(): void {
 
   if (args[0] === 'heartbeat') {
     void runHeartbeatCli(args.slice(1)).then((code) => process.exit(code));
+    return;
+  }
+
+  if (args[0] === 'report') {
+    void runReport(args.slice(1)).then((code) => process.exit(code));
     return;
   }
 
@@ -130,10 +142,12 @@ mcp-guard — MCP policy proxy
 
 Usage:
   mcp-guard init                   connect to Permission Protocol, wrap one MCP server, get a first signed receipt
+  mcp-guard init --preset coding-agent  the coding-agent policy, plus the Claude Code hook in a Claude Code project
   mcp-guard [options] -- <server command>
   mcp-guard hook [install|uninstall]  guard Claude Code's built-in tools with the same policy (docs/hooks.md)
   mcp-guard receipt verify <receipt id> [--receipts-path <file>]
   mcp-guard heartbeat --show | --send  the daily usage heartbeat: counts only (docs/heartbeat.md)
+  mcp-guard report [--config <path>] [--json]  the last 7 days from the local receipt log; sends nothing
   mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
   mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
   mcp-guard verify --receipt-file <legacy 0.2 receipt> --accept-legacy --pubkey <pem> --scope s ...
@@ -146,6 +160,7 @@ Options:
   --mode <mode>           enforce or observe (overrides config; default: enforce)
   --approval-port <port>  Enable the approval UI on 127.0.0.1:<port>
   -h, --help              Show this help
+  -V, --version           Print this package's version
 
 Run \`mcp-guard keys init\` once before the first run: every decision is signed, and
 the guard refuses to start without a signing key (or set \`signing: off\` in the config

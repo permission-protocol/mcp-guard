@@ -39,7 +39,9 @@ const env = { ...process.env, XDG_CONFIG_HOME: join(machine, 'config'), MCP_GUAR
 for (const key of Object.keys(env)) if (key.startsWith('PP_')) delete env[key];
 
 let fake = null;
-let initArgs = ['init', '--mcp-config', mcpConfig, '--tool', 'delete_file', '--label', 'e2e-first-receipt', '--yes', '--no-browser', ...passthrough];
+// The wrapped server starts this build, not a registry download: init checks the launcher reports this version.
+const wrapLauncher = `"${process.execPath}" "${join(root, 'bin', 'mcp-guard')}"`;
+let initArgs = ['init', '--mcp-config', mcpConfig, '--tool', 'delete_file', '--label', 'e2e-first-receipt', '--yes', '--no-browser', '--wrap-launcher', wrapLauncher, ...passthrough];
 if (standIn) {
   const { startFakePp } = await import(pathToFileURL(join(root, 'dist', 'src', 'tests', 'cloud-helpers.js')).href);
   fake = await startFakePp(`pp_test_${'e2e0'.repeat(8)}`);
@@ -67,7 +69,7 @@ const code = await new Promise((resolve) => {
 const seconds = (Date.now() - started) / 1000;
 
 if (code !== 0) await fail(`mcp-guard init exited with ${code} after ${seconds.toFixed(0)} s`);
-const verify = /Verify it: npx @permission-protocol\/mcp-guard (receipt verify \S+) --receipts-path "([^"]+)"(?: --config "([^"]+)")?/.exec(output);
+const verify = /Verify it: npx @permission-protocol\/mcp-guard@\S+ (receipt verify \S+) --receipts-path "([^"]+)"(?: --config "([^"]+)")?/.exec(output);
 if (!verify) await fail('init did not print a verify command');
 const verifyArgs = [...verify[1].split(' '), '--receipts-path', verify[2], ...(verify[3] ? ['--config', verify[3]] : [])];
 const verified = spawnSync(process.execPath, [cli, ...verifyArgs], { env, encoding: 'utf-8' });

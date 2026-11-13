@@ -2,6 +2,7 @@ import type { KeySet, TrustPins } from '../signing/keys.js';
 import type { ReplayCache } from '../verify-core.js';
 import { CloudApiError, type CloudClient } from './client.js';
 import { argsHashOf, callFingerprint } from './fingerprint.js';
+import { argsPreviewOf } from './preview.js';
 import { verifyCloudReceipt, type CloudReceiptArtifact, type VerifiedCloudReceipt } from './verify.js';
 
 /**
@@ -40,8 +41,13 @@ export interface CloudHoldInput {
   replayCache: ReplayCache;
   server: string;
   tool: string;
-  /** What the server will act on. Hashed here; only a preview and the hash are sent. */
+  /**
+   * What the server will act on. Hashed here; the hash is sent, and (unless
+   * `sendPreview` is false) a preview masked and capped by cloud/preview.ts.
+   */
   args: unknown;
+  /** `false` (policy `cloud.args_preview: false`): send the hash only, no preview. Default true. */
+  sendPreview?: boolean;
   agentId: string;
   environment: string;
   timeoutSeconds: number;
@@ -51,8 +57,7 @@ export interface CloudHoldInput {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** The preview is redacted and capped by Permission Protocol; this cap only bounds the upload. */
-export const MAX_PREVIEW_CHARS = 8 * 1024;
+export { MAX_PREVIEW_BYTES } from './preview.js';
 const FIRST_POLL_MS = 1_000;
 const MAX_POLL_MS = 5_000;
 const POLL_BACKOFF = 1.5;
@@ -60,16 +65,6 @@ const POLL_BACKOFF = 1.5;
 const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-function previewOf(args: unknown): string {
-  let text: string;
-  try {
-    text = JSON.stringify(args ?? {});
-  } catch {
-    text = '';
-  }
-  return text.length > MAX_PREVIEW_CHARS ? text.slice(0, MAX_PREVIEW_CHARS) : text;
-}
 
 function apiReason(err: unknown): { code: string; reason: string } {
   if (err instanceof CloudApiError) {
@@ -92,7 +87,8 @@ export async function decideInCloud(input: CloudHoldInput): Promise<CloudOutcome
       tool: input.tool,
       server: input.server,
       argsHash,
-      argsPreview: previewOf(input.args),
+      // Masked and capped here, before upload (cloud/preview.ts). Never part of the fingerprint.
+      ...(input.sendPreview === false ? {} : { argsPreview: argsPreviewOf(input.args) }),
       agentId: input.agentId,
       env: input.environment,
       timeoutSec: input.timeoutSeconds,

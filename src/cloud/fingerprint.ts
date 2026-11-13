@@ -8,9 +8,12 @@ import { canonicalJsonText } from '../signing/canonical.js';
  *   argsHash    = "sha256:" + hex(SHA-256(canonical JSON of the arguments))
  *   fingerprint = "sha256:" + hex(SHA-256(canonical JSON of {argsHash, server, tool}))
  *
- * Raw arguments never leave this machine: only argsHash is sent. The guard computes
- * the fingerprint from the exact call it will forward and compares it with the one
- * inside the signed receipt, so a receipt releases this call and no other.
+ * The fingerprint covers argsHash, which is computed from the exact arguments. For a
+ * held call the guard sends argsHash and, unless `cloud.args_preview: false`, a preview
+ * of the arguments that it masks and caps first (cloud/preview.ts); the preview is
+ * never part of the fingerprint. The guard computes the fingerprint from the exact call
+ * it will forward and compares it with the one inside the signed receipt, so a receipt
+ * releases this call and no other.
  */
 
 const sha256 = (text: string): string => `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`;

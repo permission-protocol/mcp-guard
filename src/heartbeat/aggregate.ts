@@ -18,6 +18,9 @@ import { PAST_DAYS, addDays, isSendableRuleId, emptyCounts, utcDay, type ClientL
  *   {cloud} blocked                                                       -> no outcome
  *   {observed}, unparseable lines, lines older than the window            -> nothing
  *
+ *   `mcp-guard report` reads {observed} lines too, through `onObserved` (never into the
+ *   totals), and keeps every rule id, through `keepRule`: it prints locally and sends nothing.
+ *
  *   (+ rule*): the rule's id is kept only if it is shipped with the guard (a built-in
  *   preset rule); any other id is not stored, so it is neither in the state file nor sent.
  *
@@ -72,6 +75,9 @@ export type LogEvent =
   | { kind: 'hold'; at: number; ruleId: string | null; pairKey: string | null }
   | { kind: 'cloud'; at: number; ruleId: string | null; pairKey: string; outcome: CountName | null };
 
+/** An `observe: true` rule's would-be effect. Never part of the totals or the heartbeat. */
+export interface ObservedEvent { kind: 'observed'; at: number; ruleId: string | null; would: 'blocked' | 'held' }
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const time = (v: unknown): number | null => {
@@ -82,8 +88,14 @@ const time = (v: unknown): number | null => {
 const pairKey = (agentId: unknown, method: unknown, tool: unknown, ruleId: unknown): string =>
   createHash('sha256').update(JSON.stringify([str(agentId), str(method), str(tool), str(ruleId)])).digest('hex').slice(0, 32);
 
-/** Classify one receipt-log line. Reads only status, reason codes, rule id, agent, method, tool and times. */
+/** Classify one receipt-log line, for the totals. Reads only status, reason codes, rule id, agent, method, tool and times. */
 export function eventOf(line: string): LogEvent | null {
+  const e = lineEventOf(line);
+  return e && e.kind !== 'observed' ? e : null;
+}
+
+/** As `eventOf`, and an {observed} line as an ObservedEvent (rule id, would-be effect and time only). */
+export function lineEventOf(line: string): LogEvent | ObservedEvent | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -126,6 +138,12 @@ export function eventOf(line: string): LogEvent | null {
   }
 
   // {observed}: an observe-only rule's would-be effect. The call's real decision has its own line.
+  if (isObj(parsed.observed)) {
+    const o = parsed.observed;
+    const at = time(o.at);
+    if (at === null) return null;
+    return { kind: 'observed', at, ruleId: str(o.ruleId), would: o.would === 'blocked' ? 'blocked' : 'held' };
+  }
   return null;
 }
 
@@ -138,22 +156,25 @@ function dayOf(log: LogState, at: number): DayTotals {
   return (log.days[day] ??= { counts: emptyCounts(), rules: {} });
 }
 
-function bump(totals: DayTotals, count: CountName, ruleId: string | null): void {
+/** Which rule ids are kept per day: by default only those shipped with the guard (all the heartbeat may send). */
+export type KeepRule = (ruleId: string) => boolean;
+
+function bump(totals: DayTotals, count: CountName, ruleId: string | null, keepRule: KeepRule): void {
   totals.counts[count] += 1;
-  if ((count === 'blocked' || count === 'held') && ruleId && isSendableRuleId(ruleId)) {
+  if ((count === 'blocked' || count === 'held') && ruleId && keepRule(ruleId)) {
     if (ruleId in totals.rules || Object.keys(totals.rules).length < MAX_RULES_PER_DAY) totals.rules[ruleId] = (totals.rules[ruleId] ?? 0) + 1;
   }
 }
 
 /** Apply one event to a log's totals. */
-export function apply(log: LogState, e: LogEvent): void {
+export function apply(log: LogState, e: LogEvent, keepRule: KeepRule = isSendableRuleId): void {
   if (e.kind === 'count') {
-    bump(dayOf(log, e.at), e.count, e.ruleId);
+    bump(dayOf(log, e.at), e.count, e.ruleId, keepRule);
     return;
   }
   log.holds = log.holds.filter((h) => e.at - h.at <= PAIR_WINDOW_MS);
   if (e.kind === 'hold') {
-    bump(dayOf(log, e.at), 'held', e.ruleId);
+    bump(dayOf(log, e.at), 'held', e.ruleId, keepRule);
     if (e.pairKey) {
       log.holds.push({ key: e.pairKey, at: e.at });
       if (log.holds.length > MAX_OPEN_HOLDS) log.holds.shift();
@@ -162,8 +183,8 @@ export function apply(log: LogState, e: LogEvent): void {
   }
   const i = log.holds.findIndex((h) => h.key === e.pairKey && h.at <= e.at);
   if (i >= 0) log.holds.splice(i, 1);
-  else bump(dayOf(log, e.at), 'held', e.ruleId);
-  if (e.outcome) bump(dayOf(log, e.at), e.outcome, null);
+  else bump(dayOf(log, e.at), 'held', e.ruleId, keepRule);
+  if (e.outcome) bump(dayOf(log, e.at), e.outcome, null, keepRule);
 }
 
 /** Drop days the contract no longer accepts. */
@@ -177,6 +198,10 @@ const sha = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
 export interface ScanOptions {
   now?: number;
   maxBytes?: number;
+  /** Rule ids to keep per day (default: shipped ones only). The heartbeat never sets this. */
+  keepRule?: KeepRule;
+  /** Called for each {observed} line read. The heartbeat never sets this. */
+  onObserved?: (e: ObservedEvent) => void;
 }
 
 /**
@@ -221,8 +246,9 @@ export async function scanLog(previous: LogState | undefined, path: string, clie
       for (let nl = data.indexOf(10, start); nl >= 0; nl = data.indexOf(10, start)) {
         const line = data.subarray(start, nl).toString('utf8').trim();
         if (line && nl - start <= MAX_LINE_BYTES) {
-          const e = eventOf(line);
-          if (e) apply(log, e);
+          const e = lineEventOf(line);
+          if (e?.kind === 'observed') options.onObserved?.(e);
+          else if (e) apply(log, e, options.keepRule);
         }
         start = nl + 1;
         log.offset = pos - (data.length - start);

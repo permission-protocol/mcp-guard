@@ -33,7 +33,8 @@ export interface CreateRequestBody {
   tool: string;
   server: string;
   argsHash: string;
-  argsPreview: string;
+  /** Masked and capped by the guard (cloud/preview.ts); omitted with `cloud.args_preview: false`. */
+  argsPreview?: string;
   agentId: string;
   env: string;
   timeoutSec: number;

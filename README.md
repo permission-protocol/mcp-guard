@@ -1,414 +1,206 @@
 # MCP Guard
 
-**Stop your AI agents from doing dangerous things.**
+MCP Guard is a free guard for coding agents: it checks each shell command and file edit before it runs, stops the destructive ones, and sends them to a named person who signs in Permission Protocol; only a verified, signed receipt releases the call. Claude Code is supported first.
 
-[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is how AI agents call tools — like APIs, databases, or deployments. MCP has no built-in access control. MCP Guard adds that layer.
+## Install for Claude Code
 
-Define what's allowed, blocked, or requires approval — in a single YAML file. MCP Guard sits between your MCP client and server, enforces the rules, and records every decision as a signed receipt.
-
-Every tool call, resource read and prompt fetch goes through your policy; only protocol plumbing (`initialize`, `ping`, list calls, notifications) passes untouched. **MCP Guard does not just log — it blocks execution before it happens.**
-
-→ **Blocks** unsafe tool calls before they execute
-→ **Holds** sensitive actions for human approval
-→ **Signs** every decision as an Ed25519 receipt in the Permission Protocol receipt standard, naming who or what decided
-→ **Observe mode** — audit what would be blocked before enforcing
-
-<p align="center">
-  <img src="assets/demo.gif" alt="MCP Guard Demo" width="700">
-</p>
-
-## Get Started: coding agents (one command)
-
-In your Claude Code project:
+In your Claude Code project (a directory with `.claude/` or `CLAUDE.md`):
 
 ```bash
 npx @permission-protocol/mcp-guard init --preset coding-agent
 ```
 
-That one command connects this machine to your Permission Protocol workspace (device login in the browser; the install token goes to the OS keychain and is never printed), creates the local signing key, writes the `coding-agent` policy to `pp.config.yaml`, installs the Claude Code `PreToolUse` hook in `.claude/settings.json`, wraps an MCP server if your client has one, checks the installed hook locally (one allowed and one held synthetic call; nothing is sent and nothing runs), and then holds a do-nothing call so you sign your first receipt. Restart Claude Code and its `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookEdit` calls are guarded.
-
-From day one the preset holds, for a named human's signature: destructive SQL, destructive shell commands (`rm -rf` outside the tree, force pushes, pushes to `main`), `terraform destroy`, cloud and Kubernetes deletes, any call naming a production target you list under `targets:`, and changes to the guard itself (its policy, receipt log, keys, the hook entry and the MCP client config that routes through it, killing it). Secret reads (`cat .env`, `printenv`, token printers) are only recorded as "would hold" (`observe: true` on that rule) until you remove that line. Reading the guard's own files is fine.
-
-- The hook is installed when the directory is a Claude Code project (it has `.claude/` or `CLAUDE.md`); `--hook claude-code` installs it anyway, `--no-hook` skips it. No MCP server is needed for the hook.
-- init never overwrites a policy. An existing `pp.config.yaml` that loads is kept byte for byte (so a teammate with the committed files only logs in and gets a key, and an edited preset survives a re-run); one that does not load, or a `.claude/settings.json` that is not valid JSON, is refused before the login with nothing changed. Each item (token, key, policy, hook entry) is set up only if missing; when all are in place init says `Already set up` and exits 0.
-- The hook starts the guard with `npx --no-install mcp-guard` when the package is installed in the project, otherwise with `npx -y @permission-protocol/mcp-guard@<exact version>`, pinned in `.claude/settings.json` (the first guarded call may download it). init checks the launcher starts before changing anything. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session.
-- Windows: init's hook step and the installed hook command need Git Bash (`sh`); without it init refuses the hook step and says so.
-
-What it holds, observes and misses: [docs/presets.md](docs/presets.md). The hook: [docs/hooks.md](docs/hooks.md). How the detectors read arguments: [docs/detectors.md](docs/detectors.md). They stop mistakes; they are not a sandbox.
-
-## Get Started by hand: any MCP server (2 minutes)
+In any other directory, add `--hook claude-code` to install the hook there anyway:
 
 ```bash
-# Install
+npx @permission-protocol/mcp-guard init --preset coding-agent --hook claude-code
+```
+
+Without either, `init --preset coding-agent` installs the hook only in a Claude Code project; outside one, with no MCP server to wrap, it exits 1 and tells you to pass `--hook claude-code`. `--no-hook` skips the hook. `init --help` lists every option.
+
+### What happens next
+
+1. **Checks first, so a refusal changes nothing.** init refuses before logging in if `pp.config.yaml` exists and does not load, if `.claude/settings.json` is not valid JSON, if on Windows it finds no Git Bash, if the hook launcher (below) cannot start the guard, or, when it will wrap an MCP server, if the command the client would run (`npx -y @permission-protocol/mcp-guard@<this version>`, or `--wrap-launcher <cmd>`) does not report this exact version.
+2. **Connect in the browser.** init prints a Permission Protocol link and a pairing code, and opens the link in your browser. Check that the page shows the same code and choose Connect (you need the owner or admin role in the workspace). In a terminal, init then asks you to confirm the workspace name. The install token goes to the OS keychain, or to a file restricted to your user ([where](#where-the-token-and-keys-are-kept)), and is never printed. If a token is already stored and there is no MCP server to wrap, init reuses it and skips the login.
+3. **Local setup.** A signing key is created if there is none; the `coding-agent` policy is written to `pp.config.yaml` (an existing one that loads is kept byte for byte); the `PreToolUse` hook is added to `.claude/settings.json`. If Claude Code or Cursor has an MCP server configured that is not wrapped yet, init also wraps one (it asks which when there are several; the client config is copied aside first).
+4. **Hook self-test, local.** One allowed call (`git status`) and one held call (`terraform destroy -auto-approve`) are run through the installed hook. Nothing is sent and nothing runs. If a check fails, init exits 1 and says whether the test could not run (which says nothing about the hook) or the installed hook answered wrongly (it stays installed and fails closed, so guarded calls may be blocked until it works). Either way it prints the undo command, `<launcher> hook uninstall --project <dir>`.
+5. **First signature.** init holds a do-nothing call and prints a signing link. Sign it in Permission Protocol; init prints the signed receipt and the command that verifies it again. `--skip-self-test` skips this step.
+
+Restart Claude Code so it loads the hook. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session; add `pp-receipts.jsonl` (the receipt log, beside the policy) to `.gitignore`. Running init again sets up only what is missing; when the token, key, policy and hook entry are all in place (and there is no server to wrap) it says `Already set up` and exits 0.
+
+**The launcher.** The hook starts the guard with `npx --no-install mcp-guard` when the package is installed in the project, otherwise with `npx -y @permission-protocol/mcp-guard@<exact version>`, pinned in `.claude/settings.json`. With the `npx -y` launcher the first guarded call in a session may download the package. Installing it in the project (`npm install --save-dev @permission-protocol/mcp-guard`) before running init avoids the download.
+
+Details: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
+
+## What is guarded
+
+The hook sees Claude Code's `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookEdit` calls. The `coding-agent` preset holds these for a signature (the same rules apply to MCP tools when the preset guards a wrapped server):
+
+| Rule | Holds |
+|------|-------|
+| `destructive-shell` | `rm -rf` outside the working tree, force pushes and pushes to `main`, disk writes, destructive SQL through `psql -c` and similar |
+| `destructive-sql` | `DROP`, `TRUNCATE`, `DELETE` / `UPDATE` without `WHERE`, in the SQL argument of an MCP database tool (`sql`, `query`, ...) |
+| `terraform-destroy` | `terraform destroy`, `apply -destroy`, `apply -auto-approve` without a saved plan |
+| `cloud-delete` | Cloud and Kubernetes deletes of databases, volumes, buckets, snapshots, clusters, namespaces |
+| `production-target` | Any call naming a production target you list under `targets:` (empty by default, so it matches nothing until you add names) |
+| `guard-tamper*` | Changes to the guard itself: its policy, receipt log, keys, install token, the hook entry and Claude Code settings files, killing it |
+
+Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
+
+### What a held call looks like
+
+A held call waits in the hook for up to 240 seconds (`--wait`) while the signer finds the request in Permission Protocol and chooses Sign or Reject. The guard prints the signing link only after it answers, so if nobody signs in time the denial below carries the link.
+
+- **Signed in time:** the call runs. Claude sees `mcp-guard: released by receipt <id>, signed by <name> in Permission Protocol (rule "terraform-destroy" (terraform_destroy: destroy)).`
+- **Not signed in time:** the call is denied with the signing link: `mcp-guard: held by rule "terraform-destroy" (terraform_destroy: destroy) for a Permission Protocol signature; nobody signed within the hook's 240-second wait. Request <id> stays open for up to 600 seconds: sign it at <link>. After it is signed, run exactly the same call again; ...`. The retry resumes the same request.
+- **Rejected, expired, or anything that fails verification:** denied. Changed arguments do not match the signed receipt and are denied.
+
+The receipt is verified offline against Permission Protocol keys pinned in the package, and redeemed once, before the call is released.
+
+## What it does not catch
+
+The detectors are heuristics that stop mistakes. They are not a sandbox.
+
+- **Scripts in files.** Anything run from a file (`./cleanup.sh`, `python x.py`, `make`, `npm run`) is not read. An agent can write a file in one call and run it in the next.
+- **Removing the hook.** An agent running as the same OS user can, by a route the detectors do not read (a script, for example), edit the settings file or the policy and switch the guard off. Run untrusted agents as a separate OS user that cannot write the guard's files.
+- **Tools the hook does not see.** Reads and searches are not sent to the guard. MCP tools (`mcp__...`) are not matched by the hook; wrap those servers with the proxy (below).
+- **Context that needs I/O**: the current git branch, the current kube context, what a variable or glob expands to, plan files and manifests.
+- **Windows** needs Git for Windows: Claude Code runs the hook through Git Bash, and so does init's check. init finds it without Git's `bin` on PATH (`CLAUDE_CODE_GIT_BASH_PATH`, PATH, the standard install folders, beside `git.exe`) and refuses the hook step if it cannot.
+- **Claude Code before 2.1.295** ignores the hook's `onFailure: "block"`. The installed command's own wrapper still blocks when the guard cannot run; the one case left is a hook that Claude Code kills at its own timeout, which on those versions lets the call through, and the guard's watchdog denies before that timeout. init prints a line if `claude --version` is older.
+- **The first guarded call may download the package** with the default `npx -y` launcher (see above).
+- Each guarded call starts a process through the launcher, which adds latency ([measured in docs/hooks.md](docs/hooks.md#limits)).
+
+The full lists: [docs/presets.md](docs/presets.md) and [docs/detectors.md](docs/detectors.md#known-limits).
+
+## What is sent to Permission Protocol for a held call
+
+Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, and a **preview of the arguments that the guard masks and caps before sending**. For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
+
+- Masked on this machine: values under credential-like keys, private key blocks, credentials in URLs, Bearer and Basic values, common token formats (GitHub, OpenAI, Anthropic, AWS key ids, Stripe, Slack, JWTs and others), `password=` / `token=` / `.env`-style assignments with secret-looking names, and long opaque strings. Pattern-based: a short secret with no telling name (`mysql -pS3cret`) is not recognised.
+- Short fields first, then capped at 2,048 bytes, so the cap cuts file content, not the path.
+- Permission Protocol masks and caps it again before storing it. The signature covers the hash of the exact arguments, never the preview.
+- To send the hash only, put `args_preview: false` under `cloud:`. The signer then sees the tool, server, agent and environment, not what the call does.
+
+Details: [docs/hooks.md](docs/hooks.md#what-the-hook-answers).
+
+## Usage heartbeat
+
+**On by default.** With a `cloud:` section in the policy (init writes one) and an install token, the guard sends Permission Protocol the day's totals so far, at most one attempt every 10 minutes (the last one per UTC day counts), from a separate process that cannot allow, block or delay a call. It carries only: the guard version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode, the day, six counts (`allowed`, `blocked`, `held`, `approved`, `denied`, `expired`), and how many calls each **built-in** rule id (the `coding-agent` preset's) blocked or held. Your own rule ids, arguments, commands, paths, file contents, tool, server and target names, hostnames and usernames are never sent.
+
+```bash
+npx @permission-protocol/mcp-guard heartbeat --show   # print exactly what would be sent today; sends nothing
+```
+
+Turn it off with `MCP_GUARD_HEARTBEAT=off` in the guard's environment, or with `heartbeat: false` under `cloud:` in the policy. Details: [docs/heartbeat.md](docs/heartbeat.md).
+
+## What it decided: `mcp-guard report`
+
+```bash
+npx @permission-protocol/mcp-guard report               # last 7 days of the log beside ./pp.config.yaml
+npx @permission-protocol/mcp-guard report --config path/to/pp.config.yaml --json
+```
+
+Per UTC day and in total: allowed, blocked, held, approved, denied, expired, the rules that blocked or held most, and observe-only matches. It reads the local receipt log only (`PP_SHARED_RECEIPTS_PATH` if set, else `pp-receipts.jsonl` beside the policy), sends nothing, and never prints arguments.
+
+## MCP servers: the proxy
+
+The same policy also runs as a stdio proxy between an MCP client and an MCP server. Every `tools/call`, `resources/read`, `prompts/get` and unknown method goes through the rules; only protocol plumbing (`initialize`, `ping`, list calls, notifications) passes untouched. Blocked calls get `-32001`; held calls wait for a signature (with a `cloud:` section) or for the local approval UI.
+
+```bash
 npm install @permission-protocol/mcp-guard
+npx mcp-guard keys init            # once: every decision is signed; the guard never creates a key itself
 
-# Create your signing key (once; the guard never creates one itself)
-npx mcp-guard keys init
-
-# Create a policy file
 cat > pp.config.yaml << 'EOF'
 default_action: allow
 rules:
-  - id: block-delete
-    tool: delete_user_data
-    action: block
-  - id: hold-deploy
-    tool: deploy_production
-    action: require_approval
+  - { id: block-delete, tool: delete_user_data, action: block }
+  - { id: hold-deploy, tool: deploy_production, action: require_approval }
 EOF
 
-# Run your MCP server through the guard
-mcp-guard --config pp.config.yaml -- node my-mcp-server.js
+npx mcp-guard --config pp.config.yaml -- node my-mcp-server.js
 ```
 
-That's it. Your agent can no longer delete user data. Production deploys require approval. Every decision is signed and logged to `pp-receipts.jsonl`. Without a signing key the guard refuses to start (`SIGNING_KEY_MISSING`) rather than run unsigned.
+`npx @permission-protocol/mcp-guard init` (without `--preset`) does this for an MCP server already configured in Claude Code or Cursor: it connects to Permission Protocol, wraps the server you pick (the client config is copied aside first), writes a policy that holds one tool, and holds a test call for your first signature. The client then starts the guard with `npx -y @permission-protocol/mcp-guard@<this version>`; init checks that command reports this version before changing anything. To start it another way (a project install, a source checkout), pass `--wrap-launcher "<command>"`, for example `--wrap-launcher "node <checkout>/bin/mcp-guard"`: words are split on spaces, double quotes group a path with spaces, and the client runs it without a shell.
 
-`default_action: allow` lets any tool without a rule run, and the guard warns about it at startup. Use `block` or `require_approval` to fail closed.
+Proxy options: `--config <path>`, `--agent-id <id>`, `--operator <name>`, `--mode enforce|observe`, `--approval-port <port>` (local approval UI on 127.0.0.1, with a per-process token in the printed URL). Without a `cloud:` section the guard is local-only and says so: approvals are made on this machine and name `--operator`, not a signed-in person.
 
-## 60-Second Demo (no MCP server needed)
+<p align="center">
+  <img src="assets/demo.gif" alt="MCP Guard proxy demo" width="700">
+</p>
 
-See MCP Guard block dangerous tool calls in real-time, no setup required:
+`npx @permission-protocol/mcp-guard demo` runs the proxy demo with a throwaway demo key; gates refuse its receipts.
 
-```bash
-npx @permission-protocol/mcp-guard demo
-```
-
-The demo signs with a throwaway demo key (`mcpg-demo-…`) in a temporary directory. Its receipts carry `scope: "demo"`, and gates refuse them.
-
-## Architecture
-
-```
-┌────────────┐     stdio      ┌─────────────┐     stdio      ┌────────────┐
-│  MCP Client│ ──────────────▶│  MCP Guard   │──────────────▶ │ MCP Server │
-│  (Claude,  │                │  (proxy)     │                │ (your app) │
-│   Cursor)  │ ◀──────────────│              │◀────────────── │            │
-└────────────┘   responses    └─────────────┘   responses    └────────────┘
-                                    │
-                                    ▼
-                              pp-receipts.jsonl
-                              (audit trail)
-```
-
-MCP Guard parses every JSON-RPC message on stdin and forwards only what it parsed and evaluated, re-serialized:
-
-1. A line that is not a single JSON-RPC 2.0 object (invalid JSON, a batch array, a malformed frame) gets an error and is never forwarded.
-2. Plumbing passes through: `initialize`, `ping`, `notifications/*`, `tools/list`, `resources/list`, `resources/templates/list`, `resources/unsubscribe`, `prompts/list`, `logging/setLevel`, `completion/complete`.
-3. Everything else — `tools/call`, `resources/read`, `prompts/get`, `resources/subscribe` and any method MCP Guard does not know — is decided by the rules, then `default_action`.
-4. **Allowed** → forwarded (agent metadata under `_pp` is stripped first). **Blocked** → error `-32001`. **Held** → waits for a human (or returns `-32002` without an approval UI).
-5. Every final decision (allowed, blocked, approved, denied, released by countdown, expired) emits a signed receipt (one stderr line + `pp-receipts.jsonl`). A held call is recorded unsigned until it is decided.
-
-## Config Reference
+## Policy reference
 
 ```yaml
 # pp.config.yaml
-default_action: block        # allow | block | require_approval — when no rule matches
-mode: enforce                # "enforce" (default) or "observe" (log only, never block)
-approval_ttl_seconds: 900    # held requests expire after this (default 900)
-receipt_ttl_seconds: 3600    # receipts for unscoped actions expire after this (default 3600)
-scoped_receipt_ttl_seconds: 900  # receipts for merge / migration / deploy expire after this (default 900)
-server_label: github-mcp     # names the MCP server in receipts (default "mcp-server"; never the command line)
-signing: required            # required (default) | off: unsigned records that no gate accepts
-# cloud: {}                  # optional: held calls need a named human's signature (see Signed approvals)
-
+default_action: block        # allow | block | require_approval, when no rule matches
+mode: enforce                # enforce (default) | observe: record, never block
+server_label: github-mcp     # names the MCP server in receipts (default "mcp-server")
+cloud:                       # held calls need a named person's signature in Permission Protocol
+  environment: production    # development | staging | production: a label for the signer
+  approval_timeout_seconds: 600
+  # heartbeat: false         # turn the usage heartbeat off
+  # args_preview: false      # held calls send the argument hash only, no masked preview
+targets:
+  databases: [prod-db.internal]
 rules:
-  - id: unique-rule-id       # unique identifier
-    tool: tool_name          # exact tool name (tools/call rules)
-    action: allow            # allow | block | require_approval
-
-  - id: hold-reads
-    method: resources/read   # govern another method (no "tool" field)
-    action: require_approval
-
-  - id: hold-email
-    tool: send_email
-    action: require_approval
-    reversibility: reversible  # reversible | irreversible (default: irreversible)
-    countdown_seconds: 300     # reversible only: auto-release unless someone holds it
-
-  - id: spend
-    tool: spend
-    action: require_approval
-    cap_usd: 50                # under the cap: runs now, shows in Verify; at/over: hard stop
-    amount_arg: amount_usd     # required with cap_usd: the argument the tool actually charges
-    receipt_ttl_seconds: 300   # optional: this rule's receipts expire sooner (any expiry is at most 86400)
+  - { id: hold-deploy, tool: deploy_production, action: require_approval }
+  - { id: hold-reads, method: resources/read, action: require_approval }
+  - { id: shell, tool: "*", detect: { detector: shell_destructive, args: [command] }, action: require_approval }
+  - { id: prod-sql, tool: run_sql, match: { database: { equals: prod } }, action: block }
+  - { id: prod, tool: "*", mentions_target: { args: [command, sql] }, action: require_approval }
+  - { id: secrets, tool: "*", detect: { detector: secret_read, args: [command] }, action: block, observe: true }
 ```
 
-The loader is strict: an unknown key, a duplicate rule, a countdown on an irreversible rule, or `cap_usd` without `amount_arg` fails at startup instead of being ignored. A missing or non-numeric amount is a hard stop. Agent metadata under `_pp` (`confidence`, `requires_input`) can route a card to a different lane but can never turn a held or blocked call into an allowed one, and `requires_input` never changes how an irreversible hold is presented.
+Rules are tried in order and the first match wins. The loader is strict: an unknown key, a duplicate rule or an unreachable rule fails at startup. Other keys: `approval_ttl_seconds`, `receipt_ttl_seconds`, `scoped_receipt_ttl_seconds`, `signing`, and per rule `reversibility`, `countdown_seconds`, `cap_usd` with `amount_arg`, `receipt_ttl_seconds`. Argument rules and detectors: [docs/detectors.md](docs/detectors.md). Targets, `observe` and the preset: [docs/presets.md](docs/presets.md).
 
-### Modes
+## Receipts and verification
 
-| Mode | Behavior |
-|------|----------|
-| `enforce` | Block/hold tool calls per rules (default) |
-| `observe` | Log decisions + emit receipts, but always forward (dry-run) |
-
-Use `observe` mode to audit what *would* be blocked before turning enforcement on. Switch via config or CLI: `--mode observe`.
-
-### Actions
-
-| Action | Behavior | JSON-RPC Error Code |
-|--------|----------|-------------------|
-| `allow` | Forward request to server | — |
-| `block` | Reject immediately | `-32001` |
-| `require_approval` | Hold for approval (or reject without an approval UI) | `-32002` |
-
-Other errors the agent can receive: `-32003` denied by a human, `-32004` approval request expired, `-32005` release refused (receipt failed verification), `-32006` the decision could not be signed (missing, invalid or revoked key: nothing was forwarded), `-32007` signed approvals are on but Permission Protocol could not be reached or trusted (nothing was forwarded), `-32700` / `-32600` / `-32602` malformed input.
-
-## Receipts
-
-Every final decision is signed in the **Permission Protocol receipt standard** (`jcs_v2`, the format the Permission Protocol app issues and [`@permission-protocol/verify`](https://www.npmjs.com/package/@permission-protocol/verify) checks). Each line of `pp-receipts.jsonl` is:
-
-```json
-{
-  "artifact": {
-    "receipt_id": "rcpt_mg_mvtj9td5_63c091bfe0e7",
-    "status": "APPROVED",
-    "receipt_version": 2,
-    "canonicalization": "jcs_v2",
-    "key_id": "mcpg-3c1d2e4f5a6b7c8d",
-    "alg": "ed25519",
-    "signed_payload_hash": "<sha256 hex of the signed bytes>",
-    "signature_b64": "<Ed25519 over that digest>",
-    "payload_bytes_b64": "<the signed bytes>",
-    "issued_at": "2026-10-29T15:30:00.000Z",
-    "expires_at": "2026-10-29T15:45:00.000Z"
-  },
-  "record": {
-    "id": "rcpt_mg_mvtj9td5_63c091bfe0e7",
-    "agentId": "my-agent",
-    "requestJson": "{\"action\":{\"operation\":\"tools/call\",\"resource\":\"infra-mcp\",\"tool\":\"deploy\"},…,\"scope\":{\"capability\":\"deploy:production\",\"commitSha\":\"a1b2c3d4\"}}",
-    "inputHash": "sha256:<pp.hashable_payload.v1 of the call>",
-    "status": "APPROVED",
-    "policyVersion": "mcp-guard-config:sha256:<sha256 of pp.config.yaml>",
-    "reasonCodes": "[\"RULE_MATCHED:deploy\",\"OPERATOR_APPROVED\"]",
-    "deciderId": "local:rod",
-    "deciderAuthMethod": "local_console",
-    "attributionConfidence": "heuristic",
-    "resolutionType": "allow_once",
-    "scope": "production",
-    "…": "the rest of the 24 signed fields"
-  }
-}
-```
-
-- **The artifact is what a gate verifies.** Its signed bytes are the record's fields, canonicalized. Verifiers read the decision, expiry, decider and scope only from the signed bytes, never from the convenience fields beside them, and a receipt never says it is "verified".
-- **Who decided** is signed. A rule, a spend cap or a countdown signs `system/mcp-guard-policy` (`policy`). An approval or denial in the console signs `local:<operator>` (`--operator`, default the OS user) with `local_console` and `heuristic` confidence: the console token proves access to the guard's terminal, the name itself is configured. With no operator, a console approval is refused (`UNATTRIBUTED_PRODUCTION_DECIDER`) and the call stays held.
-- **No raw arguments.** The signed request names the tool, method, server label, rule and scope; the arguments are bound only by `inputHash` (`pp.hashable_payload.v1` over `{tool, operation, input, metadata: null}`), which anyone holding the call can recompute (`verify --call`). Raw arguments appear only in the authenticated approval UI.
-- **Reason codes** come from a fixed set: `RULE_MATCHED:<rule id>`, `DEFAULT_ACTION`, `COUNTDOWN_AUTO_RELEASE`, `OPERATOR_APPROVED`, `OPERATOR_DENIED`, `APPROVAL_EXPIRED`.
-
-Receipts are written to stderr (one summary line), `pp-receipts.jsonl` (or `$PP_SHARED_RECEIPTS_PATH`), and optionally POSTed to `$PP_RECEIPT_ENDPOINT` (with `$PP_RECEIPT_TOKEN` as bearer auth).
-
-### Signing keys
+Every final decision (allowed, blocked, approved, denied, released by countdown, expired) is an Ed25519-signed receipt in the Permission Protocol receipt standard (`jcs_v2`), appended to `pp-receipts.jsonl` as `{ "artifact": ..., "record": ... }`. The signed record names the tool, method, server label, rule, scope and who decided; arguments are bound only by `inputHash`, never stored. A held call is recorded unsigned until it is decided; a Permission Protocol signature is logged as a `{"cloud": ...}` line with the signed receipt.
 
 ```bash
-mcp-guard keys init            # first key: mcpg-<16 hex of sha256(public key)>
-mcp-guard keys show            # key id, fingerprint, keys.json path, and the --trust value for gates
-mcp-guard keys rotate          # new signing key; older keys stay in keys.json so their receipts still verify
-mcp-guard keys revoke <key id> # every receipt that key signed stops verifying; rotate to sign again
-```
-
-Keys live in `~/.config/mcp-guard/keys` (or `$PP_KEYS_DIR`), never in the working directory: `keys.json` (the key set, in the shape served at `/.well-known/permission-protocol/keys.json`) and one `<key id>.private.pem` (0600). The guard signs with the newest key and never creates one. A missing, exposed, mismatched or revoked key stops the guard at startup in enforce mode, and if the key changes while it runs, allowed calls are refused with `-32006` and held calls stay held. In observe mode calls are still forwarded and their records say `signingFailed`.
-
-### Verifying a receipt
-
-```bash
-# Once: commit the key set where your gate runs, and keep the --trust value it prints
-mcp-guard keys show
-cp ~/.config/mcp-guard/keys/keys.json .pp/keys.json
-
-# In CI: verify offline against the pinned key
-mcp-guard verify --receipt-file receipt.json --keys .pp/keys.json \
+npx @permission-protocol/mcp-guard keys show            # key id, keys.json path, the --trust value (also: keys init | rotate | revoke <key id>)
+npx @permission-protocol/mcp-guard receipt verify <receipt id> --receipts-path pp-receipts.jsonl   # re-check a logged Permission Protocol receipt offline
+npx @permission-protocol/mcp-guard verify --receipt-file receipt.json --keys .pp/keys.json \
   --trust "$MCP_GUARD_TRUST" --scope deploy:production --scope-sha "$GITHUB_SHA"
 ```
 
-The verifier requires `--scope`, trusts only the key set you give it (and, with `--trust`, only the pinned key), requires a signed `APPROVED` status and an unexpired signed `expiresAt`, checks scope exactly (a receipt that names a `scope.ref` or commit the gate did not ask for is refused too), and refuses:
+`verify` trusts only the key set you give it (and, with `--trust`, only the pinned key), requires a signed, unexpired `APPROVED` status, and matches scope exactly: a receipt naming a `scope.ref` or commit the gate did not ask for is refused, so pass `--scope-ref` when receipts carry one. It refuses demo-key receipts (`--allow-demo`), receipts no person approved for a scoped action (`--allow-policy-approval`) and 0.2 receipts (`--accept-legacy --pubkey <pem>`). `--call call.json` (`{"tool", "operation", "resource", "input"}`, `resource` required) binds the receipt to one exact call; `--require-call` makes it mandatory. Exit 0 authorized, 1 refused, 2 missing input. `npx @permission-protocol/verify` checks the same artifact.
 
-- scoped receipts no person approved (`--allow-policy-approval` accepts them);
-- receipts signed by a demo key (`mcpg-demo-*` or `pp-demo-*`), whatever scope they claim (`--allow-demo`);
-- mcp-guard 0.2 receipts (`--accept-legacy --pubkey <pem>` accepts them, labelled legacy);
-- with `--call call.json` (`{"tool", "operation", "resource", "input"}`), a receipt whose signed resource differs or whose `inputHash` does not recompute from the call. `--require-call` makes `--call` mandatory. Build `call.json` from values the gate trusts, never from the input that delivers the receipt; a legacy 0.2 receipt cannot be checked this way and is refused.
+## Where the token and keys are kept
 
-Exit 0 = authorized, 1 = refused, 2 = missing input. See `templates/github-actions/receipt-gate.yml` for a deploy workflow that takes the verifier, key set, pin and receipt only from trusted places.
+| | macOS | Linux | Windows |
+|---|---|---|---|
+| Install token | Keychain | Secret Service (`secret-tool`), else a 0600 file `install-token` | The file `install-token` (below) |
+| Private signing key | 0600 file | 0600 file | A file (below) |
 
-**Which commit a receipt binds.** A `deploy:<env>` receipt binds the commit being deployed. A `github:merge` receipt (a `merge_pr` call, or a PR approved through the webhook) binds the PR's **head** commit (`pull_request.head.sha`), not the merge commit GitHub creates: gate it with `--scope github:merge --scope-ref refs/pull/<n>/merge --scope-sha <head sha>`. A new push to the PR needs a new receipt.
+- Files live under `~/.config/mcp-guard/` (`$XDG_CONFIG_HOME/mcp-guard/` if set; keys in `keys/`, or `$PP_KEYS_DIR`); on Windows that is `%USERPROFILE%\.config\mcp-guard\`. `PP_INSTALL_TOKEN` in the environment takes precedence over both stores.
+- On macOS and Linux the guard refuses a token file or private key that other users can read.
+- **Windows uses a file for the token because the guard has no Windows keychain (Credential Manager) integration.** File modes do not apply there, so after writing the token and the private key, the guard runs `icacls` to remove inherited permissions and grant only the current user. init prints whether that worked; if `icacls` is missing or fails, the files are protected only by the permissions of your user profile folder. The Windows path has been tested with a stand-in for `icacls` only, not on a real Windows machine.
+- The token has the single scope `mcp:guard`: it can open, read and redeem this install's own approval requests, and cannot approve anything. The wrapped MCP server is started without any `PP_*` variable.
 
-The same artifact verifies with the org verifier, offline:
+## CI gate
 
-```bash
-npx @permission-protocol/verify receipt.json --keys .pp/keys.json --trust "$MCP_GUARD_TRUST"
-```
+`templates/github-actions/receipt-gate.yml` is a deploy workflow that verifies a receipt before deploying, taking the verifier, key set, pin and receipt only from trusted places. Commit the key set (`cp ~/.config/mcp-guard/keys/keys.json .pp/keys.json`), set the `MCP_GUARD_TRUST` repository variable to the `--trust` value from `mcp-guard keys show`, and copy the workflow. A `github:merge` receipt binds the PR's head commit: gate it with `--scope github:merge --scope-ref refs/pull/<n>/merge --scope-sha <head sha>`.
 
 ## CLI
 
 ```
-mcp-guard init                   # connect to Permission Protocol, wrap one MCP server, sign a first receipt
-mcp-guard init --preset coding-agent  # the coding-agent policy, plus the Claude Code hook in a Claude Code project (docs/presets.md)
-mcp-guard [options] -- <server command>
-mcp-guard hook [install|uninstall]  # guard Claude Code's own shell and file tools (docs/hooks.md)
-mcp-guard receipt verify <receipt id> [--receipts-path <file>] [--config <policy.yaml>]
+mcp-guard init [--preset coding-agent] [--hook claude-code | --no-hook] [--wrap-launcher <cmd>] [options]   # see init --help
+mcp-guard hook [install | uninstall]          # docs/hooks.md
+mcp-guard report [--config <path>] [--receipts <path>] [--json]
+mcp-guard heartbeat --show | --send           # docs/heartbeat.md
+mcp-guard [--config <path>] [--agent-id <id>] [--operator <name>] [--mode enforce|observe] [--approval-port <port>] -- <server command>
 mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
+mcp-guard receipt verify <receipt id> [--receipts-path <file>] [--config <policy.yaml>]
 mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
-mcp-guard export-key [out.pem]   # legacy 0.2 public key only, for --accept-legacy
-
-Environment:
-  PP_INSTALL_TOKEN        Install token for signed approvals (see Signed approvals)
-
-Options:
-  --config <path>         Path to config file (default: ./pp.config.yaml)
-  --agent-id <id>         Agent identifier for receipts (default: "unknown")
-  --operator <name>       Signed as the decider of console decisions (local:<name>; default: OS username)
-  --mode <mode>           enforce or observe (overrides config file)
-  --approval-port <port>  Enable the approval UI on 127.0.0.1:<port>
-  -h, --help              Show help
+mcp-guard export-key [out.pem]                # legacy 0.2 public key only, for --accept-legacy
+mcp-guard demo
+mcp-guard --version
 ```
 
-### Example: Claude Desktop
-
-In your Claude Desktop MCP config, replace:
-
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "command": "node",
-      "args": ["my-mcp-server.js"]
-    }
-  }
-}
-```
-
-With:
-
-```json
-{
-  "mcpServers": {
-    "my-server": {
-      "command": "mcp-guard",
-      "args": ["--config", "pp.config.yaml", "--agent-id", "claude-desktop", "--", "node", "my-mcp-server.js"]
-    }
-  }
-}
-```
-
-## Approval Flow
-
-When a call matches a `require_approval` rule, MCP Guard can hold it open and wait for a human in a local web UI instead of rejecting it.
-
-```bash
-mcp-guard --config pp.config.yaml --approval-port 3100 -- node my-mcp-server.js
-# stderr: [mcp-guard] Approval UI: http://127.0.0.1:3100/#t=<token>
-```
-
-Open the exact URL printed at startup. The part after `#t=` is a per-process access token; it never leaves the browser except as the `Authorization: Bearer` header on API calls.
-
-**How it works:**
-1. Agent calls a tool that requires approval; MCP Guard holds the response open.
-2. The call appears in the UI with every argument the server will receive.
-3. **Approve** → MCP Guard signs a receipt naming you as the decider, verifies it against its own pinned key, then forwards the call. If it cannot sign, the call stays held and the UI shows the error code.
-4. **Deny** → the agent gets error `-32003`, and the denial is signed. A decision is final: approving a denied call returns 409.
-5. No decision within `approval_ttl_seconds` → the agent gets error `-32004`, and the expiry is signed as a denial.
-
-**Security of the approval channel:** it listens on 127.0.0.1 only, rejects any other `Host` header, sends no CORS headers, and requires the token on every API route except the HMAC-signed GitHub webhook. `PP_APPROVAL_TOKEN` (32+ characters) supplies the token instead of generating one. The wrapped server is started without any `PP_*` environment variables, so a tool that echoes its environment cannot leak the token.
-
-When `--approval-port` is **not** set, `require_approval` calls return `-32002` immediately.
-
-This flow is local-only: the approver's name is whatever `--operator` says, not an authenticated identity, and the receipt is signed by a key on this machine. For a signature by a named, signed-in person, see Signed approvals below.
-
-## Signed approvals (Permission Protocol account)
-
-**Fastest way in:**
-
-```bash
-npx @permission-protocol/mcp-guard init
-```
-
-`init` opens a page where you connect this machine to your workspace (you need the owner or admin role; no secret is copied by hand), stores the install token in the OS keychain, finds the MCP servers Claude Code and Cursor are configured with, wraps the one you pick, writes a policy that holds one tool for a signature, and then holds a do-nothing test call so you sign your first receipt. It ends by printing the receipt, the command that verifies it again, and how long it all took. Your client's config file is copied aside before it is changed, and the copy's path is printed. `mcp-guard init --help` lists the options.
-
-The rest of this section is what `init` sets up, for doing it by hand.
-
-Without an account, MCP Guard runs **local-only**: holds are decided on the machine that runs the guard, and nothing records which person approved. Startup and every held call say so: `local-only, unsigned by Permission Protocol`.
-
-With a `cloud:` section, a held call is released only by a receipt that a **named human signed** in Permission Protocol, and that anyone can verify with Permission Protocol's public key.
-
-```yaml
-# pp.config.yaml
-server_label: filesystem          # the server name the signer sees
-cloud:
-  environment: production         # development | staging | production. A label for the signer; it clears nothing
-  approval_timeout_seconds: 600   # how long a held call waits for a signature (30 to 3600, default 600)
-```
-
-```bash
-export PP_INSTALL_TOKEN=pp_live_...   # a workspace API key with the single scope mcp:guard
-mcp-guard --config pp.config.yaml --agent-id claude-code -- node my-mcp-server.js
-```
-
-Create the token in Permission Protocol under Settings > Developer access, with the scope `mcp:guard` and nothing else. It can open, read and redeem this install's own requests. It cannot approve anything. The guard reads it from `PP_INSTALL_TOKEN`, then the OS keychain (where `init` puts it), then `~/.config/mcp-guard/install-token` (owner-readable only). The wrapped server never sees it.
-
-**Checking a receipt later.** `mcp-guard receipt verify <receipt id> --receipts-path <file>` re-verifies a logged receipt offline against the pinned keys and prints who signed what.
-
-**What happens to a held call**
-
-1. The guard hashes the arguments locally and computes the call's fingerprint: SHA-256 over the canonical JSON of `{argsHash, server, tool}`. Raw arguments are not sent. A preview of them is, so the signer can read the call; Permission Protocol masks secrets in it and keeps at most 2 KB.
-2. It opens an approval request and prints the signing link to stderr. The signer opens it, signs in, and chooses Sign or Reject.
-3. It polls with backoff (1 s rising to 5 s) until a decision or the timeout.
-4. Before releasing, it verifies the receipt **offline**: the signature against the Permission Protocol key pinned in this release, the fingerprint against the one it computed from the held call, the request id, that the signer is a person, that the decision is an approval, and that the receipt has not expired (receipts expire 10 minutes after the signature).
-5. It redeems the receipt, which works once, then forwards the call.
-6. It appends a `{"cloud": ...}` line to the receipts file with the decision, the receipt id and URL, who signed, and the signed receipt itself. Never the arguments.
-
-**Fail closed.** The call is forwarded only after step 5 succeeds. A rejection, a frozen workspace, a timeout, an API error, a receipt that fails any check, or a redeem that does not succeed all leave it blocked (`-32003`, `-32004`, `-32005` or `-32007`). If the arguments differ from the ones that were signed, the fingerprint differs and the receipt is refused. No environment variable turns any of this off. In enforce mode the guard does not start without a token.
-
-**Pinned keys.** The production keys are compiled into the release (`src/cloud/pinned-keys.ts`); the guard never fetches a key when deciding. When Permission Protocol rotates its signing key, held calls are blocked until you upgrade to a release that pins the new key. To point at a non-production Permission Protocol, set `cloud.api_url` and list its keys in `cloud.trust_keys`; that list is refused for the production API.
-
-**Notes**
-
-- In cloud mode every `require_approval` call needs the signature. Countdowns (`countdown_seconds`) and the local approval UI do not release held calls.
-- `mode: observe` still forwards everything and asks no one.
-- Tool, server and agent names must be 1 to 128 characters of letters, digits and `_ . : / @ -`. A held call whose name has other characters is blocked.
-- While a signature is pending, a failed status check (network, 429, 5xx) is retried until the timeout. It can only end in a verified receipt or a block.
-
-### Usage heartbeat
-
-With a `cloud:` section and an install token, the guard sends Permission Protocol one small heartbeat per UTC day (at most one attempt every 10 minutes). By default nothing you wrote leaves the machine: it carries the guard version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode, the day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and counts per built-in rule id (the `coding-agent` preset's rules). Your own rule ids, arguments, commands, paths, file contents, tool, server or target names, hostnames and usernames are never sent. It is sent by a separate process after the decision and cannot allow, block or delay a call.
-
-```bash
-npx mcp-guard heartbeat --show     # print exactly what would be sent today; sends nothing
-```
-
-Off with `MCP_GUARD_HEARTBEAT=off` or `cloud: { heartbeat: false }` in the policy; never sent without a `cloud:` section or a token. Details, the count mapping and the state file: [docs/heartbeat.md](docs/heartbeat.md).
-
-## Built-in tools: Claude Code hook
-
-A coding agent's shell and file edits never pass through an MCP proxy. `mcp-guard hook` applies the same policy to them through Claude Code's `PreToolUse` hook, with the same rules, detectors, receipts and signed approvals:
-
-```bash
-npm install --save-dev @permission-protocol/mcp-guard
-npx mcp-guard keys init
-npx mcp-guard hook install      # adds one entry to .claude/settings.json; idempotent, keeps everything else
-```
-
-The tool's input is evaluated as `tools/call` with the Claude Code tool name (`Bash`, `Write`, `Edit`, ...); a shell command is the argument `command`, so `detect: { detector: shell_destructive, args: [command] }` applies. Blocked calls are denied with the rule id and detector kind. Held calls wait for a Permission Protocol signature, verified offline exactly as in the proxy; anything short of a verified, redeemed approval is denied. Allowed calls get no answer from the guard, so Claude Code's own permission prompts still apply. Every error denies. See [docs/hooks.md](docs/hooks.md) for the verified hook contract, the wait and timeout, and the limits.
-
-## Why not just use X?
-
-| Approach | Why MCP Guard is different |
-|----------|---------------------------|
-| API gateway | MCP operates at the tool-call layer, not HTTP. MCP Guard understands tool names and MCP's JSON-RPC protocol. |
-| RBAC / IAM | Those gate *users*. MCP Guard gates *agent actions* — the agent is already authenticated, the question is what it's allowed to *do*. |
-| "Just code it" | You could. MCP Guard gives you a declarative config, audit receipts, observe mode, and an approval UI — without changing your server code. |
-
-## What This Is NOT
-
-- **Not a dashboard.** It's a proxy. It sits in the data path and enforces rules.
-- **Not a scanner.** It doesn't analyze your code or model outputs. It gates tool calls.
-- **Not compliance theater.** Every decision has an Ed25519-signed receipt in the open receipt standard that names who or what decided.
-- **Not a replacement for good architecture.** It's one layer in a defense-in-depth strategy.
-
-Agents shouldn't be able to execute arbitrary actions without an explicit decision point.
-
-## Part of Permission Protocol
-
-MCP Guard is a building block of the [Permission Protocol](https://github.com/permission-protocol) — explicit authority for autonomous AI systems.
+Security reports: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

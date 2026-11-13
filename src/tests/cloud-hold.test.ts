@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ReplayCache } from '../verify-core.js';
 import { CloudApiError, type CloudClient, type CreateRequestBody } from '../cloud/client.js';
 import { fingerprintOfCall } from '../cloud/fingerprint.js';
-import { decideInCloud, MAX_PREVIEW_CHARS, type CloudHoldInput, type CloudOutcome } from '../cloud/hold.js';
+import { decideInCloud, MAX_PREVIEW_BYTES, type CloudHoldInput, type CloudOutcome } from '../cloud/hold.js';
 import { mintCloudReceipt, testPpIssuer, type MintOptions } from './cloud-helpers.js';
 
 /**
@@ -92,13 +92,15 @@ describe('released: a verified receipt, redeemed once', () => {
     const body = calls.create[0];
     assert.equal(body.argsHash.startsWith('sha256:'), true);
     assert.deepEqual({ tool: body.tool, server: body.server, agentId: body.agentId, env: body.env, timeoutSec: body.timeoutSec }, { tool: 'delete_file', server: 'filesystem', agentId: 'claude-code', env: 'production', timeoutSec: 600 });
-    assert.equal(body.argsPreview, JSON.stringify(ARGS));
+    // Masked before upload: the path stays readable, the value under "token" does not leave.
+    assert.deepEqual(JSON.parse(body.argsPreview!), { path: ARGS.path, token: '[masked]' });
     assert.equal(Object.prototype.hasOwnProperty.call(body, 'args'), false);
 
-    const big = { blob: 'x'.repeat(50_000) };
+    const big = { blob: 'x '.repeat(25_000) };
     const large = script({ create: pending({ fingerprint: fingerprintOfCall('filesystem', 'delete_file', big) }) });
     await run(large.client, { args: big, timeoutSeconds: 30 });
-    assert.equal(large.calls.create[0].argsPreview.length, MAX_PREVIEW_CHARS);
+    assert.ok(Buffer.byteLength(large.calls.create[0].argsPreview!, 'utf8') <= MAX_PREVIEW_BYTES);
+    assert.equal(MAX_PREVIEW_BYTES, 2048);
   });
 
   it('polling never waits longer than five seconds between reads, nor past the deadline', async () => {
