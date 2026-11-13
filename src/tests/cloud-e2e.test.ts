@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fingerprintOfCall } from '../cloud/fingerprint.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import { verifyCloudReceipt } from '../cloud/verify.js';
-import { startFakePp, type FakePp } from './cloud-helpers.js';
+import { BODY_KEYS_FULL, BODY_KEYS_NO_PREVIEW, startFakePp, type FakePp } from './cloud-helpers.js';
 
 /**
  * End to end: the real CLI wrapping a logging echo server, with a local stand-in for
@@ -64,7 +64,8 @@ function startGuard(policyText: string, env: Record<string, string | undefined> 
   };
   for (const [key, value] of Object.entries(env)) if (value === undefined) delete base[key];
   assert.equal(spawnSync('node', [CLI, 'keys', 'init'], { env: base }).status, 0);
-  const proc = spawn('node', [CLI, '--config', join(dir, 'pp.config.yaml'), '--agent-id', 'claude-code', '--', 'node', ECHO], { env: base, stdio: ['pipe', 'pipe', 'pipe'] });
+  // In the project folder, as an MCP client starts a project's servers: the proxy names it in a held call.
+  const proc = spawn('node', [CLI, '--config', join(dir, 'pp.config.yaml'), '--agent-id', 'claude-code', '--', 'node', ECHO], { env: base, cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   let buffer = '';
   const responses = new Map<unknown, any>();
@@ -138,7 +139,10 @@ describe('cloud approvals end to end', () => {
 
     const create = fake.calls.find((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests')!;
     assert.equal(create.authorization, `Bearer ${TOKEN}`);
-    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
+    // The rule has no detector, so there is no effect; the rule id and the project name go along.
+    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'project', 'ruleId', 'server', 'timeoutSec', 'tool']);
+    assert.equal(create.body.ruleId, 'delete');
+    assert.equal(create.body.project, basename(guard.dir));
     assert.deepEqual({ tool: create.body.tool, server: create.body.server, agentId: create.body.agentId, env: create.body.env, timeoutSec: create.body.timeoutSec }, { tool: 'delete_file', server: 'filesystem', agentId: 'claude-code', env: 'staging', timeoutSec: 30 });
     assert.equal(fake.redeemed.length, 1);
 
@@ -320,6 +324,59 @@ describe('local-only mode is unchanged and says it is unsigned', () => {
       assert.match(response.error.message, /^Held for approval \(local-only, unsigned by Permission Protocol\): Matched rule "delete"/);
       assert.equal(guard.serverLog().filter((l) => l.includes('local-marker')).length, 0);
       assert.equal(guard.cloudLines().length, 0);
+    } finally {
+      guard.stop();
+    }
+  });
+});
+
+describe('cloud approvals end to end: why the call was held (proxy path)', () => {
+  let fake: FakePp;
+  before(async () => { fake = await startFakePp(TOKEN); fake.decision = 'reject'; });
+  after(async () => { await fake.close(); });
+
+  const detectPolicy = (extra: string): string => `default_action: allow
+server_label: shell
+rules:
+  - { id: destructive-shell, tool: "*", detect: { detector: shell_destructive, args: [command] }, action: require_approval }
+cloud:
+  api_url: ${fake.url}
+  environment: staging
+  approval_timeout_seconds: 30
+  trust_keys:
+    - { key_id: ${fake.issuer.keyId}, public_key_b64: "${fake.issuer.publicKeyB64}" }
+${extra}`;
+
+  const creates = () => fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests');
+
+  it('sends the rule, the finding and the project folder name', async () => {
+    const guard = startGuard(detectPolicy(''));
+    try {
+      await sleep(600);
+      guard.call(1, 'run', { command: 'rm -rf /srv/e2e-target' });
+      const response = await guard.response(1);
+      assert.ok(response.error, 'rejected, not forwarded');
+      const body = creates().at(-1)!.body;
+      assert.deepEqual(Object.keys(body).sort(), BODY_KEYS_FULL);
+      assert.equal(body.ruleId, 'destructive-shell');
+      assert.deepEqual(body.effect, { detector: 'shell_destructive', kind: 'rm_recursive', target: '/srv/e2e-target', parsed: true });
+      assert.equal(body.project, basename(guard.dir));
+    } finally {
+      guard.stop();
+    }
+  });
+
+  it('with cloud.args_preview: false: no preview, no target, no project', async () => {
+    const guard = startGuard(detectPolicy('  args_preview: false\n'));
+    try {
+      await sleep(600);
+      guard.call(1, 'run', { command: 'rm -rf /srv/e2e-quiet' });
+      const response = await guard.response(1);
+      assert.ok(response.error);
+      const body = creates().at(-1)!.body;
+      assert.deepEqual(Object.keys(body).sort(), BODY_KEYS_NO_PREVIEW);
+      assert.deepEqual(body.effect, { detector: 'shell_destructive', kind: 'rm_recursive', parsed: true });
+      assert.doesNotMatch(JSON.stringify(body), /e2e-quiet|mcp-guard-cloud-e2e-/);
     } finally {
       guard.stop();
     }

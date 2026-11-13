@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { browserDisabledReason, launchOpener, openerFor, openSigningPage, trustedSigningUrl } from '../cloud/open-browser.js';
 import { CloudApiError, type CloudClient, type CreateRequestBody } from '../cloud/client.js';
 import { decideInCloud } from '../cloud/hold.js';
+import { MAX_TARGET_CHARS, PROJECT_PATTERN, projectNameOf, requestContextOf } from '../cloud/preview.js';
 import { claudeCodeAdapter } from '../hook/adapter.js';
 import { approvedMessage, decideHook } from '../hook/decide.js';
 import { HOOK_STATUS_MESSAGE, hookHandler } from '../hook/install.js';
@@ -19,14 +20,15 @@ import { parseConfig } from '../config.js';
 import { createKey } from '../keystore.js';
 import { ReplayCache } from '../verify-core.js';
 import { hookSelfTestLine, nextTimeLines, selfTestEnv } from '../init/init.js';
-import { startFakePp, testPpIssuer, type FakePp } from './cloud-helpers.js';
+import { BODY_KEYS_FULL, BODY_KEYS_NO_PREVIEW, createBodyProblem, startFakePp, testPpIssuer, type FakePp } from './cloud-helpers.js';
 import type { VerifiedCloudReceipt } from '../cloud/verify.js';
 
 /**
  * 0.5.1: a held call is hard to miss. The signing page opens in the developer's browser
  * (once per request, only for an https page of the configured API, never through a
- * shell), the hook tells Claude and the person who approved, the request body is
- * exactly 0.5.0's, and detached children start outside the project.
+ * shell), the hook tells Claude and the person who approved, and detached children start
+ * outside the project. 0.6.0: the request body carries why the call was held (ruleId,
+ * effect, project), with an exact key set.
  */
 
 // Built at run time: the repository's diff scanner refuses token-shaped literals.
@@ -135,7 +137,60 @@ describe('policy: cloud.open_browser', () => {
   });
 });
 
-describe('approval request body: exactly the 0.5.0 keys', () => {
+describe('approval request context: ruleId, effect, project (D8, D9)', () => {
+  it('sends the rule id, the detector finding and the project name', () => {
+    const c = requestContextOf({ ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true }, projectDir: '/work/acme-api' }, true);
+    assert.deepEqual(c, { ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true }, project: 'acme-api' });
+  });
+
+  it('masks the target like the preview and caps it at 120 characters', () => {
+    const secret = ['ghp', 'x'.repeat(36)].join('_');
+    const url = ['postgres://admin', 'pw@db/x'].join(':');
+    const masked = requestContextOf({ ruleId: 'r', effect: { detector: 'cloud_delete', kind: 'database_delete', target: `psql ${url} ${secret}`, parsed: true } }, true);
+    assert.doesNotMatch(masked.effect!.target!, /ghp_|admin:pw/);
+    assert.match(masked.effect!.target!, /\[masked\]/);
+    const long = requestContextOf({ ruleId: 'r', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: 'x '.repeat(200), parsed: false } }, true);
+    assert.equal(Array.from(long.effect!.target!).length, MAX_TARGET_CHARS);
+    assert.equal(long.effect!.parsed, false);
+  });
+
+  it('leaves out what does not fit the contract', () => {
+    assert.deepEqual(requestContextOf({ ruleId: 'has space' }, true), {});
+    assert.deepEqual(requestContextOf({ ruleId: 'x'.repeat(129) }, true), {});
+    assert.deepEqual(requestContextOf({ ruleId: null }, true), {});
+    assert.deepEqual(requestContextOf({ ruleId: 'ok', effect: { detector: 'Shell', kind: 'rm', parsed: true } }, true), { ruleId: 'ok' });
+    assert.deepEqual(requestContextOf({ ruleId: 'ok', effect: { detector: 'shell', kind: 'rm-rf', parsed: true } }, true), { ruleId: 'ok' });
+    assert.deepEqual(requestContextOf({ ruleId: 'ok', effect: { detector: 'shell', kind: 'x'.repeat(41), parsed: true } }, true), { ruleId: 'ok' });
+    assert.deepEqual(requestContextOf({ ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', target: '   ', parsed: true } }, true), { ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', parsed: true } });
+  });
+
+  it('with cloud.args_preview: false, sends no target and no project, and still the rule and the finding', () => {
+    assert.deepEqual(
+      requestContextOf({ ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', target: '/srv/data', parsed: true }, projectDir: '/work/acme-api' }, false),
+      { ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', parsed: true } },
+    );
+  });
+
+  it('the project is the folder name only, sanitized, never a path, the home directory or the root', () => {
+    const home = '/home/someone';
+    assert.equal(projectNameOf('/work/acme-api', home), 'acme-api');
+    assert.equal(projectNameOf('/work/My Project (copy)', home), 'My Project -copy-');
+    assert.equal(projectNameOf('/work/café/', home), 'caf-');
+    assert.equal(projectNameOf('/work/a\nb‮c', home), 'a-b-c');
+    assert.equal(projectNameOf('/work/  spaced  ', home), 'spaced');
+    assert.equal(projectNameOf(`/work/${'p'.repeat(100)}`, home), 'p'.repeat(64));
+    assert.equal(projectNameOf(`/work/${'p'.repeat(63)} x`, home), 'p'.repeat(63));
+    assert.equal(projectNameOf('/', home), undefined);
+    assert.equal(projectNameOf(home, home), undefined);
+    assert.equal(projectNameOf(`${home}/`, home), undefined);
+    assert.equal(projectNameOf('', home), undefined);
+    assert.equal(projectNameOf(null, home), undefined);
+    assert.equal(projectNameOf('/work/   ', home), undefined);
+    for (const name of ['acme-api', 'My Project -copy-', 'p'.repeat(64)]) assert.match(name, PROJECT_PATTERN);
+  });
+});
+
+describe('approval request body: the 0.6.0 keys, and a refused create is not retried', () => {
   const issuer = testPpIssuer();
   const bodies: CreateRequestBody[] = [];
   const client: CloudClient = {
@@ -146,18 +201,53 @@ describe('approval request body: exactly the 0.5.0 keys', () => {
   const hold = (sendPreview?: boolean) => decideInCloud({
     client, keySet: issuer.keySet, trust: issuer.trust, replayCache: new ReplayCache(), server: 'claude-code', tool: 'Bash',
     args: { command: 'rm -rf ~/x' }, agentId: 'claude-code', environment: 'production', timeoutSeconds: 1,
+    ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/x', parsed: true }, projectDir: '/work/acme-api',
     ...(sendPreview === undefined ? {} : { sendPreview }), sleep: async () => undefined,
   });
 
   it('sends exactly these keys, with and without cloud.args_preview: false, and one create only', async () => {
     bodies.length = 0;
     const withPreview = await hold();
-    assert.equal(bodies.length, 1, 'a 400 is not retried');
+    assert.equal(bodies.length, 1, 'a 400 is not retried, with or without the new fields');
     assert.equal(withPreview.kind === 'blocked' && withPreview.code, 'API_400_VALIDATION_ERROR');
-    assert.deepEqual(Object.keys(bodies[0]).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
+    assert.deepEqual(Object.keys(bodies[0]).sort(), BODY_KEYS_FULL);
+    assert.deepEqual(bodies[0].effect, { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/x', parsed: true });
+    assert.equal(bodies[0].project, 'acme-api');
+    assert.equal(createBodyProblem(bodies[0]), null, 'the stand-in accepts it');
     await hold(false);
     assert.equal(bodies.length, 2);
-    assert.deepEqual(Object.keys(bodies[1]).sort(), ['agentId', 'argsHash', 'env', 'server', 'timeoutSec', 'tool']);
+    assert.deepEqual(Object.keys(bodies[1]).sort(), BODY_KEYS_NO_PREVIEW);
+    assert.deepEqual(bodies[1].effect, { detector: 'shell_destructive', kind: 'rm_recursive', parsed: true });
+    assert.equal(createBodyProblem(bodies[1]), null);
+  });
+
+  it('none of it changes the hash or the fingerprint', async () => {
+    bodies.length = 0;
+    const a = await hold();
+    const b = await decideInCloud({
+      client, keySet: issuer.keySet, trust: issuer.trust, replayCache: new ReplayCache(), server: 'claude-code', tool: 'Bash',
+      args: { command: 'rm -rf ~/x' }, agentId: 'claude-code', environment: 'production', timeoutSeconds: 1, sleep: async () => undefined,
+    });
+    assert.equal(bodies[0].argsHash, bodies[1].argsHash);
+    assert.equal(a.fingerprint, b.fingerprint);
+    assert.deepEqual(Object.keys(bodies[1]).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool'], 'nothing extra when no rule context is given');
+  });
+
+  it('the stand-in refuses a drifted body', () => {
+    const good = { tool: 'Bash', server: 'claude-code', argsHash: 'sha256:x', agentId: 'a', env: 'e', timeoutSec: 60, ruleId: 'r', effect: { detector: 'shell_destructive', kind: 'rm_recursive', parsed: true }, project: 'p' };
+    assert.equal(createBodyProblem(good), null);
+    for (const bad of [
+      { ...good, extra: 1 },
+      { ...good, ruleId: 'a b' },
+      { ...good, project: '/work/p' },
+      { ...good, project: ' p' },
+      { ...good, project: 'p'.repeat(65) },
+      { ...good, effect: { ...good.effect, reason: 'eval' } },
+      { ...good, effect: { ...good.effect, kind: 'Rm' } },
+      { ...good, effect: { ...good.effect, parsed: 'yes' } },
+      { ...good, effect: { ...good.effect, target: '' } },
+      { ...good, effect: { ...good.effect, target: 'x'.repeat(121) } },
+    ]) assert.notEqual(createBodyProblem(bad), null, JSON.stringify(bad));
   });
 });
 

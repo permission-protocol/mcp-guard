@@ -212,6 +212,11 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
       tool: call.tool,
       args: call.args,
       sendPreview: cloud.args_preview !== false,
+      ruleId: decision.rule_id,
+      effect: decision.effect,
+      // The hook's project is the policy file's directory (the receipt log is anchored there
+      // too); init installs the hook with the policy at the project root.
+      projectDir: dirname(resolve(opts.configPath)),
       agentId: adapter.agentId,
       environment: cloud.environment,
       timeoutSeconds: waitSeconds,
