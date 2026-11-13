@@ -9,6 +9,7 @@ import { pinsFor } from '../cloud/pinned-keys.js';
 import { verifyCloudReceipt } from '../cloud/verify.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
 import { LAUNCH_FAILED_REASON } from '../hook/install.js';
+import { codingAgentPolicyBody } from '../presets/coding-agent.js';
 
 /**
  * `mcp-guard hook` through the real CLI: one Claude Code PreToolUse event on stdin, the
@@ -169,6 +170,54 @@ describe('mcp-guard hook: policy decisions', () => {
     const held = await runHook(dir, bash('rm -rf ~/build'), ['--mode', 'observe']);
     assert.equal(held.code, 0);
     assert.ok(logLines(dir).at(-1).hold);
+  });
+});
+
+describe('mcp-guard hook: observe-only rules (coding-agent preset)', () => {
+  it('records an observed secret read, as the proxy does, and still lets the call pass', async () => {
+    const dir = workspace(codingAgentPolicyBody());
+    const r = await runHook(dir, bash('cat .env'));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, '', 'no decision: the outcome is what it would be without the rule');
+    assert.match(r.stderr, /OBSERVE: Matched rule "secret-read" \(secret_read: \w+\) would hold "Bash"; not enforced \(observe: true\)/);
+    const lines = logLines(dir);
+    const observed = lines.find((l) => l.observed)?.observed;
+    assert.ok(observed, 'an observed line is written');
+    assert.equal(observed.ruleId, 'secret-read');
+    assert.equal(observed.would, 'held_for_approval');
+    assert.equal(observed.detector, 'secret_read');
+    assert.equal(observed.tool, 'Bash');
+    assert.equal(observed.agentId, 'claude-code');
+    assert.match(observed.inputHash, /^sha256:/);
+    assert.deepEqual(Object.keys(observed).sort(), ['agentId', 'at', 'detector', 'inputHash', 'kind', 'method', 'parsed', 'reason', 'ruleId', 'tool', 'would']);
+    // The policy decision is unchanged: allowed, signed, no rule.
+    const receipt = lines.find((l) => l.record)?.record;
+    assert.equal(receipt.status, 'APPROVED');
+  });
+
+  it('a destructive call is still held when an observe rule also matched', async () => {
+    const dir = workspace(codingAgentPolicyBody());
+    const r = await runHook(dir, bash('cat .env && rm -rf ~/build'));
+    assert.equal(r.code, 2);
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /held by rule "destructive-shell"/);
+  });
+
+  it('argument text never reaches the log or stderr in the observed path', async () => {
+    const dir = workspace(codingAgentPolicyBody());
+    const runs = [
+      await runHook(dir, bash(`cat ~/${SENTINEL}/.env`)),
+      await runHook(dir, bash(`cat ~/.aws/credentials # ${SENTINEL}`)),
+      await runHook(dir, event('Read', { file_path: `/home/u/${SENTINEL}/.env` })),
+      await runHook(dir, bash(`cat ~/${SENTINEL}/.env`), ['--mode', 'observe']),
+    ];
+    for (const r of runs) {
+      assert.equal(r.code, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, new RegExp(SENTINEL));
+      assert.doesNotMatch(r.stderr, new RegExp(SENTINEL));
+    }
+    assert.equal(logLines(dir).filter((l) => l.observed).length, runs.length, 'every run recorded its observed match');
+    assert.doesNotMatch(logText(dir), new RegExp(SENTINEL));
+    assert.doesNotMatch(logText(dir), /\.aws|credentials|\.env/);
   });
 });
 

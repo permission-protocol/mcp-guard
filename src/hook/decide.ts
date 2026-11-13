@@ -3,7 +3,7 @@ import { loadConfig, TOOLS_CALL, type Config } from '../config.js';
 import { evaluate, type Decision } from '../engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash } from '../issuer.js';
 import { SigningError } from '../keystore.js';
-import { emitReceipt, emitHold, emitCloudDecision } from '../receipt-log.js';
+import { emitReceipt, emitHold, emitCloudDecision, emitObserved } from '../receipt-log.js';
 import { ReplayCache } from '../verify-core.js';
 import { createCloudClient } from '../cloud/client.js';
 import { decideInCloud, type CloudOutcome } from '../cloud/hold.js';
@@ -100,6 +100,20 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
 
   const decision = evaluate(call.tool, call.args, config, TOOLS_CALL);
   const label = ruleLabel(decision, config.default_action);
+
+  // An observe-only rule matched: recorded as the proxy records it (rule id, detector,
+  // kind, input hash; never the arguments or the target). The decision above was made as
+  // if that rule were absent, so the outcome below does not change.
+  if (decision.observed) {
+    const o = decision.observed;
+    process.stderr.write(`[mcp-guard] OBSERVE: ${o.reason} would ${o.would === 'blocked' ? 'block' : 'hold'} "${call.tool}"; not enforced (observe: true)\n`);
+    emitObserved({
+      ruleId: o.rule_id, would: o.would,
+      detector: o.effect?.detector ?? null, kind: o.effect?.kind ?? null, parsed: o.effect?.parsed ?? null, reason: o.effect?.reason ?? null,
+      method: TOOLS_CALL, tool: call.tool, agentId: adapter.agentId,
+      inputHash: hashablePayloadInputHash(call.tool, TOOLS_CALL, call.args), at: new Date().toISOString(),
+    }, receipts);
+  }
 
   const hold = (): void => emitHold({
     id: null, method: TOOLS_CALL, tool: call.tool, agentId: adapter.agentId, ruleId: decision.rule_id,
