@@ -117,6 +117,8 @@ export interface CloudConfig {
    * release (cloud/pinned-keys.ts) and naming any here is an error.
    */
   trust_keys?: KeySetEntry[];
+  /** `false`: send no usage heartbeat (docs/heartbeat.md). Absent: on. */
+  heartbeat?: boolean;
 }
 
 export const DEFAULT_APPROVAL_TTL_SECONDS = 900;
@@ -131,7 +133,7 @@ export const DEFAULT_CLOUD_APPROVAL_TIMEOUT_SECONDS = 600;
 export const MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS = 30;
 export const MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS = 3600;
 const CLOUD_ENVIRONMENTS: CloudEnvironment[] = ['development', 'staging', 'production'];
-const CLOUD_KEYS = new Set(['api_url', 'environment', 'approval_timeout_seconds', 'trust_keys']);
+const CLOUD_KEYS = new Set(['api_url', 'environment', 'approval_timeout_seconds', 'trust_keys', 'heartbeat']);
 const TRUST_KEY_KEYS = new Set(['key_id', 'alg', 'public_key_b64']);
 
 const VALID_ACTIONS: Action[] = ['allow', 'block', 'require_approval'];
@@ -452,10 +454,13 @@ function parseCloud(value: unknown): CloudConfig {
     throw new Error(`Invalid cloud.approval_timeout_seconds: ${MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS} to ${MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS}`);
   }
 
+  if (cloud.heartbeat !== undefined && typeof cloud.heartbeat !== 'boolean') throw new Error('Invalid cloud.heartbeat: must be true or false');
+  const heartbeat = cloud.heartbeat === false ? { heartbeat: false } : {};
+
   const production = apiUrl === PRODUCTION_API_URL;
   if (cloud.trust_keys === undefined) {
     if (!production) throw new Error('cloud.trust_keys is required when cloud.api_url is not the production API: name the receipt-signing keys to pin');
-    return { api_url: apiUrl, environment, approval_timeout_seconds: timeout };
+    return { api_url: apiUrl, environment, approval_timeout_seconds: timeout, ...heartbeat };
   }
   // The production keys are pinned in the release. A policy file cannot replace them.
   if (production) throw new Error('cloud.trust_keys cannot be set for the production API: its keys are pinned in this release');
@@ -476,7 +481,7 @@ function parseCloud(value: unknown): CloudConfig {
     }
     return { key_id: key.key_id, alg: 'ed25519', public_key_b64: key.public_key_b64 };
   });
-  return { api_url: apiUrl, environment, approval_timeout_seconds: timeout, trust_keys: trustKeys };
+  return { api_url: apiUrl, environment, approval_timeout_seconds: timeout, trust_keys: trustKeys, ...heartbeat };
 }
 
 function receiptTtlSeconds(v: unknown, name: string, fallback: number): number {

@@ -6,6 +6,7 @@ import { runKeys } from './keys-cli.js';
 import { runReceipt } from './receipt-cli.js';
 import { runInit, terminalIo } from './init/init.js';
 import { runHook } from './hook/cli.js';
+import { runHeartbeatCli } from './heartbeat/cli.js';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -34,6 +35,11 @@ export function main(): void {
 
   if (args[0] === 'hook') {
     void runHook(args.slice(1)).then((code) => process.exit(code));
+    return;
+  }
+
+  if (args[0] === 'heartbeat') {
+    void runHeartbeatCli(args.slice(1)).then((code) => process.exit(code));
     return;
   }
 
@@ -127,6 +133,7 @@ Usage:
   mcp-guard [options] -- <server command>
   mcp-guard hook [install|uninstall]  guard Claude Code's built-in tools with the same policy (docs/hooks.md)
   mcp-guard receipt verify <receipt id> [--receipts-path <file>]
+  mcp-guard heartbeat --show | --send  the daily usage heartbeat: counts only (docs/heartbeat.md)
   mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
   mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
   mcp-guard verify --receipt-file <legacy 0.2 receipt> --accept-legacy --pubkey <pem> --scope s ...

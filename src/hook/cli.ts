@@ -1,6 +1,7 @@
 import { ADAPTERS, type HookAdapter, type HookAnswer, type HookVerdict } from './adapter.js';
 import { decideHook, DEFAULT_HOOK_WAIT_SECONDS, MAX_HOOK_WAIT_SECONDS } from './decide.js';
 import { installHook, uninstallHook, DEFAULT_MATCHER } from './install.js';
+import { heartbeatAfterHook } from '../heartbeat/hook.js';
 
 /** A hook event is a few KB; anything this large is refused, not parsed. */
 export const MAX_HOOK_INPUT_BYTES = 8 * 1024 * 1024;
@@ -154,5 +155,5 @@ export async function runHook(args: string[]): Promise<number> {
     // Unknown agent: answer in the only format we know, and refuse.
     return send(ADAPTERS['claude-code'].answer({ kind: 'deny', reason: `mcp-guard: denied: unknown --agent "${agent}"` }));
   }
-  return answerEvent(adapter, args);
+  return answerEvent(adapter, args).finally(() => heartbeatAfterHook(args));
 }
