@@ -54,7 +54,7 @@ Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret
 A held call waits in the hook for up to 240 seconds (`--wait`). While it waits:
 
 - **The signing page opens in your browser**, once per request, where a named person chooses Sign or Reject. Only an `https:` page on the origin of the policy's `cloud.api_url` is opened, with no shell. It is not opened when `CI` is set, in an SSH session, on Linux without a display, with `MCP_GUARD_OPEN_BROWSER=off`, or with `open_browser: false` under `cloud:`.
-- **Claude Code shows the hook's status message** beside its spinner: `mcp-guard is checking this call. If it is held, it waits here for a named person to sign it in Permission Protocol, and the signing page opens in your browser when it can.` Claude Code reads a hook's output only when it ends, so the link itself is not shown during the wait.
+- **Claude Code shows the hook's status message** beside its spinner: `mcp-guard: checking this call. A held call waits here until a named person signs it.` It is shown on every checked call, held or not. Claude Code reads a hook's output only when it ends, so the link itself is not shown during the wait.
 
 Then:
 
@@ -74,6 +74,7 @@ The detectors are heuristics that stop mistakes. They are not a sandbox.
 - **Context that needs I/O**: the current git branch, the current kube context, what a variable or glob expands to, plan files and manifests.
 - **Windows** needs Git for Windows: Claude Code runs the hook through Git Bash, and so does init's check. init finds it without Git's `bin` on PATH (`CLAUDE_CODE_GIT_BASH_PATH`, PATH, the standard install folders, beside `git.exe`) and refuses the hook step if it cannot.
 - **Claude Code before 2.1.295** ignores the hook's `onFailure: "block"`. The installed command's own wrapper still blocks when the guard cannot run; the one case left is a hook that Claude Code kills at its own timeout, which on those versions lets the call through, and the guard's watchdog denies before that timeout. init prints a line if `claude --version` is older.
+- **The launcher must be on the PATH Claude Code runs hooks with.** If Claude Code was started from the macOS Dock or an IDE with a PATH that lacks `npx`, the hook command is not found (exit 127) and every checked call is blocked with a fixed message: start Claude Code from a terminal where `npx` works, or remove the hook (`hook uninstall` from such a terminal, or delete the mcp-guard entry under `hooks.PreToolUse` in `.claude/settings.json`).
 - **The first guarded call may download the package** with the default `npx -y` launcher (see above).
 - Each guarded call starts a process through the launcher, which adds latency ([measured in docs/hooks.md](docs/hooks.md#limits)).
 
@@ -81,13 +82,12 @@ The full lists: [docs/presets.md](docs/presets.md) and [docs/detectors.md](docs/
 
 ## What is sent to Permission Protocol for a held call
 
-Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, a **preview of the arguments that the guard masks and caps before sending**, and **why the call was held**: the matched rule's id (`ruleId`) and what its detector found (`effect`: the detector name, the kind of finding, whether the argument could be read, and the target it found, masked the same way and capped at 120 characters). For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
+Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, and a **preview of the arguments that the guard masks and caps before sending**. Nothing else: not the rule id, not what a detector found. For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
 
 - Masked on this machine: values under credential-like keys, private key blocks, credentials in URLs, Bearer and Basic values, common token formats (GitHub, OpenAI, Anthropic, AWS key ids, Stripe, Slack, JWTs and others), `password=` / `token=` / `.env`-style assignments with secret-looking names, and long opaque strings. Pattern-based: a short secret with no telling name (`mysql -pS3cret`) is not recognised.
 - Short fields first, then capped at 2,048 bytes, so the cap cuts file content, not the path.
 - Permission Protocol masks and caps it again before storing it. The signature covers the hash of the exact arguments, never the preview.
-- To send the hash only, put `args_preview: false` under `cloud:`. The signer then sees the tool, server, agent and environment, the rule id, and the detector's name and kind of finding, not what the call does: neither the preview nor the target is sent.
-- None of this is part of what is signed. The signature covers the hash of the exact arguments.
+- To send the hash only, put `args_preview: false` under `cloud:`. The signer then sees the tool, server, agent and environment, not what the call does.
 
 Details: [docs/hooks.md](docs/hooks.md#what-the-hook-answers).
 
@@ -149,7 +149,7 @@ cloud:                       # held calls need a named person's signature in Per
   environment: production    # development | staging | production: a label for the signer
   approval_timeout_seconds: 600
   # heartbeat: false         # turn the usage heartbeat off
-  # args_preview: false      # held calls send the argument hash only, no masked preview or target
+  # args_preview: false      # held calls send the argument hash only, no masked preview
   # open_browser: false      # a held call does not open the signing page in this machine's browser
 targets:
   databases: [prod-db.internal]

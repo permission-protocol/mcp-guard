@@ -8,7 +8,6 @@ import { join, resolve } from 'node:path';
 import { browserDisabledReason, launchOpener, openerFor, openSigningPage, trustedSigningUrl } from '../cloud/open-browser.js';
 import { CloudApiError, type CloudClient, type CreateRequestBody } from '../cloud/client.js';
 import { decideInCloud } from '../cloud/hold.js';
-import { MAX_TARGET_CHARS, requestContextOf } from '../cloud/preview.js';
 import { claudeCodeAdapter } from '../hook/adapter.js';
 import { approvedMessage, decideHook } from '../hook/decide.js';
 import { HOOK_STATUS_MESSAGE, hookHandler } from '../hook/install.js';
@@ -26,8 +25,8 @@ import type { VerifiedCloudReceipt } from '../cloud/verify.js';
 /**
  * 0.5.1: a held call is hard to miss. The signing page opens in the developer's browser
  * (once per request, only for an https page of the configured API, never through a
- * shell), the hook tells Claude and the person who approved, the request carries the
- * rule id and what the detector found, and detached children start outside the project.
+ * shell), the hook tells Claude and the person who approved, the request body is
+ * exactly 0.5.0's, and detached children start outside the project.
  */
 
 // Built at run time: the repository's diff scanner refuses token-shaped literals.
@@ -136,94 +135,29 @@ describe('policy: cloud.open_browser', () => {
   });
 });
 
-describe('approval request context: ruleId and effect', () => {
-  it('sends a plain rule id and the engine identifiers; masks and caps the target', () => {
-    const c = requestContextOf('destructive-shell', { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true }, true);
-    assert.deepEqual(c, { ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true } });
-
-    const secret = ['ghp', 'A'.repeat(36)].join('_');
-    const dsn = ['postgres://admin', 'pw@db/x'].join(':');
-    const masked = requestContextOf('r', { detector: 'cloud_delete', kind: 'db', target: `psql ${dsn} ${secret}`, parsed: true }, true);
-    assert.doesNotMatch(masked.effect!.target!, /ghp_|admin:pw/);
-    assert.match(masked.effect!.target!, /\[masked\]/);
-
-    const long = requestContextOf('r', { detector: 'shell_destructive', kind: 'k', target: 'x '.repeat(200), parsed: false }, true);
-    assert.equal(Array.from(long.effect!.target!).length, MAX_TARGET_CHARS);
-    assert.equal(long.effect!.parsed, false);
-  });
-
-  it('omits what does not match, and the target when previews are off', () => {
-    assert.deepEqual(requestContextOf('has space', undefined, true), {});
-    assert.deepEqual(requestContextOf('x'.repeat(129), undefined, true), {});
-    assert.deepEqual(requestContextOf(null, undefined, true), {});
-    assert.deepEqual(requestContextOf('ok', { detector: 'Shell', kind: 'rm', parsed: true }, true), { ruleId: 'ok' });
-    assert.deepEqual(requestContextOf('ok', { detector: 'shell', kind: 'rm-rf', parsed: true }, true), { ruleId: 'ok' });
-    assert.deepEqual(requestContextOf('ok', { detector: 'shell', kind: 'rm', target: '   ', parsed: true }, true), { ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', parsed: true } });
-    assert.deepEqual(requestContextOf('ok', { detector: 'shell', kind: 'rm', target: '/srv/data', parsed: true }, false), { ruleId: 'ok', effect: { detector: 'shell', kind: 'rm', parsed: true } });
-  });
-});
-
-describe('approval request: compatibility retry', () => {
+describe('approval request body: exactly the 0.5.0 keys', () => {
   const issuer = testPpIssuer();
-  const base = (client: CloudClient) => ({
-    client, keySet: issuer.keySet, trust: issuer.trust, replayCache: new ReplayCache(), server: 'claude-code', tool: 'Bash',
-    args: { command: 'rm -rf ~/x' }, agentId: 'claude-code', environment: 'production', timeoutSeconds: 1,
-    ruleId: 'destructive-shell', effect: { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/x', parsed: true },
-    sleep: async () => undefined,
-  });
-  const client = (answers: Array<Error | null>, bodies: CreateRequestBody[]): CloudClient => ({
-    async create(body) {
-      bodies.push(body);
-      const a = answers.shift();
-      if (a) throw a;
-      return { requestId: 'mcpreq_1', fingerprint: 'not-this-call', status: 'pending' };
-    },
+  const bodies: CreateRequestBody[] = [];
+  const client: CloudClient = {
+    async create(body) { bodies.push(body); throw new CloudApiError('HTTP', 'bad', 400, 'VALIDATION_ERROR'); },
     read: async () => { throw new Error('unused'); },
     redeem: async () => { throw new Error('unused'); },
+  };
+  const hold = (sendPreview?: boolean) => decideInCloud({
+    client, keySet: issuer.keySet, trust: issuer.trust, replayCache: new ReplayCache(), server: 'claude-code', tool: 'Bash',
+    args: { command: 'rm -rf ~/x' }, agentId: 'claude-code', environment: 'production', timeoutSeconds: 1,
+    ...(sendPreview === undefined ? {} : { sendPreview }), sleep: async () => undefined,
   });
 
-  it('a 400 to a body with ruleId or effect is retried once without them', async () => {
-    const bodies: CreateRequestBody[] = [];
-    const outcome = await decideInCloud(base(client([new CloudApiError('HTTP', 'bad', 400, 'VALIDATION_ERROR'), null], bodies)));
+  it('sends exactly these keys, with and without cloud.args_preview: false, and one create only', async () => {
+    bodies.length = 0;
+    const withPreview = await hold();
+    assert.equal(bodies.length, 1, 'a 400 is not retried');
+    assert.equal(withPreview.kind === 'blocked' && withPreview.code, 'API_400_VALIDATION_ERROR');
+    assert.deepEqual(Object.keys(bodies[0]).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
+    await hold(false);
     assert.equal(bodies.length, 2);
-    assert.equal(bodies[0].ruleId, 'destructive-shell');
-    assert.ok(bodies[0].effect);
-    assert.equal('ruleId' in bodies[1], false);
-    assert.equal('effect' in bodies[1], false);
-    assert.deepEqual({ ...bodies[0], ruleId: undefined, effect: undefined }, { ...bodies[1], ruleId: undefined, effect: undefined }, 'nothing else changes');
-    // The retry is only about the body: the answer is still checked (here a wrong fingerprint blocks).
-    assert.equal(outcome.kind, 'blocked');
-    assert.equal(outcome.kind === 'blocked' && outcome.code, 'FINGERPRINT_MISMATCH');
-  });
-
-  it('a second 400 blocks; any other failure blocks with no retry; a 400 with nothing extra is not retried', async () => {
-    let bodies: CreateRequestBody[] = [];
-    let o = await decideInCloud(base(client([new CloudApiError('HTTP', 'bad', 400), new CloudApiError('HTTP', 'bad', 400)], bodies)));
-    assert.equal(bodies.length, 2);
-    assert.equal(o.kind === 'blocked' && o.code, 'API_400');
-
-    bodies = [];
-    o = await decideInCloud(base(client([new CloudApiError('HTTP', 'down', 503)], bodies)));
-    assert.equal(bodies.length, 1);
-    assert.equal(o.kind === 'blocked' && o.code, 'API_503');
-
-    bodies = [];
-    o = await decideInCloud(base(client([new CloudApiError('UNREACHABLE', 'x')], bodies)));
-    assert.equal(bodies.length, 1);
-    assert.equal(o.kind, 'blocked');
-
-    bodies = [];
-    o = await decideInCloud({ ...base(client([new CloudApiError('HTTP', 'bad', 400)], bodies)), ruleId: null, effect: undefined });
-    assert.equal(bodies.length, 1);
-    assert.equal(o.kind, 'blocked');
-  });
-
-  it('with cloud.args_preview: false the target is not sent; rule id and finding still are', async () => {
-    const bodies: CreateRequestBody[] = [];
-    await decideInCloud({ ...base(client([null], bodies)), sendPreview: false });
-    assert.equal(bodies[0].argsPreview, undefined);
-    assert.equal(bodies[0].ruleId, 'destructive-shell');
-    assert.deepEqual(bodies[0].effect, { detector: 'shell_destructive', kind: 'rm_recursive', parsed: true });
+    assert.deepEqual(Object.keys(bodies[1]).sort(), ['agentId', 'argsHash', 'env', 'server', 'timeoutSec', 'tool']);
   });
 });
 
@@ -257,7 +191,8 @@ describe('hook answer: who approved, and the waiting link', () => {
   it('the installed hook says in plain words that a held call waits for a signature', () => {
     const h = hookHandler({ projectDir: '/p' });
     assert.equal(h.statusMessage, HOOK_STATUS_MESSAGE);
-    assert.match(h.statusMessage, /If it is held, it waits here for a named person to sign it in Permission Protocol/);
+    assert.equal(h.statusMessage, 'mcp-guard: checking this call. A held call waits here until a named person signs it.');
+    assert.ok(h.statusMessage.length <= 90, 'it is the spinner text on every checked call');
   });
 });
 
@@ -286,7 +221,7 @@ describe('hook: the signing page, end to end in process', () => {
     for (const k of ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     await fake.close();
   });
-  beforeEach(() => { fake.strictBody = false; fake.decision = 'approve'; fake.decideAfterReads = 1; });
+  beforeEach(() => { fake.decision = 'approve'; fake.decideAfterReads = 1; });
 
   const policy = (extra = ''): string => {
     const path = join(dir, `pp-${Math.random().toString(36).slice(2)}.yaml`);
@@ -355,18 +290,6 @@ ${extra}  trust_keys:
     }
   });
 
-  it('against a Permission Protocol that refuses the new fields, the call is still decided', async () => {
-    fake.strictBody = true;
-    const calls: Spawned[] = [];
-    const before = fake.calls.filter((c) => c.path === '/api/mcp/approval-requests').length;
-    const verdict = await run(policy(), 'rm -rf ~/visible-strict', calls);
-    assert.equal(verdict.kind, 'allow');
-    const creates = fake.calls.filter((c) => c.path === '/api/mcp/approval-requests').slice(before);
-    assert.equal(creates.length, 2);
-    assert.equal(creates[0].body.ruleId, 'destructive-shell');
-    assert.equal('ruleId' in creates[1].body, false);
-    assert.equal('effect' in creates[1].body, false);
-  });
 });
 
 describe('detached children start outside the project', () => {

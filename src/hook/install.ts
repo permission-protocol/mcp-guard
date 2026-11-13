@@ -15,21 +15,30 @@ import { DEFAULT_HOOK_WAIT_SECONDS, HOOK_TIMEOUT_MARGIN_SECONDS } from './decide
 export const DEFAULT_MATCHER = 'Bash|PowerShell|Write|Edit|NotebookEdit';
 export const DEFAULT_LAUNCHER = 'npx --no-install mcp-guard';
 /** The spinner text while the hook runs (`statusMessage`, https://code.claude.com/docs/en/hooks). */
-export const HOOK_STATUS_MESSAGE = 'mcp-guard is checking this call. If it is held, it waits here for a named person to sign it in Permission Protocol, and the signing page opens in your browser when it can.';
+export const HOOK_STATUS_MESSAGE = 'mcp-guard: checking this call. A held call waits here until a named person signs it.';
 /** What Claude Code shows when the launcher could not run the guard at all. Fixed text, no input. */
 export const LAUNCH_FAILED_REASON = 'mcp-guard: the guard did not run (missing package, crash or bad exit); call blocked. Fix: npm install --save-dev @permission-protocol/mcp-guard';
+
+/**
+ * What Claude Code shows when the shell could not find the launcher (exit 127), for
+ * example when Claude Code was started from the macOS Dock or an IDE with a PATH that
+ * lacks `npx`. Fixed text, no input, no single quotes. The `hook uninstall` command needs
+ * the launcher too, so the settings entry is named as the other way to remove the hook.
+ */
+export const LAUNCHER_NOT_FOUND_REASON = 'mcp-guard: the hook launcher was not found on the PATH Claude Code gave this hook (exit 127); call blocked. Start Claude Code from a terminal where npx works. To remove the hook, run the hook uninstall command init printed from that terminal, or delete the mcp-guard entry under hooks.PreToolUse in .claude/settings.json.';
 
 /**
  * Shell-form hooks run under `sh -c` on macOS and Linux and Git Bash on Windows
  * (https://code.claude.com/docs/en/hooks). Claude Code counts any exit other than 0 or 2
  * as a non-blocking failure, so the installed command maps every other exit (127 for a
- * missing launcher, 1 for a crash, 128+n for a signal) to 2 with a fixed reason. 0 and 2
+ * missing launcher, 1 for a crash, 128+n for a signal) to 2 with a fixed reason; 127 (command
+ * not found) gets its own reason, because reinstalling the package does not fix it. 0 and 2
  * pass through, and stdout is the guard's own. POSIX sh only: under PowerShell (Windows
  * without Git Bash) the wrapper does not parse, and `onFailure: "block"` is the layer
  * that blocks.
  */
 export function failClosed(command: string): string {
-  return `${command}; c=$?; case $c in 0|2) exit $c;; esac; echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`;
+  return `${command}; c=$?; case $c in 0|2) exit $c;; 127) echo '${LAUNCHER_NOT_FOUND_REASON}' >&2; exit 2;; esac; echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`;
 }
 
 export class SettingsError extends Error {

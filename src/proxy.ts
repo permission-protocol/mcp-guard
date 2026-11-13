@@ -446,8 +446,6 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
         tool: label,
         args: forwardArgs,
         sendPreview: cloud!.args_preview !== false,
-        ruleId: decision.rule_id,
-        effect: decision.effect,
         agentId,
         environment: cloud!.environment,
         timeoutSeconds: cloud!.approval_timeout_seconds,

@@ -1,8 +1,8 @@
 import type { KeySet, TrustPins } from '../signing/keys.js';
 import type { ReplayCache } from '../verify-core.js';
-import { CloudApiError, type CloudClient, type CreateRequestBody } from './client.js';
+import { CloudApiError, type CloudClient } from './client.js';
 import { argsHashOf, callFingerprint } from './fingerprint.js';
-import { argsPreviewOf, requestContextOf } from './preview.js';
+import { argsPreviewOf } from './preview.js';
 import { verifyCloudReceipt, type CloudReceiptArtifact, type VerifiedCloudReceipt } from './verify.js';
 
 /**
@@ -48,10 +48,6 @@ export interface CloudHoldInput {
   args: unknown;
   /** `false` (policy `cloud.args_preview: false`): send the hash only, no preview. Default true. */
   sendPreview?: boolean;
-  /** The matched rule's id, sent as `ruleId` when it is a plain identifier. Not hashed. */
-  ruleId?: string | null;
-  /** What the rule's detector found, sent as `effect` (cloud/preview.ts requestContextOf). Not hashed. */
-  effect?: { detector: string; kind: string; target?: string; parsed: boolean };
   agentId: string;
   environment: string;
   timeoutSeconds: number;
@@ -85,30 +81,18 @@ export async function decideInCloud(input: CloudHoldInput): Promise<CloudOutcome
   const blocked = (requestId: string | null, code: string, reason: string): CloudOutcome => ({ kind: 'blocked', requestId, fingerprint, code, reason });
   const deadline = now() + input.timeoutSeconds * 1000;
 
-  const body: CreateRequestBody = {
-    tool: input.tool,
-    server: input.server,
-    argsHash,
-    // Masked and capped here, before upload (cloud/preview.ts). Never part of the fingerprint.
-    ...(input.sendPreview === false ? {} : { argsPreview: argsPreviewOf(input.args) }),
-    agentId: input.agentId,
-    env: input.environment,
-    timeoutSec: input.timeoutSeconds,
-  };
-  // Why it was held: rule id and detector finding. Context for the signer, never hashed.
-  const context = requestContextOf(input.ruleId, input.effect, input.sendPreview !== false);
-  const hasContext = context.ruleId !== undefined || context.effect !== undefined;
-
   let view: Record<string, unknown>;
   try {
-    try {
-      view = await input.client.create(hasContext ? { ...body, ...context } : body);
-    } catch (err) {
-      // A Permission Protocol that validates the body strictly and predates these two
-      // fields answers 400: ask once more without them. Any other failure blocks.
-      if (!hasContext || !(err instanceof CloudApiError) || err.kind !== 'HTTP' || err.status !== 400) throw err;
-      view = await input.client.create(body);
-    }
+    view = await input.client.create({
+      tool: input.tool,
+      server: input.server,
+      argsHash,
+      // Masked and capped here, before upload (cloud/preview.ts). Never part of the fingerprint.
+      ...(input.sendPreview === false ? {} : { argsPreview: argsPreviewOf(input.args) }),
+      agentId: input.agentId,
+      env: input.environment,
+      timeoutSec: input.timeoutSeconds,
+    });
   } catch (err) {
     const { code, reason } = apiReason(err);
     return blocked(null, code, reason);

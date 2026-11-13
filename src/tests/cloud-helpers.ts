@@ -128,8 +128,6 @@ export interface FakePp {
   /** Requests received, newest last. */
   calls: Array<{ method: string; path: string; authorization: string | null; body: any }>;
   redeemed: string[];
-  /** Answer 400 to a create whose body has a field production did not accept before 0.5.1 (`ruleId`, `effect`). */
-  strictBody: boolean;
   /** Origin for the links in answers (approvalUrl, receipt url), when they should not be this server's own. */
   publicUrl: string | null;
   /** Device login: what the person in the browser does, after `pollsBeforeDecision` token polls. */
@@ -160,7 +158,7 @@ export async function startFakePp(token: string): Promise<FakePp> {
   let n = 0;
 
   const state: FakePp = {
-    url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], strictBody: false, publicUrl: null, close: async () => undefined,
+    url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], publicUrl: null, close: async () => undefined,
     device: { decision: 'connect', pollsBeforeDecision: 1, workspace: { name: 'Acme Eng', slug: 'acme-eng' }, started: 0 },
   };
   const devicePolls = new Map<string, number>();
@@ -229,9 +227,6 @@ export async function startFakePp(token: string): Promise<FakePp> {
     if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'UNAUTHORIZED', message: 'bad token' } });
 
     if (req.method === 'POST' && path === '/api/mcp/approval-requests') {
-      if (state.strictBody && body && typeof body === 'object' && ('ruleId' in body || 'effect' in body)) {
-        return send(400, { error: { code: 'VALIDATION_ERROR', message: 'Unrecognized key(s) in object' } });
-      }
       const fingerprint = sha256(canonicalJsonText({ argsHash: body.argsHash, server: body.server, tool: body.tool }));
       const r: FakeRequest = { id: `mcpreq_${String(++n).padStart(32, '0')}`, fingerprint, decision: state.decision, readsLeft: state.decideAfterReads, redeemed: false, receiptId: `rcpt_fake_${n}` };
       requests.set(r.id, r);
