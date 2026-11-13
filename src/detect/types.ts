@@ -13,6 +13,7 @@ export const DETECTOR_NAMES = [
   'terraform_destroy',
   'cloud_delete',
   'secret_read',
+  'guard_tamper',
 ] as const;
 
 export type DetectorName = (typeof DETECTOR_NAMES)[number];

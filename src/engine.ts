@@ -1,6 +1,7 @@
 import { ANY_TOOL, TOOLS_CALL, type Config, type MatchCondition, type Rule, type Reversibility } from './config.js';
 import { classify, extractMeta } from './classify.js';
 import { detectValue, sanitizeTarget, type DetectorName, type DetectorResult } from './detect/index.js';
+import { matchTargets } from './detect/targets.js';
 
 // Permission Deck Slice 1: which human lane an attention-requiring action lands in.
 export type Lane = 'decide' | 'unblock' | 'verify';
@@ -11,7 +12,8 @@ export type Lane = 'decide' | 'unblock' | 'verify';
  * never written to a receipt, the receipt log or a decision line.
  */
 export interface DetectedEffect {
-  detector: DetectorName;
+  /** A detector, or `production_target` for a `mentions_target` rule (kind: the target kind). */
+  detector: DetectorName | 'production_target';
   kind: string;
   target?: string;
   /** False when the detector could not read the argument and matched to fail safe. */
@@ -23,13 +25,24 @@ export interface Decision {
   decision: 'allowed' | 'blocked' | 'held_for_approval';
   rule_id: string | null;
   reason: string;
-  /** Present when the matching rule used `detect`. */
+  /** Present when the matching rule used `detect` or `mentions_target`. */
   effect?: DetectedEffect;
+  /** The first `observe: true` rule that matched before the decision: recorded, not enforced. */
+  observed?: ObservedMatch;
   // --- Permission Deck enrichment (present when human attention is or may be needed) ---
   lane?: Lane;
   reversibility?: Reversibility;
   countdown_seconds?: number;  // reversible Decide holds auto-release after this; absent = hard stop
   confidence?: number;         // agent self-reported confidence (0-100) if provided
+}
+
+/** What an observe-only rule would have done. Same privacy rules as `Decision.effect`. */
+export interface ObservedMatch {
+  rule_id: string;
+  would: 'blocked' | 'held_for_approval';
+  /** Rule id, detector name and kind only. */
+  reason: string;
+  effect?: DetectedEffect;
 }
 
 const ACTION_TO_DECISION = {
@@ -58,7 +71,7 @@ function testCondition(cond: MatchCondition, value: unknown): Verdict {
  * argument is not a string, or is too long), it resolves toward the stricter outcome:
  * it holds for block / require_approval rules and fails for allow rules.
  */
-function conditionsHold(rule: Rule, args: Record<string, unknown> | undefined): { ok: boolean; effect?: DetectedEffect } {
+function conditionsHold(rule: Rule, args: Record<string, unknown> | undefined, config: Config): { ok: boolean; effect?: DetectedEffect } {
   const strict = rule.action !== 'allow';
   if (rule.match) {
     for (const [name, cond] of Object.entries(rule.match)) {
@@ -66,18 +79,38 @@ function conditionsHold(rule: Rule, args: Record<string, unknown> | undefined): 
       if (v === 'no' || (v === 'unknown' && !strict)) return { ok: false };
     }
   }
-  if (!rule.detect) return { ok: true };
-  let uncertain: DetectorResult | null = null;
-  for (const name of rule.detect.args) {
-    const r = detectValue(rule.detect.detector, args?.[name]);
-    if (!r || !r.matched) continue;
-    if (r.parsed) return { ok: true, effect: effectOf(rule.detect.detector, r) };
-    uncertain ??= r;
+  let effect: DetectedEffect | undefined;
+  if (rule.detect) {
+    const detector = rule.detect.detector;
+    const r = firstFinding(rule.detect.args, (name) => detectValue(detector, args?.[name]));
+    if (!r) return { ok: false };
+    effect = effectOf(detector, r);
   }
-  return uncertain ? { ok: true, effect: effectOf(rule.detect.detector, uncertain) } : { ok: false };
+  if (rule.mentions_target) {
+    const spec = rule.mentions_target;
+    // The loader refuses mentions_target without a targets section; fail closed regardless.
+    const r = config.targets
+      ? firstFinding(spec.args, (name) => matchTargets(config.targets!, spec.in, args?.[name]))
+      : { matched: true, kind: 'unparseable', parsed: false } as DetectorResult;
+    if (!r) return { ok: false };
+    effect ??= effectOf('production_target', r);
+  }
+  return { ok: true, effect };
 }
 
-function effectOf(detector: DetectorName, r: DetectorResult): DetectedEffect {
+/** A definite finding in any argument wins; otherwise the first fail-safe one; otherwise null. */
+function firstFinding(names: string[], run: (name: string) => DetectorResult | null): DetectorResult | null {
+  let uncertain: DetectorResult | null = null;
+  for (const name of names) {
+    const r = run(name);
+    if (!r || !r.matched) continue;
+    if (r.parsed) return r;
+    uncertain ??= r;
+  }
+  return uncertain;
+}
+
+function effectOf(detector: DetectedEffect['detector'], r: DetectorResult): DetectedEffect {
   const target = sanitizeTarget(r.target);
   return {
     detector,
@@ -108,11 +141,22 @@ export function evaluate(
 ): Decision {
   let matched: Rule | null = null;
   let effect: DetectedEffect | undefined;
+  let observed: ObservedMatch | undefined;
   for (const rule of config.rules) {
     if ((rule.method ?? TOOLS_CALL) !== method) continue;
     if (method === TOOLS_CALL && rule.tool !== ANY_TOOL && rule.tool !== toolName) continue;
-    const held = conditionsHold(rule, toolArgs);
+    const held = conditionsHold(rule, toolArgs, config);
     if (!held.ok) continue;
+    if (rule.observe) {
+      // Recorded as what it would have done; the decision is made as if it were absent.
+      observed ??= {
+        rule_id: rule.id,
+        would: rule.action === 'block' ? 'blocked' : 'held_for_approval',
+        reason: describe(rule, held.effect),
+        ...(held.effect ? { effect: held.effect } : {}),
+      };
+      continue;
+    }
     matched = rule;
     effect = held.effect;
     break;
@@ -131,6 +175,7 @@ export function evaluate(
         reason: `No matching rule; default action "${config.default_action}"`,
       };
 
+  if (observed) base.observed = observed;
   // Enrich with reversibility/confidence lane routing (Permission Deck).
   return classify(base, matched, extractMeta(toolArgs), toolArgs);
 }

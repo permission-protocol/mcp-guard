@@ -29,6 +29,8 @@ rules:
 | `tool: "*"` | Any tool. Allowed only with `match` or `detect`: a bare wildcard is rejected so a rule cannot catch every call by accident. |
 | `match` | Conditions on named top-level arguments. All must hold. Each condition has exactly one of `equals`, `contains`, `pattern` (a JavaScript regular expression, at most 512 characters, compiled at startup), plus optional `ignore_case: true`. |
 | `detect` | `{ detector, args }`. The rule matches when the detector fires on any listed argument that is present. At most 16 arguments. |
+| `mentions_target` | `{ args, in }`. The rule matches when a listed argument names a production target from the top-level `targets:` section. See [presets.md](presets.md#production-targets). |
+| `observe` | `true`: record what the rule would do, then decide as if it were absent. See [presets.md](presets.md#observe-true-on-any-rule). |
 
 `match` and `detect` can be combined (both must hold). They apply only to `tools/call` rules. A `detect` rule cannot have `action: allow`. Argument names starting with `_pp` (agent metadata) are rejected. Unknown keys, unknown detectors, invalid or overlong patterns are startup errors.
 
@@ -140,6 +142,10 @@ Catches:
 - Token printers and secret stores: `gcloud auth print-access-token` / `print-identity-token` / `config config-helper`, `gcloud secrets versions access`, `aws secretsmanager get-secret-value`, `aws ssm get-parameter --with-decryption`, `aws configure get *secret*` / `export-credentials`, `aws ecr get-login-password`, `aws kms decrypt`, `az account get-access-token`, `az keyvault secret show`, `gh auth token`, `vault read` / `kv get`, `op read` / `item get` / `inject`, `security find-*-password` / `dump-keychain`, `secret-tool lookup`, `pass show`, `kubectl get secret -o ...`, `doppler secrets`, `heroku config`, `railway variables`, `vercel env pull`, `git credential fill`.
 
 Not caught: using a secret without printing it (`curl -H "Authorization: Bearer $TOKEN"` is allowed by design); `source .env`; secrets read by a program the agent runs (`node -p process.env` fails safe as inline code, `node print-env.js` does not); secret files with unusual names; reading a file via an editor or a language runtime file API exposed as its own MCP tool unless you list its path argument.
+
+### `guard_tamper`
+
+Changes to the guard by the agent it guards: its policy files, receipt logs, key store and install token, the MCP client configs that route a server through it, killing it, and `mcp-guard keys` / `init`. Reading those files does not match. What it catches and misses: [presets.md](presets.md#self-protection-guard_tamper).
 
 ## Known limits
 

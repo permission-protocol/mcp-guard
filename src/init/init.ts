@@ -11,6 +11,7 @@ import { createKey, keysDir, loadSigningKey } from '../keystore.js';
 import type { KeySetEntry } from '../signing/keys.js';
 import { findServers, wrapServer, MCP_CLIENTS, type FoundServer, type McpClient } from './mcp-clients.js';
 import { SELF_TEST_SERVER_LABEL, SELF_TEST_TOOL } from './selftest-server.js';
+import { isPresetName, presetPolicyBody, PRESET_NAMES, type PresetName } from '../presets/coding-agent.js';
 
 /**
  * `mcp-guard init`: from nothing to a first signed receipt.
@@ -49,6 +50,7 @@ interface InitFlags {
   client?: McpClient;
   server?: string;
   tool?: string;
+  preset?: PresetName;
   mcpConfig?: string;
   agentId?: string;
   environment: 'development' | 'staging' | 'production';
@@ -70,6 +72,8 @@ Options:
   --mcp-config <path>             use this MCP config file instead of the known locations
   --server <name>                 the server to wrap (asked when there is more than one)
   --tool <name>                   the tool to hold for a signature (asked, or suggested)
+  --preset <name>                 write a ready policy instead of one hold rule: coding-agent
+                                  (destructive commands held, secret reads observed; see docs/presets.md)
   --agent-id <id>                 how receipts name the agent (default: the client)
   --environment <label>           development | staging | production (default production)
   --label <name>                  how this machine is named on the connect page (default: host name)
@@ -98,6 +102,12 @@ function parseFlags(argv: string[]): InitFlags {
       case '--api-url': flags.apiUrl = value(i++, arg); break;
       case '--server': flags.server = value(i++, arg); break;
       case '--tool': flags.tool = value(i++, arg); break;
+      case '--preset': {
+        const preset = value(i++, arg);
+        if (!isPresetName(preset)) throw new InitError(`--preset must be one of: ${PRESET_NAMES.join(', ')}`);
+        flags.preset = preset;
+        break;
+      }
       case '--mcp-config': flags.mcpConfig = value(i++, arg); break;
       case '--agent-id': flags.agentId = value(i++, arg); break;
       case '--label': flags.label = value(i++, arg); break;
@@ -123,6 +133,7 @@ function parseFlags(argv: string[]): InitFlags {
       default: throw new InitError(`unknown option: ${arg}`);
     }
   }
+  if (flags.preset && flags.tool) throw new InitError('--preset and --tool cannot be used together: the preset names what it holds');
   return flags;
 }
 
@@ -130,8 +141,20 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-/** The policy init writes: everything else allowed, one tool held for a signature. */
-export function policyText(input: { serverLabel: string; tool: string | null; environment: string; apiUrl: string; trustKeys: KeySetEntry[] }): string {
+/**
+ * The policy init writes: everything else allowed, one tool held for a signature; or,
+ * with a preset, the preset's rules.
+ */
+export function policyText(input: { serverLabel: string; tool: string | null; environment: string; apiUrl: string; trustKeys: KeySetEntry[]; preset?: PresetName }): string {
+  if (input.preset) {
+    return [
+      '# Written by `mcp-guard init --preset ' + input.preset + '`. Edit freely: the loader refuses anything it does not recognise.',
+      presetPolicyBody(input.preset).trimEnd(),
+      '',
+      `server_label: ${yamlString(input.serverLabel)}`,
+      ...cloudLines(input),
+    ].join('\n') + '\n';
+  }
   const lines = [
     '# Written by `mcp-guard init`. Edit freely: the loader refuses anything it does not recognise.',
     '# Every call to a tool with a require_approval rule waits for a signature in Permission Protocol.',
@@ -147,7 +170,12 @@ export function policyText(input: { serverLabel: string; tool: string | null; en
     lines.push('    action: require_approval');
     lines.push('    reversibility: irreversible');
   }
-  lines.push('cloud:');
+  lines.push(...cloudLines(input));
+  return lines.join('\n') + '\n';
+}
+
+function cloudLines(input: { environment: string; apiUrl: string; trustKeys: KeySetEntry[] }): string[] {
+  const lines = ['cloud:'];
   if (input.apiUrl !== PRODUCTION_API_URL) lines.push(`  api_url: ${yamlString(input.apiUrl)}`);
   lines.push(`  environment: ${input.environment}`);
   lines.push('  approval_timeout_seconds: 600');
@@ -155,7 +183,7 @@ export function policyText(input: { serverLabel: string; tool: string | null; en
     lines.push('  trust_keys:');
     for (const key of input.trustKeys) lines.push(`    - { key_id: ${yamlString(key.key_id)}, public_key_b64: ${yamlString(key.public_key_b64)} }`);
   }
-  return lines.join('\n') + '\n';
+  return lines;
 }
 
 function safeLabel(name: string): string {
@@ -390,9 +418,11 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.out(`Local signing key: created ${key.keyId} in ${keysDir()}.`);
     }
 
-    // 5. Which tool to hold.
+    // 5. Which tool to hold (a preset names its own rules).
     let tool = flags.tool ?? null;
-    if (!tool) {
+    if (flags.preset) {
+      io.out(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads are recorded, not held. See docs/presets.md.`);
+    } else if (!tool) {
       const tools = (await (deps.discover ?? discoverTools)(server.command, server.args)).filter((name) => TOOL_NAME_PATTERN.test(name));
       if (tools.length > 0) {
         const suggested = Math.max(0, tools.findIndex((name) => RISKY_TOOL.test(name)));
@@ -403,12 +433,12 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     } else if (!TOOL_NAME_PATTERN.test(tool)) {
       throw new InitError(`--tool "${tool}" has characters Permission Protocol does not accept in a tool name (letters, digits and _ . : / @ - only).`);
     }
-    io.out(tool ? `Hold rule: "${tool}" needs a signature. Every other tool of this server runs as before.` : 'Hold rule: every call needs a signature.');
+    if (!flags.preset) io.out(tool ? `Hold rule: "${tool}" needs a signature. Every other tool of this server runs as before.` : 'Hold rule: every call needs a signature.');
 
     // 6. Policy file.
     const serverLabel = safeLabel(server.name);
     const policyPath = join(dirname(keysDir()), 'policies', `${serverLabel.replace(/[/:@]/g, '-')}.yaml`);
-    const policy = policyText({ serverLabel, tool, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys });
+    const policy = policyText({ serverLabel, tool, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys, preset: flags.preset });
     parseConfig(policy); // never write a policy the guard would refuse to load
     mkdirSync(dirname(policyPath), { recursive: true });
     if (existsSync(policyPath) && readFileSync(policyPath, 'utf-8') !== policy) {

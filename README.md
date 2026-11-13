@@ -46,6 +46,16 @@ That's it. Your agent can no longer delete user data. Production deploys require
 
 `default_action: allow` lets any tool without a rule run, and the guard warns about it at startup. Use `block` or `require_approval` to fail closed.
 
+## Coding agents: the `coding-agent` preset
+
+```bash
+npx @permission-protocol/mcp-guard init --preset coding-agent
+```
+
+Writes a ready policy for Claude Code, Cursor and Codex instead of one hold rule. From day one it holds, for a named human's signature: destructive SQL, destructive shell commands (`rm -rf` outside the tree, force pushes, pushes to `main`), `terraform destroy`, cloud and Kubernetes deletes, any call naming a production target you list under `targets:`, and changes to the guard itself (its policy, receipt log, keys, the MCP client config that routes through it, killing it). Secret reads (`cat .env`, `printenv`, token printers) are only recorded as "would hold" (`observe: true` on that rule) until you remove that line. Reading the guard's own files is fine.
+
+What it holds, observes and misses: [docs/presets.md](docs/presets.md). How the detectors read arguments: [docs/detectors.md](docs/detectors.md). They stop mistakes; they are not a sandbox.
+
 ## 60-Second Demo (no MCP server needed)
 
 See MCP Guard block dangerous tool calls in real-time, no setup required:
@@ -223,6 +233,7 @@ npx @permission-protocol/verify receipt.json --keys .pp/keys.json --trust "$MCP_
 
 ```
 mcp-guard init                   # connect to Permission Protocol, wrap one MCP server, sign a first receipt
+mcp-guard init --preset coding-agent  # the same, with the coding-agent policy (docs/presets.md)
 mcp-guard [options] -- <server command>
 mcp-guard receipt verify <receipt id> [--receipts-path <file>] [--config <policy.yaml>]
 mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show

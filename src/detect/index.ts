@@ -3,6 +3,7 @@
  * They are not a sandbox. See docs/detectors.md for what each catches and misses.
  */
 import { cloudDelete } from './cloud.js';
+import { guardTamper } from './guard-tamper.js';
 import { secretRead } from './secrets.js';
 import { shellDestructive } from './shell-destructive.js';
 import { sqlDestructive } from './sql.js';
@@ -17,6 +18,7 @@ export const DETECTORS: Record<DetectorName, (text: string) => DetectorResult> =
   terraform_destroy: terraformDestroy,
   cloud_delete: cloudDelete,
   secret_read: secretRead,
+  guard_tamper: guardTamper,
 };
 
 export function isDetectorName(v: unknown): v is DetectorName {
