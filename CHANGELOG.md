@@ -1,31 +1,63 @@
 # Changelog
 
-## Unreleased: usage heartbeat
+## 0.5.0: a guard for coding agents
+
+The first release on npm since 0.3.1. 0.4.0 was never published, so everything in the 0.4.0 section below ships for the first time in 0.5.0.
+
+In one command (`npx @permission-protocol/mcp-guard init --preset coding-agent`), Claude Code's own shell and file tools are checked before they run: destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself wait for a named person to sign in Permission Protocol, and only a verified, signed receipt releases the call. Upgrading from 0.3.1: read **Breaking** first.
 
 ### Added
 
-- Usage heartbeat, on by default when the policy has a `cloud:` section and an install token is present: `POST /api/mcp/heartbeat` with the day's six counts (`allowed`, `blocked`, `held`, `approved`, `denied`, `expired`), the guard version, a fixed client label, the mode, and counts per built-in rule id (the `coding-agent` preset's rules). By default nothing you wrote leaves the machine: your own rule ids are counted in the totals and dropped, and arguments, commands, paths, contents, tool, server or target names, hostnames and usernames are never sent. Counted from the local receipt log. At most one attempt per install every 10 minutes, sent by a separate process (detached from the hook, a child of the proxy) so it cannot allow, block or delay a call. See [docs/heartbeat.md](docs/heartbeat.md).
-- Opt-out: `MCP_GUARD_HEARTBEAT=off` (or `0` / `false`), or `cloud.heartbeat: false` in the policy (new key; `true` or `false` only).
-- `mcp-guard heartbeat --show` prints the exact body for today without sending it; `--send` sends once.
+- **Claude Code hook** (`mcp-guard hook`, `hook install`, `hook uninstall`): the same policy, rules, receipts and signed approvals for Claude Code's `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookEdit` calls, through its `PreToolUse` hook. Blocked and unsigned held calls are denied; allowed calls get no answer, so Claude Code's own prompts still apply; every error denies. See [docs/hooks.md](docs/hooks.md).
+- **`init --preset coding-agent`**: the `coding-agent` policy written to `<project>/pp.config.yaml`, the hook installed and checked locally (one allowed and one held synthetic call), then one do-nothing call held for your first signature. In a Claude Code project (`.claude/` or `CLAUDE.md`) the hook is installed by default; `--hook claude-code` installs it anywhere, `--no-hook` skips it. An existing policy that loads is kept byte for byte. See [docs/presets.md](docs/presets.md).
+- **Argument rules**: `match` (`equals`, `contains`, `pattern`) on named arguments, `detect` with the detectors `sql_destructive`, `shell_destructive`, `terraform_destroy`, `cloud_delete`, `secret_read` and `guard_tamper`, and `tool: "*"` (only with `match` or `detect`). Text a detector cannot read is held. See [docs/detectors.md](docs/detectors.md).
+- **Production targets**: a `targets:` section and the `mentions_target` condition hold a call whose arguments name a database, cloud account, Kubernetes context or git branch you list.
+- **`observe: true` on a rule**: records what the rule would have done (an unsigned `{"observed": ...}` line, no argument text) and decides as if the rule were absent.
+- **`mcp-guard report`**: the last 7 days of the local receipt log, per day and in total (allowed, blocked, held, approved, denied, expired), the rules that blocked or held most, and observe-only matches. Text, or `--json`. Read-only: it sends nothing and prints no argument text.
+- **Usage heartbeat** and `mcp-guard heartbeat --show | --send` (below).
+- `init --wrap-launcher "<command>"`: how the MCP client starts the guard for a wrapped server, instead of `npx -y @permission-protocol/mcp-guard@<version>` (a project install, a source checkout). Words split on spaces, double quotes group; no shell.
+- `mcp-guard --version`.
 
-## Unreleased: coding-agent preset
+### Changed
 
-### Added
+- **Usage heartbeat, on by default** for installs whose policy has a `cloud:` section and that have an install token. Once per UTC day (at most one attempt every 10 minutes), a separate process sends `POST /api/mcp/heartbeat` to Permission Protocol with the install token. The body is exactly: the guard version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode (`enforce` or `observe`), the UTC day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and up to 20 rule ids **shipped with the guard** (the `coding-agent` preset's) with how many calls each blocked or held. Your own rule ids, arguments, commands, paths, file contents, tool, server and target names, hostnames and usernames are never sent. It cannot allow, block or delay a call. `mcp-guard heartbeat --show` prints the exact body without sending it. **To turn it off**, either set `MCP_GUARD_HEARTBEAT=off` (or `0`, `false`, `no`) in the guard's environment, or put `heartbeat: false` under `cloud:` in the policy. Local-only installs (no `cloud:` section) and installs without a token never send it. See [docs/heartbeat.md](docs/heartbeat.md).
+- `mcp-guard init` without `--preset` writes the same policy as before and never touches `.claude/`.
+- **init checks the wrap launcher before the login.** The command the client will run for a wrapped server must report this exact version (`<launcher> --version`, no shell, a 60-second timeout, no `PP_*` variables); otherwise init stops with nothing changed. Before, init run from an unpublished build wrote a pinned `npx -y @permission-protocol/mcp-guard@<version>` the client could not start, and reported success.
+- The commands init prints (`receipt verify`, `hook uninstall`) are pinned to the running version: `npx @permission-protocol/mcp-guard@<version> ...`, never `latest`.
+- Local-only mode is labelled `local-only, unsigned by Permission Protocol` at startup and on every held call.
+- The receipt-gate template (`templates/github-actions/receipt-gate.yml`) pins the verifier to 0.5.0.
 
-- `mcp-guard init --preset coding-agent`: a ready policy for coding agents. Destructive SQL, shell, Terraform and cloud deletes are held from day one; secret reads are observed. `--preset` and `--tool` cannot be combined. Without `--preset`, `init` writes the same policy as before. See [docs/presets.md](docs/presets.md).
-- `observe: true` on a `block` or `require_approval` rule: when it matches, stderr and an unsigned `{"observed": ...}` line in the receipts file record what it would have done (rule id, detector, kind, input hash; never arguments), and evaluation continues as if the rule were absent. Refused on `allow` rules.
-- `targets:` (`databases`, `cloud_accounts`, `kube_contexts`, `git_branches`: lists of literal names) and the `mentions_target: { args, in }` rule condition: hold a call whose arguments name a production target. Whole-word, case-insensitive; unreadable arguments (objects, over 64 KB) hold. Malformed names, unknown kinds, and `mentions_target` without `targets:` or on an `allow` rule are startup errors.
-- `guard_tamper` detector: modifying, moving or deleting the guard's policy files, receipt logs, key store or install token, or the MCP client configuration that routes a server through it; killing the guard; `mcp-guard keys init|rotate|revoke` and `mcp-guard init`. Reading those files does not match. Covers Claude Code's `Write` / `Edit` / `NotebookEdit` `file_path` and `Bash` / `PowerShell` `command` as the hook passes them; every write to `.claude/settings*.json` (project and `~/.claude/`) and to the hook's `hook-requests.json` is held. Paths are normalised lexically (case, `\`, `~`, `./`, `..`, trailing separators); a written path with an unknown part fails safe.
+### Breaking
 
-- `mcp-guard init --preset coding-agent` sets up the Claude Code hook too, in one command: in a Claude Code project (`.claude/` or `CLAUDE.md`), or anywhere with `--hook claude-code`, it writes the preset to `<project>/pp.config.yaml`, installs the `PreToolUse` hook with the same code as `hook install`, and checks the installed hook locally (an allowed `git status` and a held `terraform destroy`, nothing sent to Permission Protocol). An MCP server to wrap is optional when the hook is set up. New flags: `--hook claude-code`, `--no-hook`, `--project <dir>`, `--launcher <cmd>`. An existing `pp.config.yaml` that loads is kept byte for byte; one that does not load, an invalid `.claude/settings.json`, or a launcher that cannot start the guard is refused before the login, with nothing changed. Token, key, policy and hook entry are each set up only if missing (a stored token is reused when only the hook is set up); with all in place init exits 0. The hook's launcher is `npx --no-install mcp-guard` when the package is installed in the project, else `npx -y @permission-protocol/mcp-guard@<exact running version>`. With no MCP server and no Claude Code project, the error points to `--hook claude-code`. A failed hook install or hook self-test exits 1. Windows needs Git Bash for the hook step. See [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
-- `mcp-guard hook` records `observe: true` matches (the preset's `secret-read`) as the proxy does: a stderr line and an unsigned `{"observed": ...}` line in the hook's receipts log, with no argument text. The call's outcome is unchanged.
+From the verifier hardening. Each fails closed; none can be switched off.
 
-### Unchanged
+- **Enforcement module: policies with `required_approvals` above 1 are refused** at load and at verification (`PP_POLICY_UNSUPPORTED`), until real multi-signature exists. One token carries one signature, so N names inside it are not N approvals.
+- **Role policies (`allowed_roles`) refuse a token with more than one signer** (`PP_ROLE_NOT_BOUND`). `allowed_signers` and `allowed_roles` must be lists.
+- **`verify --call` files must name `resource`** (the MCP server label the receipt signed), or the receipt is refused (`PP_RESOURCE_MISMATCH`). Add `"resource"` to existing call files.
+- **A gate without `--scope-ref` refuses a receipt that carries a ref.** `verify` matches scope exactly: a receipt naming a `scope.ref` or commit the gate did not ask for is refused. Pass `--scope-ref` (for `github:merge`, `refs/pull/<n>/merge`).
+- `verify` refuses receipts signed by any demo key (`mcpg-demo-*`, `pp-demo-*`) whatever scope they claim (`--allow-demo` accepts them), and refuses `--call` / `--require-call` on a legacy 0.2 receipt.
 
-- Rules without `observe` or `mentions_target` behave exactly as before.
-- `mcp-guard init` without `--preset`, and `--preset` with `--no-hook` or outside a Claude Code project, never touch `.claude/` or the project's `pp.config.yaml`.
+### Security
 
-## 0.4.0: signed approvals by a named human
+Fixed in this release (detail under 0.4.0 below):
+
+- One key could satisfy an N-of-M approval policy, and `allowed_roles` was checked against one token-wide roles list for every signer (enforcement module). Found through a private report.
+- `verify` refused a demo-key receipt only when it signed `scope: "demo"`; it now refuses any `mcpg-demo-` or `pp-demo-` key. Thanks tmkmaj (@tmkmaj, #18).
+- A gate could silently skip exact-call binding; `--require-call` makes `--call` mandatory, and the gate template no longer takes the call from its dispatch input. Thanks tmkmaj (@tmkmaj, #19).
+- `verify --call` did not bind the MCP server, so a receipt approved for one server verified for the same call to another. Thanks Yingjie Shang (@cybershang, #20).
+- The enforcement module accepted tokens and payloads issued in the future or not before their expiry, and applied `max_ttl_seconds` to the token only, so a future `signed_at` could stretch an authorization past the policy TTL; `verify` did not match scope exactly. Thanks ket4min-susan (@ket4min-susan, #21).
+
+- **Windows: the install token and private signing key were plain files, and init said "owner-only".** File modes do not apply on Windows. After writing each file the guard now runs `icacls` (inheritance removed, the current user granted full control; exec form, the path as its own argument) and init prints whether it worked; if not, it says the file is protected only by the user profile folder's permissions. Not yet run on a real Windows machine.
+- init printed `npx mcp-guard hook uninstall ...` as the undo command. Without a local install, `npx mcp-guard` resolves to an unrelated npm package of that name; the printed commands now name `@permission-protocol/mcp-guard@<version>`.
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
+### Known limits
+
+- The detectors are heuristics that stop mistakes, not a sandbox: a script written to a file and then run is not read, and an agent running as the same OS user can remove the hook. See [docs/detectors.md](docs/detectors.md#known-limits).
+- The hook on Windows needs Git Bash.
+
+## 0.4.0 (never published; shipped in 0.5.0): signed approvals by a named human
 
 A held call can now be released by a receipt that a signed-in person signed in Permission Protocol, verified offline by the guard. Before this release every approval was local: decided on the guard's machine, with the approver's name taken from `--operator`.
 

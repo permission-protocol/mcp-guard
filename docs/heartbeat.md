@@ -10,7 +10,7 @@ A heartbeat is observational. It cannot allow, block, hold or delay any call: it
 
 ```json
 {
-  "guardVersion": "0.4.0",
+  "guardVersion": "0.5.0",
   "clientLabel": "claude-code",
   "mode": "enforce",
   "day": "2026-11-12",
@@ -37,8 +37,8 @@ This is enforced in code (`src/heartbeat/contract.ts`): the body is built from a
 ## See it before it is sent
 
 ```bash
-npx mcp-guard heartbeat --show                 # prints today's exact body; sends nothing, changes nothing
-npx mcp-guard heartbeat --send                 # sends once now
+npx @permission-protocol/mcp-guard heartbeat --show   # prints today's exact body; sends nothing, changes nothing
+npx @permission-protocol/mcp-guard heartbeat --send   # sends once now
 ```
 
 Both take `--config <path>` (default `./pp.config.yaml`) and `--receipts <path>` (default `PP_SHARED_RECEIPTS_PATH`, else `pp-receipts.jsonl` beside the policy, which is where the hook writes; the proxy writes `pp-receipts.jsonl` in its working directory unless `PP_SHARED_RECEIPTS_PATH` is set). `--show` also says where it would POST and whether an install token is present (never its value).
