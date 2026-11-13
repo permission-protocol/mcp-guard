@@ -24,6 +24,18 @@ export const SHELL_DESTRUCTIVE_KINDS = [
 ] as const;
 
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
+
+/**
+ * Findings that reach the whole file system, a whole disk or the whole home directory.
+ * When one text has several findings, one of these is shown (overShell `rank`). Display only.
+ */
+const WIDE = new WeakSet<DetectorResult>();
+const wide = (r: DetectorResult): DetectorResult => { WIDE.add(r); return r; };
+const isWidePath = (w: Word, cwdUnknown: boolean): boolean => {
+  const { cls, depth } = classifyPath(w, cwdUnknown);
+  return cls === 'root' || (cls === 'home' && depth === 0);
+};
+const rankOf = (r: DetectorResult): number => (WIDE.has(r) || r.kind === 'disk_write' || r.kind === 'disk_format' ? 1 : 0);
 const DISK_DEVICE = /^\/dev\/(sd|hd|vd|xvd|nvme|disk|rdisk|mmcblk|md|dm-|mapper\/|loop)/;
 
 function rm(cmd: Cmd): DetectorResult | null {
@@ -46,18 +58,21 @@ function rm(cmd: Cmd): DetectorResult | null {
     }
     targets.push(w);
   }
-  if (noPreserveRoot) return found('rm_recursive', '/');
+  if (noPreserveRoot) return wide(found('rm_recursive', '/'));
   if (cmd.viaXargs) return xargsTargets(cmd);
   if (!recursive && !maybeRecursive) return null;
   let uncertain: DetectorResult | null = null;
+  let first: DetectorResult | null = null;
   for (const t of targets) {
     const { cls } = classifyPath(t, cmd.cwdUnknown);
     if (cls === 'inside' || cls === 'temp') continue;
     if (cls === 'dynamic') { uncertain ??= unparseable('dynamic_argument', 'rm_recursive'); continue; }
     if (!recursive) { uncertain ??= unparseable('dynamic_argument', 'rm_recursive'); continue; }
-    return found('rm_recursive', t.text);
+    // Show the root or the home directory over a narrower path named before it.
+    if (isWidePath(t, cmd.cwdUnknown)) return wide(found('rm_recursive', t.text));
+    first ??= found('rm_recursive', t.text);
   }
-  return uncertain;
+  return first ?? uncertain;
 }
 
 /** Roots of a find command: operands before the first expression. */
@@ -310,12 +325,12 @@ function check(cmd: Cmd): DetectorResult | null {
  * detector cannot read still matches (fail safe), whatever the filter.
  */
 export function shellDestructive(text: string, filter?: KindFilter): DetectorResult {
-  if (!filter) return overShell(text, check);
+  if (!filter) return overShell(text, check, rankOf);
   return overShell(text, (cmd) => {
     const r = check(cmd);
     if (!r || !r.matched || !r.parsed) return r;
     if (filter.only && !filter.only.includes(r.kind)) return null;
     if (filter.except && filter.except.includes(r.kind)) return null;
     return r;
-  });
+  }, rankOf);
 }

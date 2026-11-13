@@ -21,6 +21,7 @@
 
 import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
+import { MAX_TARGET_LENGTH, sanitizeTarget } from '../detect/index.js';
 
 export const MAX_PREVIEW_BYTES = 2048;
 export const MASK = '[masked]';
@@ -42,8 +43,10 @@ const TEXT_RULES: Array<[RegExp, string | ((...m: string[]) => string)]> = [
   [/[A-Za-z0-9_-]{32,}/g, MASK],
   // PEM private keys (also an unterminated block at the end of the text).
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g, `${MASK} private key`],
-  // user:password@ or token@ in a URL.
-  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@'"<>]+@/gi, `$1${MASK}@`],
+  // user:password@ or token@ in a URL, up to the last @ of the authority (a password may
+  // hold an unencoded @). The scheme is bounded: unbounded, `a.a.a.…` is quadratic. A
+  // userinfo cannot hold `/`, so the scans from two URLs never overlap.
+  [/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/'"<>]+@/gi, `$1${MASK}@`],
   // Authorization schemes.
   [/\b(Bearer|Basic|Token|Digest)(\s+)[A-Za-z0-9\-._~+/]+=*/gi, `$1$2${MASK}`],
   // Known token formats.
@@ -143,7 +146,7 @@ export interface RequestContext {
 export const RULE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** The engine's own detector names and kinds. Anything else is not sent. */
 export const IDENTIFIER_PATTERN = /^[a-z0-9_]{1,40}$/;
-export const MAX_TARGET_CHARS = 120;
+export const MAX_TARGET_CHARS = MAX_TARGET_LENGTH;
 export const MAX_PROJECT_CHARS = 64;
 /** What a sent project name is made of; every other character becomes `-`. */
 export const PROJECT_PATTERN = /^[A-Za-z0-9_.@ -]{1,64}$/;
@@ -184,9 +187,14 @@ export interface EffectInput {
  * Why a held call was held, for the signing page and the notification:
  *
  *   ruleId    the matched rule's id, only if it matches RULE_ID_PATTERN
- *   effect    only if `detector` and `kind` match IDENTIFIER_PATTERN; `target` masked with
- *             maskText, capped at 120 characters, left out when empty
+ *   effect    only if `detector` and `kind` match IDENTIFIER_PATTERN; `target` through
+ *             sanitizeTarget (detect/index.ts) with maskText: no control, format or
+ *             invisible characters, no space but U+0020, whitespace collapsed, masked,
+ *             capped at 120 code points, left out when empty
  *   project   projectNameOf(projectDir)
+ *
+ * `ruleId` and `project` are sent exactly as they are or not at all: when maskText would
+ * change one (it looks like a credential), it is left out. Both are display only.
  *
  * With `sendPreview` false (`cloud.args_preview: false`) nothing readable leaves the
  * machine: `effect.target` and `project` are left out; `ruleId`, `effect.detector`,
@@ -198,21 +206,20 @@ export function requestContextOf(
   sendPreview: boolean,
 ): RequestContext {
   const out: RequestContext = {};
-  if (typeof input.ruleId === 'string' && RULE_ID_PATTERN.test(input.ruleId)) out.ruleId = input.ruleId;
+  const unmasked = (v: string): boolean => maskText(v) === v;
+  if (typeof input.ruleId === 'string' && RULE_ID_PATTERN.test(input.ruleId) && unmasked(input.ruleId)) out.ruleId = input.ruleId;
   const e = input.effect;
   if (e && typeof e.detector === 'string' && typeof e.kind === 'string' && IDENTIFIER_PATTERN.test(e.detector) && IDENTIFIER_PATTERN.test(e.kind)) {
     const effect: RequestEffect = { detector: e.detector, kind: e.kind, parsed: e.parsed === true };
     if (sendPreview && typeof e.target === 'string') {
-      const masked = maskText(e.target).trim();
-      const chars = Array.from(masked);
-      const target = chars.length > MAX_TARGET_CHARS ? chars.slice(0, MAX_TARGET_CHARS - 1).join('') + CUT_MARK : masked;
+      const target = sanitizeTarget(e.target, maskText);
       if (target) effect.target = target;
     }
     out.effect = effect;
   }
   if (sendPreview) {
     const project = projectNameOf(input.projectDir);
-    if (project) out.project = project;
+    if (project && unmasked(project)) out.project = project;
   }
   return out;
 }

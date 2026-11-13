@@ -5,6 +5,7 @@ import { canonicalJsonText } from '../signing/canonical.js';
 import { rawPublicKey, type KeySet } from '../signing/keys.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import type { CloudReceiptArtifact } from '../cloud/verify.js';
+import { maskText } from '../cloud/preview.js';
 
 /**
  * Test stand-ins for Permission Protocol: a signing key, receipts in the shapes the app
@@ -130,6 +131,9 @@ export const BODY_KEYS_FULL = ['agentId', 'argsHash', 'argsPreview', 'effect', '
 /** The same with `cloud.args_preview: false`: no preview, no project (and no effect.target). */
 export const BODY_KEYS_NO_PREVIEW = ['agentId', 'argsHash', 'effect', 'env', 'ruleId', 'server', 'timeoutSec', 'tool'];
 
+/** What the app refuses in `effect.target`: control and format characters, line and paragraph separators, spaces other than U+0020, Hangul fillers, blank Braille, variation selectors. */
+const REFUSED_TARGET_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800\uFE00-\uFE0F\u{E0100}-\u{E01EF}]|(?! )\p{Zs}/u;
+
 export function createBodyProblem(body: unknown): string | null {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return 'body is not an object';
   const b = body as Record<string, unknown>;
@@ -140,9 +144,11 @@ export function createBodyProblem(body: unknown): string | null {
   if (!Number.isInteger(b.timeoutSec) || (b.timeoutSec as number) <= 0) return 'timeoutSec must be a positive integer';
   if ('argsPreview' in b && (typeof b.argsPreview !== 'string' || Buffer.byteLength(b.argsPreview, 'utf8') > 2048)) return 'argsPreview must be a string of at most 2048 bytes';
   if ('ruleId' in b && (typeof b.ruleId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(b.ruleId))) return 'ruleId is malformed';
+  if ('ruleId' in b && maskText(b.ruleId as string) !== b.ruleId) return 'ruleId looks like a credential';
   if ('project' in b) {
     const p = b.project;
     if (typeof p !== 'string' || !/^[A-Za-z0-9_.@ -]{1,64}$/.test(p) || p.trim() !== p) return 'project is malformed';
+    if (maskText(p) !== p) return 'project looks like a credential';
   }
   if ('effect' in b) {
     const e = b.effect;
@@ -153,6 +159,7 @@ export function createBodyProblem(body: unknown): string | null {
     if (typeof effect.kind !== 'string' || !/^[a-z0-9_]{1,40}$/.test(effect.kind)) return 'effect.kind is malformed';
     if (typeof effect.parsed !== 'boolean') return 'effect.parsed must be a boolean';
     if ('target' in effect && (typeof effect.target !== 'string' || !effect.target || Array.from(effect.target).length > 120)) return 'effect.target must be 1 to 120 characters';
+    if ('target' in effect && REFUSED_TARGET_CHAR.test(effect.target as string)) return 'effect.target has a refused character';
   }
   return null;
 }

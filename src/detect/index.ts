@@ -52,17 +52,31 @@ export function detectValue(name: DetectorName, value: unknown, filter?: KindFil
 
 export const MAX_TARGET_LENGTH = 120;
 
-/**
- * Make a detector target safe to show: placeholders for unknown values, no control or
- * format characters (including bidi overrides), collapsed whitespace, bounded length.
- */
-export function sanitizeTarget(raw: string | undefined): string | undefined {
-  if (raw === undefined) return undefined;
-  const cleaned = raw
+/** Blank-looking letters and symbols (Hangul fillers, the blank Braille pattern) and variation selectors: removed. */
+const INVISIBLE = /[\u115F\u1160\u3164\uFFA0\u2800\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
+function cleanTarget(text: string): string {
+  return text
     .replace(/\u0000/g, '…')
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
+    // Control and format characters (bidi overrides included), line and paragraph
+    // separators, and every space separator other than U+0020 become a plain space.
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}/gu, ' ')
+    .replace(INVISIBLE, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Make a detector target safe to show: placeholders for unknown values; no control or
+ * format characters (including bidi overrides); no space but U+0020; no Hangul fillers,
+ * blank Braille or variation selectors; whitespace runs collapsed to one space; then
+ * `mask` (if given) before the cut, so a secret is never cut in half and left readable;
+ * at most 120 code points. Combining marks are kept. Undefined when nothing is left.
+ */
+export function sanitizeTarget(raw: string | undefined, mask?: (text: string) => string): string | undefined {
+  if (raw === undefined) return undefined;
+  let cleaned = cleanTarget(raw);
+  if (mask) cleaned = cleanTarget(mask(cleaned));
   if (!cleaned) return undefined;
   const chars = Array.from(cleaned);
   return chars.length > MAX_TARGET_LENGTH ? chars.slice(0, MAX_TARGET_LENGTH - 1).join('') + '…' : cleaned;
