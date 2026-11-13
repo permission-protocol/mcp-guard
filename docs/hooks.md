@@ -7,8 +7,7 @@ Claude Code is supported. The adapter interface (`src/hook/adapter.ts`) is built
 The one-command path, in the project:
 
 ```bash
-npm install --save-dev @permission-protocol/mcp-guard
-npx mcp-guard init --preset coding-agent   # policy, hook, local hook check, first signed receipt
+npx @permission-protocol/mcp-guard init --preset coding-agent   # policy, hook, local hook check, first signed receipt
 ```
 
 By hand, with a policy you write:
@@ -26,17 +25,24 @@ npx mcp-guard hook uninstall          # removes only the mcp-guard entry
 
 Before the device login, so that a refusal changes nothing, init checks:
 
-- `<project>/pp.config.yaml`: absent, or byte-for-byte the preset init would write. Any other content is refused: init never overwrites a policy. Keep yours and run `hook install`, move it aside, or pass `--no-hook`.
+- `<project>/pp.config.yaml`: if absent, init writes the preset. If present and it loads under the strict loader, it is **kept byte for byte**, whether it is the preset, an edited preset or your own policy (init says which), and the hook reads it. If present and it does not load, init refuses with the loader's message: it never overwrites a policy.
 - `<project>/.claude/settings.json`: the same checks as `hook install` (valid JSON, documented `hooks` shape), run as a dry run. A file that fails them is refused and left untouched (`SETTINGS_INVALID_JSON`, `SETTINGS_UNEXPECTED_SHAPE`).
-- The launcher (`npx --no-install mcp-guard`, or `--launcher <cmd>`): `<launcher> hook --help` must run from the project directory under `sh`. If it does not, the installed hook would block every guarded call, so init stops and says to `npm install --save-dev @permission-protocol/mcp-guard`.
-- An MCP server to wrap is optional with the hook. With none (or every one already wrapped), init sets up the hook alone. If the policy is in place and the hook already installed, it says `Already set up` and exits 1 without logging in.
+- The launcher, chosen in this order and printed with the reason: `--launcher <cmd>` if given; `npx --no-install mcp-guard` if `@permission-protocol/mcp-guard` is installed in the project or a directory above it; otherwise `npx -y @permission-protocol/mcp-guard@<version>`, the exact version of the running package (never a range or `latest`). `<launcher> hook --help` must then run from the project directory under `sh`. If it does not (offline, a version not on the registry, a bad `--launcher`), the installed hook would block every guarded call, so init stops before changing anything.
+- An MCP server to wrap is optional with the hook. With none (or every one already wrapped), init sets up the hook alone.
+- With no MCP server and no Claude Code project, `init --preset coding-agent` installs nothing unasked: it exits 1 and says to pass `--hook claude-code` to guard Claude Code's own tools in that directory, or to add an MCP server.
+
+Each item is decided on its own. With the hook only (no server to wrap), a stored install token is reused instead of logging in again; a missing token means a login. A missing signing key is created; a policy and a hook entry already in place are left as they are. A teammate who has the committed `pp.config.yaml` and `.claude/settings.json` but no token is logged in and gets a key, and neither file changes. When all four were in place, init runs the hook self-test, says `Already set up` and exits 0. (When an MCP server is wrapped, init logs in as before.)
+
+**The `npx -y` launcher.** The first guarded call in a session may download the package (a few seconds); later calls use npx's cache. The version is pinned in the committed `.claude/settings.json` and changes only when someone re-runs init or `hook install`. If npx cannot start the package (offline with an empty cache, the registry unreachable), the fail-closed wrapper below blocks the call; its fixed reason suggests installing the package as a dev dependency, which also removes the download.
+
+**Windows.** init's hook step and the installed command need Git Bash (`sh`). Without it, init's launcher check cannot run and init refuses the hook step and says so (`--no-hook` skips it).
 
 Then, after the login: it writes `pp.config.yaml` (the preset plus the `cloud:` section; created only if still absent), installs the hook with the same code as `hook install` (idempotent: a second run never adds a second entry), wraps the MCP server if there is one, and runs the **hook self-test**:
 
 | Check | Event | Command run | Expected |
 |-------|-------|-------------|----------|
-| allowed | `Bash` `git status` | the command exactly as installed in `.claude/settings.json` | no decision (exit 0, empty stdout) |
-| held | `Bash` `terraform destroy -auto-approve` | the same launcher, `hook --config <temporary copy of the preset without cloud:> --wait 0` | `deny`, exit 2, naming rule `terraform-destroy` |
+| allowed | `Bash` `git status` (or `ls`, `pwd`: the first one the project's policy allows, checked in-process first) | the command exactly as installed in `.claude/settings.json`, with the project's policy | no decision (exit 0, empty stdout). Not run if the policy allows none of them outright, so a held test call can never open a request |
+| held | `Bash` `terraform destroy -auto-approve` | the same launcher, `hook --config <temporary copy of the preset without cloud:> --wait 0` (the preset, not your policy, so the rule id is known) | `deny`, exit 2, naming rule `terraform-destroy` |
 
 Nothing is sent to Permission Protocol and nothing runs: the hook only decides, an allowed call touches no network, and with no `cloud:` section a hold is denied locally instead of opening a signing request. The self-test's receipts go to `~/.config/mcp-guard/self-test-receipts.jsonl`, not the project's log. If a check fails, the hook stays installed and fails closed (guarded calls are blocked), init says so with the undo command and exits 1. `--skip-self-test` skips only the signed-receipt self-test that follows, not the hook check.
 

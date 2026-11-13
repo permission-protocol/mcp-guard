@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { TOOLS_CALL, type Config } from '../config.js';
+import { evaluate } from '../engine.js';
 import { DEFAULT_LAUNCHER, hookHandler, settingsPath } from '../hook/install.js';
 
 /**
@@ -18,6 +20,46 @@ export type HookAgent = (typeof HOOK_AGENTS)[number];
 /** A Claude Code project: it has a `.claude/` directory or a `CLAUDE.md` at its root. */
 export function isClaudeCodeProject(dir: string): boolean {
   return existsSync(join(dir, '.claude')) || existsSync(join(dir, 'CLAUDE.md'));
+}
+
+export const PACKAGE_NAME = '@permission-protocol/mcp-guard';
+const EXACT_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+/** Is the package installed in `dir` or a directory above it (where `npx --no-install` finds it)? Returns that directory. */
+export function localInstallDir(dir: string): string | null {
+  for (let at = dir; ; at = dirname(at)) {
+    if (existsSync(join(at, 'node_modules', ...PACKAGE_NAME.split('/'), 'package.json'))) return at;
+    if (dirname(at) === at) return null;
+  }
+}
+
+export interface LauncherChoice {
+  launcher: string;
+  why: string;
+}
+
+/**
+ * How the installed hook starts the guard, in this order: `--launcher`; the project's own
+ * install (`npx --no-install mcp-guard`); else this exact version through npx, pinned in
+ * the settings file (never a range or `latest`).
+ */
+export function chooseLauncher(projectDir: string, explicit: string | undefined, version: string): LauncherChoice {
+  if (explicit !== undefined) return { launcher: explicit, why: 'given with --launcher' };
+  const local = localInstallDir(projectDir);
+  if (local) return { launcher: DEFAULT_LAUNCHER, why: `${PACKAGE_NAME} is installed in ${local}` };
+  if (!EXACT_VERSION.test(version)) throw new Error(`the running package version "${version}" is not an exact version; pass --launcher`);
+  return {
+    launcher: `npx -y ${PACKAGE_NAME}@${version}`,
+    why: `${PACKAGE_NAME} is not installed in this project, so the hook runs this exact version through npx (downloaded on the first guarded call, then from npx's cache)`,
+  };
+}
+
+/** Harmless Bash commands, tried in order, for the self-test's allowed call. */
+const HARMLESS = ['git status', 'ls', 'pwd'];
+
+/** The first harmless command this policy allows outright, or null. Evaluated in-process: never sent anywhere. */
+export function harmlessAllowedCommand(config: Config): string | null {
+  return HARMLESS.find((command) => evaluate('Bash', { command }, config, TOOLS_CALL).decision === 'allowed') ?? null;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -50,8 +92,6 @@ export interface HookSelfTestResult {
   reason: string | null;
 }
 
-/** Allowed by the coding-agent preset: no rule matches it. */
-export const SELF_TEST_HARMLESS = 'git status';
 /** Held by the coding-agent preset's `terraform-destroy` rule. Never run: the hook only decides. */
 export const SELF_TEST_DESTRUCTIVE = 'terraform destroy -auto-approve';
 const EXPECTED_HOLD_RULE = 'terraform-destroy';
@@ -66,16 +106,18 @@ const firstLine = (text: string): string => (text.trim().split('\n')[0] ?? '').s
  * Prove the installed hook works, locally and with nothing sent to Permission Protocol:
  *
  *   1. the command exactly as installed in .claude/settings.json, with a harmless `Bash`
- *      event: the preset allows it, and an allowed call touches no network (decide.ts);
- *      the answer must be "no decision" (exit 0, empty stdout).
+ *      event that the project's policy allows (checked in-process first; an allowed call
+ *      touches no network, decide.ts): the answer must be "no decision" (exit 0, empty
+ *      stdout). If the policy allows none of the harmless commands, this run is skipped
+ *      rather than risk a held call opening a request; the launcher was probed already.
  *   2. the same launcher and the same hook code with a destructive `Bash` event, against
- *      a copy of the policy's rules with no `cloud:` section: the hold is answered `deny`
- *      locally (a hook cannot wait for the local approval UI) instead of opening a
- *      signing request. The answer must be a deny naming the hold rule.
+ *      a copy of the preset's rules with no `cloud:` section (not the person's policy,
+ *      whose rule ids it cannot assume): the hold is answered `deny` locally instead of
+ *      opening a signing request. The answer must be a deny naming the hold rule.
  *
  * Receipts go to the self-test log (`receiptsPath`), not the project's log.
  */
-export function runHookSelfTest(input: { projectDir: string; launcher?: string; localPolicy: string; receiptsPath: string; env?: NodeJS.ProcessEnv }): HookSelfTestResult {
+export function runHookSelfTest(input: { projectDir: string; launcher?: string; policy: Config; localPolicy: string; receiptsPath: string; env?: NodeJS.ProcessEnv }): HookSelfTestResult {
   const checks: HookCheck[] = [];
   const env: NodeJS.ProcessEnv = { ...(input.env ?? process.env), CLAUDE_PROJECT_DIR: input.projectDir, PP_SHARED_RECEIPTS_PATH: input.receiptsPath };
   const fail = (reason: string): HookSelfTestResult => ({ ok: false, checks, reason });
@@ -94,13 +136,18 @@ export function runHookSelfTest(input: { projectDir: string; launcher?: string; 
 
   const run = (command: string, stdin: string) => spawnSync('sh', ['-c', command], { cwd: input.projectDir, input: stdin, encoding: 'utf8', env, timeout: 120_000 });
 
-  const allowed = run(installed, event(SELF_TEST_HARMLESS));
-  const allowedOk = !allowed.error && allowed.status === 0 && allowed.stdout.trim() === '';
-  checks.push({
-    name: 'allowed', command: SELF_TEST_HARMLESS, expected: 'pass', ok: allowedOk,
-    detail: allowedOk ? 'no decision: it runs as before, through Claude Code\'s own permission prompt' : `exit ${allowed.status ?? allowed.signal ?? allowed.error?.message}: ${firstLine(allowed.stderr || allowed.stdout)}`,
-  });
-  if (!allowedOk) return fail(`the installed hook did not let a harmless call through (${checks[0].detail})`);
+  const harmless = harmlessAllowedCommand(input.policy);
+  if (!harmless) {
+    checks.push({ name: 'allowed', command: HARMLESS[0], expected: 'pass', ok: true, detail: 'not run: the project policy allows none of git status, ls, pwd outright, and a held test call could open a signing request' });
+  } else {
+    const allowed = run(installed, event(harmless));
+    const allowedOk = !allowed.error && allowed.status === 0 && allowed.stdout.trim() === '';
+    checks.push({
+      name: 'allowed', command: harmless, expected: 'pass', ok: allowedOk,
+      detail: allowedOk ? 'no decision: it runs as before, through Claude Code\'s own permission prompt' : `exit ${allowed.status ?? allowed.signal ?? allowed.error?.message}: ${firstLine(allowed.stderr || allowed.stdout)}`,
+    });
+    if (!allowedOk) return fail(`the installed hook did not let a harmless call through (${checks[0].detail})`);
+  }
 
   const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-hook-self-test-'));
   try {

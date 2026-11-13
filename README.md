@@ -22,8 +22,7 @@ Every tool call, resource read and prompt fetch goes through your policy; only p
 In your Claude Code project:
 
 ```bash
-npm install --save-dev @permission-protocol/mcp-guard
-npx mcp-guard init --preset coding-agent
+npx @permission-protocol/mcp-guard init --preset coding-agent
 ```
 
 That one command connects this machine to your Permission Protocol workspace (device login in the browser; the install token goes to the OS keychain and is never printed), creates the local signing key, writes the `coding-agent` policy to `pp.config.yaml`, installs the Claude Code `PreToolUse` hook in `.claude/settings.json`, wraps an MCP server if your client has one, checks the installed hook locally (one allowed and one held synthetic call; nothing is sent and nothing runs), and then holds a do-nothing call so you sign your first receipt. Restart Claude Code and its `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookEdit` calls are guarded.
@@ -31,8 +30,9 @@ That one command connects this machine to your Permission Protocol workspace (de
 From day one the preset holds, for a named human's signature: destructive SQL, destructive shell commands (`rm -rf` outside the tree, force pushes, pushes to `main`), `terraform destroy`, cloud and Kubernetes deletes, any call naming a production target you list under `targets:`, and changes to the guard itself (its policy, receipt log, keys, the hook entry and the MCP client config that routes through it, killing it). Secret reads (`cat .env`, `printenv`, token printers) are only recorded as "would hold" (`observe: true` on that rule) until you remove that line. Reading the guard's own files is fine.
 
 - The hook is installed when the directory is a Claude Code project (it has `.claude/` or `CLAUDE.md`); `--hook claude-code` installs it anyway, `--no-hook` skips it. No MCP server is needed for the hook.
-- init never overwrites an existing `pp.config.yaml` or a `.claude/settings.json` that is not valid JSON: it stops before logging in and changes nothing. Running it again never adds a second hook entry or rewrites a file that is already in place.
-- The hook starts the guard with `npx --no-install mcp-guard`, so install the package in the project first (init checks and stops if it cannot start it). Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session.
+- init never overwrites a policy. An existing `pp.config.yaml` that loads is kept byte for byte (so a teammate with the committed files only logs in and gets a key, and an edited preset survives a re-run); one that does not load, or a `.claude/settings.json` that is not valid JSON, is refused before the login with nothing changed. Each item (token, key, policy, hook entry) is set up only if missing; when all are in place init says `Already set up` and exits 0.
+- The hook starts the guard with `npx --no-install mcp-guard` when the package is installed in the project, otherwise with `npx -y @permission-protocol/mcp-guard@<exact version>`, pinned in `.claude/settings.json` (the first guarded call may download it). init checks the launcher starts before changing anything. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session.
+- Windows: init's hook step and the installed hook command need Git Bash (`sh`); without it init refuses the hook step and says so.
 
 What it holds, observes and misses: [docs/presets.md](docs/presets.md). The hook: [docs/hooks.md](docs/hooks.md). How the detectors read arguments: [docs/detectors.md](docs/detectors.md). They stop mistakes; they are not a sandbox.
 

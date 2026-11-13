@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../config.js';
@@ -511,7 +511,7 @@ describe('mcp-guard init --preset coding-agent', () => {
     } finally { await fake.close(); }
   });
 
-  it('running it again is safe: no second entry, no overwritten policy', async () => {
+  it('running it again is safe: per item, no second entry, a kept policy, exit 0 when all is in place', async () => {
     const fake = await startFakePp(TOKEN);
     const machine = claudeProject();
     try {
@@ -522,34 +522,79 @@ describe('mcp-guard init --preset coding-agent', () => {
       const before = snapshot();
       const calls = fake.calls.length;
 
-      // Everything is in place: nothing to do, and no new login.
+      // Everything is in place: nothing to do, no new login, exit 0.
       const again = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
-      assert.equal(again.code, 1);
-      assert.match(again.stderr, /Already set up/);
+      assert.equal(again.code, 0, again.stderr);
+      assert.match(again.stdout, /Install token: already stored on this machine; not logging in again/);
+      assert.match(again.stdout, /Claude Code hook: already installed/);
+      assert.match(again.stdout, /Already set up: .*nothing was changed/);
       assert.deepEqual(snapshot(), before);
       assert.equal(fake.calls.length, calls);
 
-      // The person edited the policy: init refuses to overwrite it, before any login.
+      // The person edited the preset (added a target): re-running keeps it byte for byte.
       const edited = before[0].replace('databases: []', 'databases: [prod-db.internal]');
       writeFileSync(policyFile, edited);
-      spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env: machine.env });
-      const settingsBefore = readFileSync(settingsPath(machine.project), 'utf-8');
-      const refused = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
-      assert.equal(refused.code, 1);
-      assert.match(refused.stderr, /already exists and is not the coding-agent preset init would write\. init never overwrites a policy/);
+      const kept = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(kept.code, 0, kept.stderr);
+      assert.match(kept.stdout, /your own policy, kept byte for byte/);
+      assert.match(kept.stdout, /ok   allowed: Bash "git status"/);
+      assert.match(kept.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
       assert.equal(readFileSync(policyFile, 'utf-8'), edited);
-      assert.equal(readFileSync(settingsPath(machine.project), 'utf-8'), settingsBefore);
       assert.equal(fake.calls.length, calls);
 
-      // Policy restored, hook removed: init puts the hook back, once, and leaves the policy alone.
-      writeFileSync(policyFile, before[0]);
+      // Hook removed: init puts it back, once, and leaves the edited policy alone.
+      spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env: machine.env });
       const restored = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
       assert.equal(restored.code, 0, `${restored.stdout}\n${restored.stderr}`);
       assert.match(restored.stdout, /every one found is already wrapped; setting up the Claude Code hook only/);
-      assert.match(restored.stdout, /Hook policy: .*already the coding-agent preset; unchanged/);
-      assert.equal(readFileSync(policyFile, 'utf-8'), before[0]);
+      assert.match(restored.stdout, /Claude Code hook: installed/);
+      assert.equal(readFileSync(policyFile, 'utf-8'), edited);
       assert.equal(ourEntries(machine.project), 1);
       assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), before[2]);
+      assert.equal(fake.calls.length, calls);
+    } finally { await fake.close(); }
+  });
+
+  it('teammate with the committed policy and settings, but no token: logs in, creates a key, changes neither file', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject({ remote: { url: 'https://example.test/mcp' } });
+    try {
+      const policyFile = join(machine.project, 'pp.config.yaml');
+      // What a teammate committed: an edited preset, and the hook entry for this launcher.
+      const committed = policyText({ serverLabel: 'claude-code', tool: null, environment: 'production', apiUrl: fake.url, trustKeys: [{ key_id: fake.issuer.keyId, alg: 'ed25519', public_key_b64: fake.issuer.publicKeyB64 }], preset: 'coding-agent' }).replace('git_branches: []', 'git_branches: [release]');
+      writeFileSync(policyFile, committed);
+      const install = spawnSync(process.execPath, [CLI, 'hook', 'install', '--project', machine.project, '--launcher', LAUNCHER], { env: machine.env, encoding: 'utf-8' });
+      assert.equal(install.status, 0, install.stderr);
+      const settings = readFileSync(settingsPath(machine.project), 'utf-8');
+
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.match(run.stdout, /Connected to workspace: Acme Eng/);
+      assert.match(run.stdout, /Local signing key: created/);
+      assert.match(run.stdout, /your own policy, kept byte for byte/);
+      assert.match(run.stdout, /Claude Code hook: already installed/);
+      assert.doesNotMatch(run.stdout, /Already set up/);
+      assert.equal(readFileSync(policyFile, 'utf-8'), committed);
+      assert.equal(readFileSync(settingsPath(machine.project), 'utf-8'), settings);
+      assert.equal(readFileSync(join(machine.guardDir, 'install-token'), 'utf-8').trim(), TOKEN);
+      assert.equal(`${run.stdout}${run.stderr}`.includes(TOKEN), false);
+    } finally { await fake.close(); }
+  });
+
+  it('an existing policy that does not load is refused with the loader\'s message, before login, nothing changed', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      const policyFile = join(machine.project, 'pp.config.yaml');
+      writeFileSync(policyFile, 'default_action: allow\nfail_open: true\n');
+      const mcpBefore = readFileSync(machine.mcpConfig, 'utf-8');
+      const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /pp\.config\.yaml exists but does not load: .*fail_open.*init never overwrites a policy/);
+      assert.equal(readFileSync(policyFile, 'utf-8'), 'default_action: allow\nfail_open: true\n');
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), mcpBefore);
+      assert.equal(fake.calls.length, 0);
     } finally { await fake.close(); }
   });
 
@@ -597,8 +642,12 @@ describe('mcp-guard init --preset coding-agent', () => {
     const machine = freshMachine({ remote: { url: 'https://example.test/mcp' } });
     try {
       const plain = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
-      assert.equal(plain.code, 1, 'no hook and no server: the existing refusal');
-      assert.match(plain.stderr, /No stdio MCP server was found/);
+      assert.equal(plain.code, 1, 'no hook and no server: refused, and the hook is not installed unasked');
+      assert.match(plain.stderr, /No Claude Code project was found in .* and no MCP server to wrap/);
+      assert.match(plain.stderr, /To guard Claude Code's own tools \(shell, file edits\) in this directory: run init again with --hook claude-code/);
+      assert.match(plain.stderr, /To guard an MCP server: add one to Claude Code or Cursor/);
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
       assert.equal(fake.calls.length, 0);
 
       const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--hook', 'claude-code', '--skip-self-test']), machine.env, machine.project);
@@ -632,5 +681,85 @@ describe('mcp-guard init --preset coding-agent', () => {
       assert.equal(existsSync(settingsPath(machine.project)), false);
       assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
     } finally { await fake.close(); }
+  });
+
+  describe('the default launcher', () => {
+    const VERSION = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')).version;
+    /** A stand-in `npx` first on PATH: records its arguments and runs this build. Never the registry. */
+    function fakeNpx(root: string): { env: NodeJS.ProcessEnv; log: string } {
+      const bin = join(root, 'fake-bin');
+      mkdirSync(bin, { recursive: true });
+      const log = join(root, 'npx.log');
+      writeFileSync(join(bin, 'npx'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(log)}\ncase "$1" in -y|--no-install) shift;; esac\nshift\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(__dirname, '..', '..', '..', 'bin', 'mcp-guard'))} "$@"\n`);
+      chmodSync(join(bin, 'npx'), 0o755);
+      return { env: { PATH: `${bin}:${process.env.PATH}` }, log };
+    }
+    const noLauncher = (fake: FakePp, mcpConfig: string, extra: string[]) => {
+      const args = presetArgs(fake, mcpConfig, extra);
+      args.splice(args.indexOf('--launcher'), 2);
+      return args;
+    };
+
+    it('not installed in the project: npx -y with the exact running version, pinned in settings; uninstall finds it', async () => {
+      const fake = await startFakePp(TOKEN);
+      const machine = claudeProject({ remote: { url: 'https://example.test/mcp' } });
+      const npx = fakeNpx(machine.root);
+      try {
+        const env = { ...machine.env, ...npx.env };
+        const run = await runCli(noLauncher(fake, machine.mcpConfig, ['--skip-self-test']), env, machine.project);
+        assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+        const pinned = `npx -y @permission-protocol/mcp-guard@${VERSION}`;
+        assert.match(VERSION, /^\d+\.\d+\.\d+/);
+        assert.ok(run.stdout.includes(`Launcher: ${pinned} (@permission-protocol/mcp-guard is not installed in this project`), run.stdout);
+        const handler = JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8')).hooks.PreToolUse[0].hooks[0];
+        assert.ok(handler.command.startsWith(`${pinned} hook --config `), handler.command);
+        assert.match(run.stdout, /ok   allowed: Bash "git status"/);
+        assert.match(run.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
+        // The probe and both self-test runs went through the stand-in, with the pinned spec.
+        const calls = readFileSync(npx.log, 'utf-8').trim().split('\n');
+        assert.ok(calls.length >= 3);
+        for (const line of calls) assert.ok(line.startsWith(`-y @permission-protocol/mcp-guard@${VERSION} hook`), line);
+        // Re-running resolves the same launcher: nothing changes.
+        const again = await runCli(noLauncher(fake, machine.mcpConfig, ['--skip-self-test']), env, machine.project);
+        assert.equal(again.code, 0, again.stderr);
+        assert.match(again.stdout, /Already set up/);
+        assert.equal(ourEntries(machine.project), 1);
+        const removed = spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env, encoding: 'utf-8' });
+        assert.match(removed.stdout, /removed 1 mcp-guard PreToolUse hook/);
+      } finally { await fake.close(); }
+    });
+
+    it('installed in the project: npx --no-install mcp-guard', async () => {
+      const fake = await startFakePp(TOKEN);
+      const machine = claudeProject({ remote: { url: 'https://example.test/mcp' } });
+      const npx = fakeNpx(machine.root);
+      try {
+        const pkg = join(machine.project, 'node_modules', '@permission-protocol', 'mcp-guard');
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@permission-protocol/mcp-guard', version: VERSION }));
+        const run = await runCli(noLauncher(fake, machine.mcpConfig, ['--skip-self-test']), { ...machine.env, ...npx.env }, machine.project);
+        assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+        assert.ok(run.stdout.includes(`Launcher: npx --no-install mcp-guard (@permission-protocol/mcp-guard is installed in ${machine.project})`), run.stdout);
+        const handler = JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8')).hooks.PreToolUse[0].hooks[0];
+        assert.ok(handler.command.startsWith('npx --no-install mcp-guard hook --config '));
+      } finally { await fake.close(); }
+    });
+
+    it('a launcher that cannot be started (offline, unpublished version) is refused before anything changes', async () => {
+      const fake = await startFakePp(TOKEN);
+      const machine = claudeProject({ remote: { url: 'https://example.test/mcp' } });
+      try {
+        const bin = join(machine.root, 'failing-bin');
+        mkdirSync(bin, { recursive: true });
+        writeFileSync(join(bin, 'npx'), '#!/bin/sh\necho "npm error 404 Not Found" >&2\nexit 1\n');
+        chmodSync(join(bin, 'npx'), 0o755);
+        const run = await runCli(noLauncher(fake, machine.mcpConfig, []), { ...machine.env, PATH: `${bin}:${process.env.PATH}` }, machine.project);
+        assert.equal(run.code, 1);
+        assert.match(run.stderr, /did not start mcp-guard .*check the network/);
+        assert.equal(existsSync(settingsPath(machine.project)), false);
+        assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
+        assert.equal(fake.calls.length, 0);
+      } finally { await fake.close(); }
+    });
   });
 });
