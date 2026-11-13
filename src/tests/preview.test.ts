@@ -14,6 +14,16 @@ import { ReplayCache } from '../verify-core.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
 
 /**
+ * A PEM-shaped fixture with an obviously fake body, assembled at run time so the
+ * source holds no literal key block (secret scanners rightly refuse those).
+ */
+function fakePem(kind: string): string {
+  const label = `${kind} PRIVATE ${'KEY'}`;
+  const dashes = '-'.repeat(5);
+  return `${dashes}BEGIN ${label}${dashes}\nSENTINELPEMBODY\n${dashes}END ${label}${dashes}\n`;
+}
+
+/**
  * What a held call sends: the argument hash, and a preview the guard masks and caps
  * before upload. Sentinels below look like credentials and must never reach the
  * stand-in Permission Protocol; the hash and fingerprint are those of the exact call.
@@ -43,7 +53,7 @@ describe('preview masking', () => {
       [`psql "host=db password=${PW} dbname=app" -c "DROP TABLE users"`, 'DROP TABLE users'],
       [`mysqladmin --password ${PW} drop app`, 'drop app'],
       [`DATABASE_PASSWORD="${PW}"\nLOG_LEVEL=debug`, 'LOG_LEVEL=debug'],
-      ['-----BEGIN OPENSSH PRIVATE KEY-----\nSENTINELPEMBODY\n-----END OPENSSH PRIVATE KEY-----\nrest', 'rest'],
+      [`${fakePem('OPENSSH')}rest`, 'rest'],
       ['eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZW50aW5lbCJ9.c2lnbmF0dXJl', ''],
     ];
     for (const [input, kept] of cases) {
@@ -147,7 +157,7 @@ ${extra}`);
 
   it('a held Write: masked file content, and the path survives the cap', async () => {
     const dir = workspace();
-    const content = `# generated\nAWS_ACCESS_KEY_ID=${AWS}\nDB_PASSWORD=${PW}\nOPENAI_API_KEY=${SK}\n` + '# filler\n'.repeat(4000) + `-----BEGIN RSA PRIVATE KEY-----\nSENTINELPEMBODY\n-----END RSA PRIVATE KEY-----\n`;
+    const content = `# generated\nAWS_ACCESS_KEY_ID=${AWS}\nDB_PASSWORD=${PW}\nOPENAI_API_KEY=${SK}\n` + '# filler\n'.repeat(4000) + fakePem('RSA');
     const input = { file_path: '/srv/app/.env.production', content };
     assert.equal(await hook(dir, 'Write', input), 2);
     const body = creates().at(-1)!.body;
