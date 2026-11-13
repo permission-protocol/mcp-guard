@@ -4,7 +4,8 @@ import { TOOLS_CALL, type Config, type Rule } from './config.js';
 import { evaluate, type Decision } from './engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash, type IssuedReceipt, type ScopeBinding } from './issuer.js';
 import { SigningError } from './keystore.js';
-import { emitReceipt, emitHold, emitCloudDecision, emitObserved } from './receipt-log.js';
+import { emitReceipt, emitHold, emitCloudDecision, emitObserved, defaultReceiptsPath } from './receipt-log.js';
+import { startProxyHeartbeat } from './heartbeat/proxy.js';
 import { signHeld, forwardReleased, releaseOnCountdown } from './release.js';
 import { ReplayCache } from './verify-core.js';
 import { createCloudClient, type CloudClient } from './cloud/client.js';
@@ -189,6 +190,7 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     process.stderr.write(`[mcp-guard] Mode: ${LOCAL_ONLY_LABEL}. Holds are decided on this machine and no named approver is recorded. Add a "cloud:" section to the policy for signed approvals.\n`);
   }
   const cloudTrust = pinsFor(cloudKeySet);
+  if (cloudClient) startProxyHeartbeat(config, defaultReceiptsPath());
 
   // The server (and anything the agent can make it echo) never sees the guard's own
   // secrets: approval token, webhook secret, receipt token, key location.

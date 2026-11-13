@@ -358,6 +358,16 @@ Create the token in Permission Protocol under Settings > Developer access, with 
 - Tool, server and agent names must be 1 to 128 characters of letters, digits and `_ . : / @ -`. A held call whose name has other characters is blocked.
 - While a signature is pending, a failed status check (network, 429, 5xx) is retried until the timeout. It can only end in a verified receipt or a block.
 
+### Usage heartbeat
+
+With a `cloud:` section and an install token, the guard sends Permission Protocol one small heartbeat per UTC day (at most one attempt every 10 minutes): its version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode, the day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and up to 20 rule ids with how many calls each blocked or held. It never sends arguments, commands, paths, file contents, tool, server or target names, hostnames or usernames. Rule ids are written by you and are sent, so rename a rule whose id names something private. It is sent by a separate process after the decision and cannot allow, block or delay a call.
+
+```bash
+npx mcp-guard heartbeat --show     # print exactly what would be sent today; sends nothing
+```
+
+Off with `MCP_GUARD_HEARTBEAT=off` or `cloud: { heartbeat: false }` in the policy; never sent without a `cloud:` section or a token. Details, the count mapping and the state file: [docs/heartbeat.md](docs/heartbeat.md).
+
 ## Built-in tools: Claude Code hook
 
 A coding agent's shell and file edits never pass through an MCP proxy. `mcp-guard hook` applies the same policy to them through Claude Code's `PreToolUse` hook, with the same rules, detectors, receipts and signed approvals:

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased: usage heartbeat
+
+### Added
+
+- Usage heartbeat, on by default when the policy has a `cloud:` section and an install token is present: `POST /api/mcp/heartbeat` with the day's six counts (`allowed`, `blocked`, `held`, `approved`, `denied`, `expired`), the guard version, a fixed client label, the mode and up to 20 rule ids with counts. Counted from the local receipt log; never arguments, commands, paths, contents, tool, server or target names, hostnames or usernames. At most one attempt per install every 10 minutes, sent by a separate process (detached from the hook, a child of the proxy) so it cannot allow, block or delay a call. See [docs/heartbeat.md](docs/heartbeat.md).
+- Opt-out: `MCP_GUARD_HEARTBEAT=off` (or `0` / `false`), or `cloud.heartbeat: false` in the policy (new key; `true` or `false` only).
+- `mcp-guard heartbeat --show` prints the exact body for today without sending it; `--send` sends once.
+
 ## Unreleased: coding-agent preset
 
 ### Added
