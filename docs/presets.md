@@ -4,7 +4,7 @@ A preset is a ready policy. `mcp-guard init --preset coding-agent` writes it in 
 
 Where `init` writes it:
 
-- For a wrapped MCP server: `~/.config/mcp-guard/policies/<server>.yaml`, as before (an existing different file is copied aside first).
+- For a wrapped MCP server: `~/.config/mcp-guard/policies/<server>.yaml`, as before (an existing different file is copied aside first). Where the Claude Code hook is set up (next item), init wraps an MCP server only when `--server <name>` names one.
 - For Claude Code's own tools, in a Claude Code project (`.claude/` or `CLAUDE.md`) or with `--hook claude-code`: `<project>/pp.config.yaml`, and the Claude Code hook is installed to read it. An existing `pp.config.yaml` that loads is kept byte for byte (edit the preset freely and re-run init); one that does not load is refused before the login. `--no-hook` skips this. See [hooks](hooks.md#set-up-with-init---preset-coding-agent).
 
 Edit the written files; the loader refuses anything it does not recognise.

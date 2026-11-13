@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.2: the hook setup leaves MCP servers alone
+
+`init --preset coding-agent` with the Claude Code hook now changes only the project it runs in. Before, it also wrapped an MCP server it found in `.mcp.json`, `~/.claude.json`, `.cursor/mcp.json` or `~/.cursor/mcp.json`, without asking when there was one; a server in `~/.claude.json` then started through the guard in every Claude Code session on the machine.
+
+### Changed
+
+- **With the Claude Code hook, init wraps an MCP server only when `--server <name>` names one.** Without `--server` it asks nothing about MCP servers and changes no MCP config file, whether it runs in a terminal or not and however many servers it finds. **This narrows what init guards by default in hook mode: MCP tools are no longer guarded unless you ask.** When it finds servers that are not wrapped yet, the `Guarded now:` part of its summary says they are not guarded by this setup, lists each with its config file, and prints the command that wraps one: `npx @permission-protocol/mcp-guard@0.5.2 init --preset coding-agent --server <name>` (with `--project`, `--mcp-config`, `--launcher` and a non-production `--api-url` when the run had them). That command logs in again, copies the client config aside and wraps that server; the hook and `pp.config.yaml` stay as they are. `--server` with the hook works as before, including the launcher check, the backup and the undo line. `Already set up` is reported when the token, key, policy and hook entry are in place, also when unwrapped MCP servers exist. `--wrap-launcher` without a server to wrap is still refused. Without the hook (no `--preset`, `--no-hook`, or `--preset` with no Claude Code project and no `--hook`), init behaves as before: it wraps the one server it finds, asks which when there are several, and stops when there is none.
+- **init opens its own links under the same conditions as a held call.** The pairing page and the self-test signing page are not opened when `CI` is set, in an SSH session, on Linux without `DISPLAY` or `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off` (or `0`, `false`, `no`), or when the project's kept `pp.config.yaml` sets `cloud.open_browser: false`. init then prints the link, as with `--no-browser`, and the line `No browser was opened (<reason>). Open the link above.` Before, it opened them whenever it ran in a terminal unless `--no-browser` was passed.
+- **README quick start.** The top of the README is the Claude Code quick start: the one command, what it needs, what it does, what a held call looks like, how to see what it did and how to remove it. Setup detail moved to docs/hooks.md, and a Troubleshooting section lists the messages the code prints.
+- The receipt-gate template pins the verifier to 0.5.2.
+
+Nothing about holds, receipts, their verification or the hook's decisions changes.
+
 ## 0.5.1: a held call is hard to miss
 
 In a real test on Windows, a held `rm -rf` waited 240 seconds and timed out because the person never saw the signing link while the hook was waiting. This release opens the signing page, says in the session what is waiting, and tells Claude who approved. The approval request body is exactly 0.5.0's.

@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { loadConfig, parseConfig, type Config } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
-import { launchOpener, trustedSigningUrl } from '../cloud/open-browser.js';
+import { browserDisabledReason, launchOpener, trustedSigningUrl } from '../cloud/open-browser.js';
 import { childEnv, neutralCwd } from '../child-cwd.js';
 import { DEFAULT_HOOK_WAIT_SECONDS } from '../hook/decide.js';
 import { loadInstallToken, saveInstallToken } from '../cloud/token.js';
@@ -24,6 +24,7 @@ import { chooseLauncher, claudeCodeVersionNote, findPosixShell, HOOK_AGENTS, HOO
  * `mcp-guard init`: from nothing to a first signed receipt.
  *
  *   1. find the MCP servers Claude Code and Cursor are configured with; pick one
+ *      (with the hook, only the one --server names)
  *   2. device login: a signed-in owner or admin connects this guard in the browser
  *   3. store the install token (OS keychain, else a 0600 file)
  *   4. create the local signing key if there is none
@@ -36,7 +37,8 @@ import { chooseLauncher, claudeCodeVersionNote, findPosixShell, HOOK_AGENTS, HOO
  * it also writes the preset to the project's pp.config.yaml, installs the Claude Code
  * PreToolUse hook with `installHook`, and checks the installed hook locally (an allowed
  * and a held synthetic call, nothing sent to Permission Protocol). An MCP server is then
- * optional: with none to wrap, the hook alone is set up. Every check that can refuse
+ * wrapped only when --server names it; the servers found are listed in the summary with
+ * the command that wraps one. Every check that can refuse
  * (an existing different policy, a settings file that is not valid JSON, a launcher that
  * does not start) runs before the login, so a refusal changes nothing.
  *
@@ -90,12 +92,13 @@ Usage:
 Options:
   --client <claude-code|cursor>   only look at this client's MCP config
   --mcp-config <path>             use this MCP config file instead of the known locations
-  --server <name>                 the server to wrap (asked when there is more than one)
+  --server <name>                 the MCP server to wrap (asked when there is more than one).
+                                  With the Claude Code hook, a server is wrapped only when named here
   --tool <name>                   the tool to hold for a signature (asked, or suggested)
   --preset <name>                 write a ready policy instead of one hold rule: coding-agent
                                   (destructive commands held, secret reads observed; see docs/presets.md).
                                   In a Claude Code project (.claude/ or CLAUDE.md) it also installs the
-                                  Claude Code hook; an MCP server to wrap is then optional
+                                  Claude Code hook and wraps no MCP server unless --server names one
   --hook claude-code              install the hook even if no Claude Code project is detected (needs --preset)
   --no-hook                       do not install the hook
   --project <dir>                 the project for the hook and its pp.config.yaml (default: current directory)
@@ -108,7 +111,9 @@ Options:
   --environment <label>           development | staging | production (default production)
   --label <name>                  how this machine is named on the connect page (default: host name)
   --yes                           take the suggested answer to every question
-  --no-browser                    print the links instead of opening them
+  --no-browser                    print the links instead of opening them. They are only printed, with
+                                  the reason, when CI is set, over SSH, on Linux without a display, or
+                                  with MCP_GUARD_OPEN_BROWSER=off
   --skip-self-test                set up without holding a test call
   --api-url <origin>              a non-production Permission Protocol (needs --trust-key)
   --trust-key <key id>=<base64>   its receipt-signing public key; repeatable
@@ -405,6 +410,37 @@ function pinnedCli(): string {
   return `npx ${GUARD_PACKAGE}@${guardVersion()}`;
 }
 
+/**
+ * The command that wraps one MCP server in a project where the hook is set up: the same
+ * project, config file, launcher and Permission Protocol as this run, plus --server.
+ */
+export function wrapServerCommand(flags: { project?: string; mcpConfig?: string; client?: McpClient; launcher?: string; hook?: HookAgent; environment: string; apiUrl: string; trustKeys: KeySetEntry[] }, name: string | null): string {
+  const parts = [pinnedCli(), 'init', '--preset', 'coding-agent'];
+  if (flags.hook) parts.push('--hook', flags.hook);
+  if (flags.project) parts.push('--project', shellArg(resolve(flags.project)));
+  if (flags.mcpConfig) parts.push('--mcp-config', shellArg(flags.mcpConfig));
+  if (flags.client) parts.push('--client', flags.client);
+  if (flags.launcher) parts.push('--launcher', `"${flags.launcher.replace(/"/g, '\\"')}"`);
+  if (flags.environment !== 'production') parts.push('--environment', flags.environment);
+  if (flags.apiUrl.replace(/\/+$/, '') !== PRODUCTION_API_URL) {
+    parts.push('--api-url', shellArg(flags.apiUrl));
+    for (const key of flags.trustKeys) parts.push('--trust-key', shellArg(`${key.key_id}=${key.public_key_b64}`));
+  }
+  parts.push('--server', name === null ? '<name>' : shellArg(name));
+  return parts.join(' ');
+}
+
+/** The summary lines for MCP servers that hook mode found and did not wrap. Empty when there are none. */
+export function notWrappedLines(servers: Array<{ name: string; client: string; file: string }>, command: string): string[] {
+  if (servers.length === 0) return [];
+  return [
+    `MCP servers are not guarded by this setup. ${servers.length === 1 ? 'This one was found and left as it is' : 'These were found and left as they are'}:`,
+    ...servers.map((s) => `  ${s.name}  (${s.client}, ${s.file})`),
+    `To guard ${servers.length === 1 ? 'it' : 'one'}, run: ${command}`,
+    'That logs in again, copies the config file aside, and changes how the client starts that server. The hook and pp.config.yaml stay as they are.',
+  ];
+}
+
 async function choose<T>(io: InitIo, flags: InitFlags, question: string, options: T[], label: (option: T) => string, suggested: number): Promise<T> {
   if (options.length === 1) return options[0];
   if (flags.yes || !io.interactive) return options[suggested];
@@ -474,6 +510,8 @@ export interface InitDeps {
   shellLookup?: ShellLookupDeps;
   /** Runs `claude --version` (tests). */
   claudeVersion?: VersionRunner;
+  /** The environment and platform that decide whether init opens a browser (tests). */
+  browser?: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform };
 }
 
 export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): Promise<number> {
@@ -565,34 +603,43 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       }
     }
 
-    // 1. Which server (optional when the hook is being set up).
+    // 1. Which server. In hook mode a server is wrapped only when --server names it: the
+    // person came for the hook, and a wrapped server in ~/.claude.json would reach every
+    // Claude Code session on the machine. Unwrapped servers are listed in the summary.
     const { servers, skipped } = findServers({ home: deps.home, cwd: deps.cwd, client: flags.client, file: flags.mcpConfig });
     for (const file of skipped) io.err(`[mcp-guard] Skipped ${file.file}: ${file.reason}`);
     const candidates = servers.filter((s) => !s.wrapped && (!flags.server || s.name === flags.server));
     let server: FoundServer | null = null;
-    if (candidates.length === 0) {
+    /** Hook mode without --server: servers found and left unwrapped, named in the summary. */
+    let notWrapped: FoundServer[] = [];
+    if (hookMode && !flags.server) {
+      notWrapped = candidates;
+      if (candidates.length === 0) {
+        const already = servers.filter((s) => s.wrapped);
+        io.out(already.length > 0 ? 'MCP servers: every one found is already wrapped; setting up the Claude Code hook only.' : 'MCP servers: none found to wrap; setting up the Claude Code hook only.');
+      }
+    } else if (candidates.length === 0) {
       const already = servers.filter((s) => s.wrapped && (!flags.server || s.name === flags.server));
-      if (!hookMode || flags.server) {
-        if (already.length > 0) throw new InitError(`${already.map((s) => `"${s.name}"`).join(', ')} ${already.length === 1 ? 'is' : 'are'} already wrapped by mcp-guard. Nothing to do.`);
-        if (flags.preset && !flags.server && !flags.noHook) {
-          throw new InitError(
-            `No Claude Code project was found in ${projectDir} (no .claude/ or CLAUDE.md) and no MCP server to wrap, so there is nothing to guard yet.\n` +
-            `  To guard Claude Code's own tools (shell, file edits) in this directory: run init again with --hook claude-code.\n` +
-            '  To guard an MCP server: add one to Claude Code or Cursor (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json), or pass --mcp-config <path>.',
-          );
-        }
+      if (already.length > 0) throw new InitError(`${already.map((s) => `"${s.name}"`).join(', ')} ${already.length === 1 ? 'is' : 'are'} already wrapped by mcp-guard. Nothing to do.`);
+      if (flags.preset && !flags.server && !flags.noHook) {
         throw new InitError(
-          flags.server
-            ? `No MCP server named "${flags.server}" was found in a Claude Code or Cursor config.`
-            : 'No stdio MCP server was found in a Claude Code or Cursor config (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json). Add one to your client first, or pass --mcp-config <path>.',
+          `No Claude Code project was found in ${projectDir} (no .claude/ or CLAUDE.md) and no MCP server to wrap, so there is nothing to guard yet.\n` +
+          `  To guard Claude Code's own tools (shell, file edits) in this directory: run init again with --hook claude-code.\n` +
+          '  To guard an MCP server: add one to Claude Code or Cursor (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json), or pass --mcp-config <path>.',
         );
       }
-      io.out(already.length > 0 ? 'MCP servers: every one found is already wrapped; setting up the Claude Code hook only.' : 'MCP servers: none found to wrap; setting up the Claude Code hook only.');
+      throw new InitError(
+        flags.server
+          ? `No MCP server named "${flags.server}" was found in a Claude Code or Cursor config.`
+          : 'No stdio MCP server was found in a Claude Code or Cursor config (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json). Add one to your client first, or pass --mcp-config <path>.',
+      );
     } else {
       server = await choose(io, flags, 'Which MCP server should the guard wrap?', candidates, (s) => `${s.name}  (${s.client}, ${s.file})`, 0);
       io.out(`Server: ${server.name} (${server.client}, ${server.file})`);
     }
-    if (flags.wrapLauncher && !server) throw new InitError('--wrap-launcher is for a wrapped MCP server, and there is none to wrap.');
+    if (flags.wrapLauncher && !server) {
+      throw new InitError(`--wrap-launcher is for a wrapped MCP server, and there is none to wrap.${notWrapped.length > 0 ? ' With the hook, a server is wrapped only when --server <name> names it.' : ''}`);
+    }
 
     // 1b. The client will start the guard with this launcher: check it starts this exact
     // version before anything changes (an unpublished version, offline npx, a bad override).
@@ -610,6 +657,15 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       }
       details.push(`Wrap launcher: ${launcherWords.join(' ')} (checked: starts mcp-guard ${version})`);
     }
+
+    // init opens its links under the same conditions as a held call (cloud/open-browser.ts);
+    // when it does not, it says why, and the printed link is the way in.
+    const openLink = (url: string): void => {
+      if (flags.noBrowser) return;
+      const off = browserDisabledReason(keptPolicy?.cloud?.open_browser, deps.browser?.env ?? process.env, deps.browser?.platform ?? process.platform);
+      if (off) io.out(`  No browser was opened (${off}). Open the link above.`);
+      else io.openBrowser(url);
+    };
 
     // 2-3. Device login and token. With only the hook to set up, a stored token is reused.
     let changedSomething = false;
@@ -632,7 +688,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.out(`  1. Open ${login.verificationUrlComplete}`);
       io.out(`  2. Check that the page shows this code: ${login.userCode}`);
       io.out('  3. Choose Connect. You need the owner or admin role.');
-      if (!flags.noBrowser) io.openBrowser(login.verificationUrlComplete);
+      openLink(login.verificationUrlComplete);
       io.out('Waiting for you to connect...');
       const connected = await awaitLogin(apiUrl, login, { fetchImpl: deps.fetchImpl });
       io.out(`Connected to workspace: ${connected.workspace.name}${connected.workspace.slug ? ` (${connected.workspace.slug})` : ''}`);
@@ -793,7 +849,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
           io.out(`  Sign it here: ${url}`);
           // The link came from the guard's output: opened only if it is a page of this Permission Protocol.
           const trusted = trustedSigningUrl(url, apiUrl);
-          if (!flags.noBrowser && trusted) io.openBrowser(trusted);
+          if (trusted) openLink(trusted);
           io.out('  Waiting for your signature...');
         },
       });
@@ -811,6 +867,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.out(`  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against ${keptPolicy && !keptIsPreset ? 'your policy ' : ''}${hookPolicyPath}.`);
     }
     if (server) io.out(`  MCP server "${server.name}": every call is checked against ${policyPath}.`);
+    for (const line of notWrappedLines(notWrapped, wrapServerCommand(flags, notWrapped.length === 1 ? notWrapped[0].name : null))) io.out(`  ${line}`);
     if (flags.preset && !hookMode) io.out(`  Claude Code's own tools (shell, file edits) are not guarded: ${flags.noHook ? '--no-hook was passed' : `no Claude Code project was found in ${projectDir}`}. Add the hook with --hook claude-code.`);
 
     io.out('');
