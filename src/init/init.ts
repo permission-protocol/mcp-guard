@@ -15,7 +15,7 @@ import type { TokenLocation } from '../cloud/token.js';
 import { SELF_TEST_SERVER_LABEL, SELF_TEST_TOOL } from './selftest-server.js';
 import { isPresetName, presetPolicyBody, PRESET_NAMES, type PresetName } from '../presets/coding-agent.js';
 import { DEFAULT_MATCHER, installHook, SettingsError, settingsPath, type SettingsChange } from '../hook/install.js';
-import { chooseLauncher, HOOK_AGENTS, HOOK_POLICY_FILE, isClaudeCodeProject, probeLauncher, runHookSelfTest, type HookAgent, type LauncherChoice } from './hook-setup.js';
+import { chooseLauncher, claudeCodeVersionNote, findPosixShell, HOOK_AGENTS, HOOK_POLICY_FILE, isClaudeCodeProject, noShellMessage, probeLauncher, runHookSelfTest, type HookAgent, type LauncherChoice, type ShellLookupDeps, type VersionRunner } from './hook-setup.js';
 
 /**
  * `mcp-guard init`: from nothing to a first signed receipt.
@@ -378,6 +378,12 @@ function guardVersion(): string {
   return JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')).version;
 }
 
+/** The undo command, run with the launcher the hook was installed with (works without a local install). */
+export function undoHook(launcher: string, projectDir: string): string {
+  const dir = /^[A-Za-z0-9_./:\\-]+$/.test(projectDir) ? projectDir : `"${projectDir.replace(/"/g, '\\"')}"`;
+  return `${launcher} hook uninstall --project ${dir}`;
+}
+
 /** Commands init prints run this exact version, never whatever `latest` is (or an unrelated `mcp-guard` package). */
 function pinnedCli(): string {
   return `npx ${GUARD_PACKAGE}@${guardVersion()}`;
@@ -406,6 +412,10 @@ export interface InitDeps {
   now?: () => number;
   /** Platform and exec for the Windows file restriction (tests). */
   protect?: ProtectOptions;
+  /** Where init looks for Git Bash on Windows (tests). */
+  shellLookup?: ShellLookupDeps;
+  /** Runs `claude --version` (tests). */
+  claudeVersion?: VersionRunner;
 }
 
 export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): Promise<number> {
@@ -441,6 +451,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     let keptIsPreset = false;
     let hookAlreadyInstalled = false;
     let launcher: LauncherChoice | null = null;
+    let shell = 'sh';
     if (hookMode) {
       if (!existsSync(projectDir)) throw new InitError(`--project ${projectDir} does not exist.`);
       hookPolicy = policyText({ serverLabel: 'claude-code', tool: null, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys, preset: flags.preset });
@@ -464,7 +475,12 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
         if (err instanceof SettingsError) throw new InitError(`${err.code}: ${err.message}. init stopped before changing anything; fix the file or pass --no-hook.`);
         throw err;
       }
-      const launchProblem = probeLauncher(projectDir, launcher.launcher);
+      // Claude Code runs the hook command through sh (macOS, Linux) or Git Bash (Windows).
+      const lookup = findPosixShell(deps.shellLookup);
+      if (lookup.shell === null) throw new InitError(`${noShellMessage(lookup)}. init stopped before changing anything.`);
+      shell = lookup.shell;
+      if (lookup.source !== 'sh on PATH') io.out(`Shell for the hook: ${shell} (${lookup.source})`);
+      const launchProblem = probeLauncher(projectDir, launcher.launcher, shell);
       if (launchProblem) {
         throw new InitError(`${launchProblem}. The hook would block every guarded call, so init stopped before changing anything. Fix: check the network (npx fetches the package once), or install it in the project with npm install --save-dev @permission-protocol/mcp-guard, or pass --launcher <cmd>; then run init again. Or pass --no-hook.`);
       }
@@ -630,7 +646,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
         }
         if (hookChange.changed) changedSomething = true;
         io.out(`Claude Code hook: ${hookChange.changed ? 'installed' : 'already installed'} in ${hookChange.path} (PreToolUse, matcher "${DEFAULT_MATCHER}", onFailure block)`);
-        io.out(`  undo:   ${pinnedCli()} hook uninstall --project ${projectDir}`);
+        io.out(`  undo:   ${undoHook(launcher!.launcher, projectDir)}`);
       }
     }
 
@@ -661,13 +677,22 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
         policy: keptPolicy ?? parseConfig(hookPolicy!),
         localPolicy: presetPolicyBody(flags.preset!).trimEnd() + '\nserver_label: "claude-code"\n',
         receiptsPath: join(dirname(keysDir()), 'self-test-receipts.jsonl'),
+        shell,
       });
       for (const c of check.checks) io.out(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: Bash "${c.command}": ${c.detail}`);
-      if (!check.ok) {
-        io.err(`[mcp-guard] Hook self-test failed: ${check.reason}`);
-        io.err(`[mcp-guard] The hook is installed and fails closed: Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} are blocked until it works. Fix the cause above, or remove it with: ${pinnedCli()} hook uninstall --project ${projectDir}`);
+      if (!check.ok && check.failure === 'could_not_run') {
+        io.err(`[mcp-guard] Hook self-test could not run: ${check.reason}`);
+        io.err(`[mcp-guard] This is a problem with init's test, not a finding about the installed hook, which is in place and fails closed. Restart Claude Code and try a guarded call to see it work. To remove it: ${undoHook(launcher!.launcher, projectDir)}`);
         return 1;
       }
+      if (!check.ok) {
+        io.err(`[mcp-guard] Hook self-test failed: ${check.reason}`);
+        io.err(`[mcp-guard] The installed hook did not answer as expected. It fails closed, so Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} may be blocked until it works. Fix the cause above, or remove it with: ${undoHook(launcher!.launcher, projectDir)}`);
+        return 1;
+      }
+      // onFailure: "block" needs Claude Code 2.1.295; older versions rely on the wrapper (docs/hooks.md).
+      const note = claudeCodeVersionNote(deps.claudeVersion);
+      if (note) io.out(note);
     }
 
     // What is guarded now.

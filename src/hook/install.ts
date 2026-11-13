@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 import { DEFAULT_HOOK_WAIT_SECONDS, HOOK_TIMEOUT_MARGIN_SECONDS } from './decide.js';
 
 /**
@@ -47,6 +47,8 @@ export interface InstallOptions {
   launcher?: string;
   /** Check and report what would change without writing (init's pre-flight). Throws SettingsError just as a real install would. */
   dryRun?: boolean;
+  /** Whose path rules decide whether `configPath` is absolute (default: this process's platform; tests). */
+  platform?: NodeJS.Platform;
 }
 
 export interface HookHandler {
@@ -65,13 +67,29 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 const shellQuote = (s: string): string => (/^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
+/**
+ * Is `config` an absolute path for the platform the guard runs on? On Windows that is a
+ * drive-letter path (`C:\x`, `C:/x`) or a UNC path (`\\server\share`), which the guard
+ * (Node on Windows) reads as given even when Git Bash runs the command. A drive-relative
+ * path (`C:x`) names no fixed place, so it is refused rather than guessed.
+ */
+export function isAbsoluteConfigPath(config: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return posix.isAbsolute(config);
+  if (/^[A-Za-z]:(?![\\/])/.test(config)) {
+    throw new SettingsError('SETTINGS_UNEXPECTED_SHAPE', `--config ${config} is relative to the current directory of drive ${config[0]}:; give an absolute path or one relative to the project root`);
+  }
+  return win32.isAbsolute(config);
+}
+
 export function hookHandler(opts: InstallOptions): HookHandler {
   const wait = opts.waitSeconds ?? DEFAULT_HOOK_WAIT_SECONDS;
   const launcher = (opts.launcher ?? DEFAULT_LAUNCHER).trim();
   if (!launcher.includes('mcp-guard')) throw new SettingsError('SETTINGS_UNEXPECTED_SHAPE', 'the launcher must run mcp-guard (its command must contain "mcp-guard")');
   const config = opts.configPath ?? 'pp.config.yaml';
   // ${CLAUDE_PROJECT_DIR} is the project root; quoted so a path with spaces stays one argument.
-  const configArg = config.startsWith('/') ? shellQuote(config) : `"\${CLAUDE_PROJECT_DIR}"/${shellQuote(config)}`;
+  // An absolute path (for the platform: drive-letter and UNC paths on Windows) is used as
+  // given; only a relative one is joined to the project root.
+  const configArg = isAbsoluteConfigPath(config, opts.platform) ? shellQuote(config) : `"\${CLAUDE_PROJECT_DIR}"/${shellQuote(config)}`;
   return {
     type: 'command',
     command: failClosed(`${launcher} hook --config ${configArg} --wait ${wait}`),

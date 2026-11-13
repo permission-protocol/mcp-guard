@@ -609,7 +609,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
       const out = run.stdout;
-      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', `undo:   npx @permission-protocol/mcp-guard@${VERSION} hook uninstall`, 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
+      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', `undo:   ${LAUNCHER} hook uninstall --project `, 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
       let at = 0;
       for (const piece of order) {
         const found = out.indexOf(piece, at);
@@ -845,6 +845,7 @@ describe('mcp-guard init --preset coding-agent', () => {
         assert.ok(run.stdout.includes(`Launcher: ${pinned} (@permission-protocol/mcp-guard is not installed in this project`), run.stdout);
         const handler = JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8')).hooks.PreToolUse[0].hooks[0];
         assert.ok(handler.command.startsWith(`${pinned} hook --config `), handler.command);
+        assert.ok(run.stdout.includes(`undo:   ${pinned} hook uninstall --project ${machine.project}`), 'the undo hint runs the resolved launcher, not a bare npx mcp-guard');
         assert.match(run.stdout, /ok   allowed: Bash "git status"/);
         assert.match(run.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
         // The probe and both self-test runs went through the stand-in, with the pinned spec.
