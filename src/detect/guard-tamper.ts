@@ -3,7 +3,7 @@
  * and file-tool paths that would modify, move or delete
  *   - a policy file: `pp.config.yaml` / `.yml` anywhere, `mcp-guard/policies/*`;
  *   - a receipt log: any `*receipts.jsonl`;
- *   - the key store or install token: `mcp-guard/keys/*`, `mcp-guard/install-token`,
+ *   - the key store, install token and hook state: `mcp-guard/keys/*`, `mcp-guard/install-token`, `hook-requests.json`,
  *     and the `.config/mcp-guard` directory itself;
  *   - an MCP client configuration that routes a server through the guard: `.mcp.json`,
  *     `.claude.json`, `.cursor/mcp.json`, `.vscode/mcp.json`, `claude_desktop_config.json`,
@@ -21,9 +21,9 @@
  */
 import { overShell } from './combine.js';
 import { operands, positionals, DYN, type Cmd, type Word } from './shell.js';
-import { found, type DetectorResult } from './types.js';
+import { found, unparseable, type DetectorResult } from './types.js';
 
-type Kind = 'edit_policy' | 'edit_receipts' | 'edit_keys' | 'edit_client_config' | 'kill_guard' | 'guard_cli';
+type Kind = 'edit_policy' | 'edit_receipts' | 'edit_keys' | 'edit_hook_state' | 'edit_client_config' | 'kill_guard' | 'guard_cli';
 
 /** Protected locations, as path segments from the end of a path. */
 const PROTECTED: Array<[string[], Kind]> = [
@@ -34,6 +34,7 @@ const PROTECTED: Array<[string[], Kind]> = [
   [['self-test-receipts.jsonl'], 'edit_receipts'],
   [['mcp-guard', 'keys'], 'edit_keys'],
   [['mcp-guard', 'install-token'], 'edit_keys'],
+  [['hook-requests.json'], 'edit_hook_state'],
   [['.mcp.json'], 'edit_client_config'],
   [['.claude.json'], 'edit_client_config'],
   [['claude_desktop_config.json'], 'edit_client_config'],
@@ -50,8 +51,21 @@ const PROTECTED: Array<[string[], Kind]> = [
 /** One-segment directories whose removal or move takes a protected file with it. */
 const PROTECTED_DIRS = new Set(['.cursor', '.claude', '.codex', '.gemini', '.codeium', '.vscode']);
 
+/**
+ * Lexical normalisation, no I/O: lower case (over-matches on case-sensitive file systems,
+ * never under-matches on case-insensitive ones), `\\` as `/`, `~` / `~user` dropped,
+ * empty and `.` segments dropped (`./x`, `x//y`, trailing `/`), `a/../b` resolved to `b`.
+ * A `..` that climbs above the start of the path is kept: the suffix after it still
+ * matches. Symlinks, bind mounts and the working directory are not resolved.
+ */
 function segments(text: string): string[] {
-  return text.toLowerCase().replace(/\\/g, '/').replace(/^~[^/]*/, '').split('/').filter((s) => s && s !== '.');
+  const out: string[] = [];
+  for (const seg of text.toLowerCase().replace(/\\/g, '/').replace(/^~[^/]*/, '').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..' && out.length && out[out.length - 1] !== '..') { out.pop(); continue; }
+    out.push(seg);
+  }
+  return out;
 }
 
 function globSegment(seg: string): RegExp {
@@ -99,22 +113,52 @@ export function guardPathKind(word: Pick<Word, 'text' | 'home' | 'glob'>): Kind 
 
 const word = (text: string, from?: Word): Word => ({ text, dynamic: false, vars: [], home: from?.home ?? false, glob: from?.glob ?? false, quoted: false });
 
-/** The first protected path among the words, as a finding. */
+/** Basenames a file inside a protected directory can have (keys.json, *.private.pem, policies/*.yaml). */
+const PROTECTED_CHILD = /\.(json|pem|ya?ml|toml|jsonl)$/;
+const PROTECTED_PARENTS = new Set(['keys', 'policies', 'mcp-guard', '.claude', '.cursor', '.vscode', '.codex', '.gemini', 'windsurf', '.config']);
+
+/**
+ * A written path with an unknown part (`"$CFG"`, `$DIR/settings.json`): could it be a
+ * protected one? Only the static segments after the last unknown one can be read. When
+ * they name a protected entry, that is a finding; when they rule one out (a static parent
+ * and name that no protected entry has), no match; otherwise it fails safe.
+ */
+function unresolved(w: Word): DetectorResult | null {
+  const raw = w.text.toLowerCase().replace(/\\/g, '/').split('/');
+  const lastDyn = raw.map((x) => x.includes(DYN)).lastIndexOf(true);
+  const tail = raw.slice(lastDyn + 1).filter((x) => x && x !== '.');
+  if (tail.includes('..')) return unparseable('dynamic_argument', 'guard_tamper');
+  if (tail.length) {
+    const kind = guardPathKind({ text: tail.join('/'), home: false, glob: w.glob });
+    if (kind) return found(kind, w.text);
+    const name = tail[tail.length - 1];
+    const parent = tail.length > 1 ? tail[tail.length - 2] : null;
+    if (parent !== null && !PROTECTED_PARENTS.has(parent)) return null;
+    if (!PROTECTED_CHILD.test(name) && !PROTECTED_PARENTS.has(name)) return null;
+  }
+  return unparseable('dynamic_argument', 'guard_tamper');
+}
+
+/** The first protected path among the written words: a definite finding wins over an unresolved path. */
 function hit(words: Word[]): DetectorResult | null {
+  let uncertain: DetectorResult | null = null;
   for (const w of words) {
+    if (w.text.includes(DYN)) { uncertain ??= unresolved(w); continue; }
     const kind = guardPathKind(w);
     if (kind) return found(kind, w.text);
   }
-  return null;
+  return uncertain;
 }
 
 /** Commands whose every operand is modified, moved or deleted. */
 const MODIFY_ALL = new Set([
   'rm', 'rmdir', 'unlink', 'shred', 'truncate', 'chmod', 'chown', 'chgrp', 'chattr', 'setfacl', 'tee', 'sponge',
+  // PowerShell (the reader is POSIX: write paths with `/`; a `\\` is read as an escape).
+  'remove-item', 'ri', 'del', 'erase', 'rd', 'set-content', 'add-content', 'clear-content', 'out-file', 'move-item', 'mi', 'rename-item', 'ren',
   'vi', 'vim', 'nvim', 'nano', 'emacs', 'micro', 'hx', 'helix', 'ed', 'ex', 'code', 'cursor', 'subl', 'gedit', 'patch',
 ]);
 /** Commands that write to their last operand (or `-t DIR`). */
-const COPY_TO = new Set(['cp', 'install', 'ln', 'rsync', 'scp', 'ditto']);
+const COPY_TO = new Set(['cp', 'install', 'ln', 'rsync', 'scp', 'ditto', 'copy-item', 'cpi']);
 
 function destination(cmd: Cmd): { dest: Word | undefined; sources: Word[] } {
   const ops = operands(cmd.args);
@@ -158,8 +202,8 @@ function inPlace(cmd: Cmd): boolean {
 function writeRedirect(cmd: Cmd): DetectorResult | null {
   for (const r of cmd.redirects) {
     if (!r.target || !(r.op.includes('>') || r.op === '<>') || r.op === '>&') continue;
-    const kind = guardPathKind(r.target);
-    if (kind) return found(kind, r.target.text);
+    const h = hit([r.target]);
+    if (h) return h;
   }
   return null;
 }
@@ -179,6 +223,11 @@ function killGuard(cmd: Cmd, all: Cmd[]): DetectorResult | null {
     case 'pkill':
     case 'killall': {
       const target = pos.find((w) => !w.dynamic && namesGuard(w.text));
+      return target ? found('kill_guard', target.text) : null;
+    }
+    case 'stop-process':
+    case 'spps': {
+      const target = cmd.args.find((w) => !w.dynamic && !w.text.startsWith('-') && (GUARD_PROCESS.test(w.text.toLowerCase()) || NODE.test(w.text.toLowerCase())));
       return target ? found('kill_guard', target.text) : null;
     }
     case 'taskkill': {
@@ -254,6 +303,21 @@ function check(cmd: Cmd, all: Cmd[]): DetectorResult | null {
   return killGuard(cmd, all) ?? guardCli(cmd);
 }
 
+/**
+ * A file-tool path read as a path, before the shell reader (which would take `\\` in
+ * `C:\\Users\\x\\.claude.json` as escapes and split `Application Support`): text with no
+ * shell syntax that is one token, or an absolute path with spaces inside segments.
+ */
+function rawPath(text: string): DetectorResult | null {
+  const t = text.trim();
+  if (!t || /[;&|<>$`'"\n]/.test(t)) return null;
+  // Whitespace only inside a segment of an absolute path (`Application Support`), never
+  // before something that looks like another argument (`-x`, `~/`, `/`, `.`).
+  if (/\s/.test(t) && !(/^([a-zA-Z]:\\|\/|~\/)/.test(t) && !/\s[-~/.\s]|\s\/|\/\s/.test(t))) return null;
+  const kind = guardPathKind({ text: t, home: t.startsWith('~'), glob: false });
+  return kind ? found(kind, t) : null;
+}
+
 export function guardTamper(text: string): DetectorResult {
-  return overShell(text, check);
+  return rawPath(text) ?? overShell(text, check);
 }

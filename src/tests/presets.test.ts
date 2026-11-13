@@ -345,6 +345,45 @@ describe('detector guard_tamper', () => {
   });
 });
 
+// Claude Code's built-in tools as the hook adapter passes them to evaluate(): Bash and
+// PowerShell { command }, Write { file_path, content }, Edit { file_path, old_string,
+// new_string, replace_all }. file_path is absolute.
+describe('coding-agent preset with Claude Code hook tool shapes', () => {
+  const c = preset();
+  const P = '/home/dev/project';
+  const cases: Array<[string, Record<string, unknown>, 'held_for_approval' | 'allowed', string | null]> = [
+    ['Edit', { file_path: `${P}/pp.config.yaml`, old_string: 'require_approval', new_string: 'allow', replace_all: true }, 'held_for_approval', 'guard-tamper-edit'],
+    ['Write', { file_path: `${P}/.claude/settings.json`, content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Write', { file_path: `${P}/.claude/settings.local.json`, content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Edit', { file_path: '/home/dev/.claude/settings.json', old_string: 'a', new_string: 'b', replace_all: false }, 'held_for_approval', 'guard-tamper-edit'],
+    ['Edit', { file_path: '/home/dev/.config/mcp-guard/hook-requests.json', old_string: 'a', new_string: 'b', replace_all: false }, 'held_for_approval', 'guard-tamper-edit'],
+    ['Write', { file_path: `${P}/pp-receipts.jsonl`, content: '' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Write', { file_path: '/home/dev/.config/mcp-guard/keys/keys.json', content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Write', { file_path: `${P}/src/../.claude/./settings.json`, content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Write', { file_path: 'C:\\Users\\Dev User\\project\\.claude\\settings.json', content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['Write', { file_path: '/Users/dev/Library/Application Support/Claude/claude_desktop_config.json', content: '{}' }, 'held_for_approval', 'guard-tamper-write'],
+    ['NotebookEdit', { notebook_path: `${P}/.mcp.json` }, 'held_for_approval', 'guard-tamper-notebookedit'],
+    ['Bash', { command: 'rm .claude/settings.json' }, 'held_for_approval', 'guard-tamper'],
+    ['Bash', { command: 'echo "{}" > .claude/settings.json' }, 'held_for_approval', 'guard-tamper'],
+    ['Bash', { command: 'jq ".hooks={}" .claude/settings.json > /tmp/s && mv /tmp/s ./.claude//settings.json' }, 'held_for_approval', 'guard-tamper'],
+    ['Bash', { command: 'echo x > "$SETTINGS"' }, 'held_for_approval', 'guard-tamper'],
+    ['PowerShell', { command: 'Remove-Item .claude/settings.json -Force' }, 'held_for_approval', 'guard-tamper'],
+    ['PowerShell', { command: 'Stop-Process -Name node' }, 'held_for_approval', 'guard-tamper'],
+    ['Edit', { file_path: `${P}/src/index.ts`, old_string: 'a', new_string: 'b', replace_all: false }, 'allowed', null],
+    ['Write', { file_path: `${P}/docs/settings.json.md`, content: 'x' }, 'allowed', null],
+    ['Bash', { command: 'cat pp.config.yaml' }, 'allowed', null],
+    ['Bash', { command: 'cat .claude/settings.json' }, 'allowed', null],
+    ['Bash', { command: 'echo done > "$OUT/build.log"' }, 'allowed', null],
+  ];
+  for (const [tool, args, decision, rule] of cases) {
+    it(`${decision === 'allowed' ? 'allows' : 'holds'} ${tool} ${JSON.stringify(args).slice(0, 90)}`, () => {
+      const d = evaluate(tool, args, c);
+      assert.equal(d.decision, decision, d.reason);
+      assert.equal(d.rule_id, rule);
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // End to end through the CLI: holds, observations, and no argument text anywhere
 // ---------------------------------------------------------------------------
