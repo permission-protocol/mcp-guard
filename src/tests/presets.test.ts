@@ -11,6 +11,7 @@ import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { policyText } from '../init/init.js';
 import { codingAgentPolicyBody } from '../presets/coding-agent.js';
 import { startFakePp } from './cloud-helpers.js';
+import { fakeNpx } from './fake-npx.js';
 
 const CLI = join(__dirname, '..', 'cli.js');
 const ECHO = join(__dirname, 'fixtures-echo-server.js');
@@ -271,7 +272,7 @@ describe('detector guard_tamper', () => {
     ['rm $HOME/.config/mcp-guard/install-token', 'edit_keys'],
     ['find ~/.config/mcp-guard -delete', 'edit_keys'],
     ['mcp-guard keys revoke mcpg-1', 'guard_cli'],
-    ['npx -y @permission-protocol/mcp-guard@0.4.0 keys rotate', 'guard_cli'],
+    ['npx -y @permission-protocol/mcp-guard@0.5.0 keys rotate', 'guard_cli'],
     ['cp /tmp/plain.json .mcp.json', 'edit_client_config'],
     ['mv .mcp.json .mcp.json.off', 'edit_client_config'],
     ['cp ~/Downloads/.mcp.json ./', 'edit_client_config'],
@@ -467,7 +468,9 @@ describe('mcp-guard init --preset', () => {
     mkdirSync(project, { recursive: true });
     const mcpConfig = join(project, '.mcp.json');
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { shell: { command: process.execPath, args: [ECHO] } } }, null, 2) + '\n');
-    const env: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: join(root, 'config'), MCP_GUARD_TOKEN_STORE: 'file', ECHO_LOG: join(root, 'server.log'), HOME: root, USERPROFILE: root };
+    // The wrap step checks `npx -y @permission-protocol/mcp-guard@<version>`: a stand-in runs this build, never the registry.
+    const npx = fakeNpx(root);
+    const env: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: join(root, 'config'), MCP_GUARD_TOKEN_STORE: 'file', ECHO_LOG: join(root, 'server.log'), HOME: root, USERPROFILE: root, ...npx.env };
     for (const key of Object.keys(env)) if (key.startsWith('PP_')) delete env[key];
     return { project, mcpConfig, env, policyPath: join(root, 'config', 'mcp-guard', 'policies', 'shell.yaml') };
   }

@@ -9,7 +9,9 @@ import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { loadInstallToken, saveInstallToken } from '../cloud/token.js';
 import { createKey, keysDir, loadSigningKey } from '../keystore.js';
 import type { KeySetEntry } from '../signing/keys.js';
-import { findServers, wrapServer, MCP_CLIENTS, type FoundServer, type McpClient } from './mcp-clients.js';
+import { findServers, probeWrapLauncher, splitLauncher, wrapLauncher, wrapServer, GUARD_PACKAGE, MCP_CLIENTS, type FoundServer, type McpClient } from './mcp-clients.js';
+import { windowsProtectionNote, type ProtectOptions, type WindowsProtection } from '../win-protect.js';
+import type { TokenLocation } from '../cloud/token.js';
 import { SELF_TEST_SERVER_LABEL, SELF_TEST_TOOL } from './selftest-server.js';
 import { isPresetName, presetPolicyBody, PRESET_NAMES, type PresetName } from '../presets/coding-agent.js';
 import { DEFAULT_MATCHER, installHook, SettingsError, settingsPath, type SettingsChange } from '../hook/install.js';
@@ -65,6 +67,7 @@ interface InitFlags {
   noHook: boolean;
   project?: string;
   launcher?: string;
+  wrapLauncher?: string[];
   mcpConfig?: string;
   agentId?: string;
   environment: 'development' | 'staging' | 'production';
@@ -95,6 +98,9 @@ Options:
   --project <dir>                 the project for the hook and its pp.config.yaml (default: current directory)
   --launcher <cmd>                how Claude Code starts mcp-guard (default: "npx --no-install mcp-guard" if the
                                   package is installed in the project, else "npx -y @permission-protocol/mcp-guard@<this version>")
+  --wrap-launcher <cmd>           how the MCP client starts the guard for a wrapped server (default
+                                  "npx -y @permission-protocol/mcp-guard@<this version>"; words split on spaces,
+                                  "double quotes" for a path with spaces; no shell). init checks it reports this version
   --agent-id <id>                 how receipts name the agent (default: the client)
   --environment <label>           development | staging | production (default production)
   --label <name>                  how this machine is named on the connect page (default: host name)
@@ -138,6 +144,10 @@ function parseFlags(argv: string[]): InitFlags {
       case '--no-hook': flags.noHook = true; break;
       case '--project': flags.project = value(i++, arg); break;
       case '--launcher': flags.launcher = value(i++, arg); break;
+      case '--wrap-launcher': {
+        try { flags.wrapLauncher = splitLauncher(value(i++, arg)); } catch (err: any) { if (err instanceof InitError) throw err; throw new InitError(err.message); }
+        break;
+      }
       case '--mcp-config': flags.mcpConfig = value(i++, arg); break;
       case '--agent-id': flags.agentId = value(i++, arg); break;
       case '--label': flags.label = value(i++, arg); break;
@@ -352,8 +362,25 @@ function elapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${total % 60}s` : `${total}s`;
 }
 
+/** What init says about where the install token went. POSIX wording is unchanged; Windows says what icacls did. */
+export function tokenStoredMessage(stored: TokenLocation): string {
+  if (stored.kind === 'keychain') return 'Install token: stored in the OS keychain.';
+  if (stored.windows) return `Install token: stored in ${stored.path} (${windowsProtectionNote(stored.windows)}).`;
+  return `Install token: stored in ${stored.path} (owner-only).`;
+}
+
+/** The extra line init prints on Windows about the new private signing key. */
+export function keyProtectionMessage(protection: WindowsProtection): string {
+  return `  Private key: ${windowsProtectionNote(protection)}.`;
+}
+
 function guardVersion(): string {
   return JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')).version;
+}
+
+/** Commands init prints run this exact version, never whatever `latest` is (or an unrelated `mcp-guard` package). */
+function pinnedCli(): string {
+  return `npx ${GUARD_PACKAGE}@${guardVersion()}`;
 }
 
 async function choose<T>(io: InitIo, flags: InitFlags, question: string, options: T[], label: (option: T) => string, suggested: number): Promise<T> {
@@ -377,6 +404,8 @@ export interface InitDeps {
   discover?: typeof discoverTools;
   selfTest?: typeof runSelfTest;
   now?: () => number;
+  /** Platform and exec for the Windows file restriction (tests). */
+  protect?: ProtectOptions;
 }
 
 export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): Promise<number> {
@@ -468,6 +497,24 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       server = await choose(io, flags, 'Which MCP server should the guard wrap?', candidates, (s) => `${s.name}  (${s.client}, ${s.file})`, 0);
       io.out(`Server: ${server.name} (${server.client}, ${server.file})`);
     }
+    if (flags.wrapLauncher && !server) throw new InitError('--wrap-launcher is for a wrapped MCP server, and there is none to wrap.');
+
+    // 1b. The client will start the guard with this launcher: check it starts this exact
+    // version before anything changes (an unpublished version, offline npx, a bad override).
+    if (server) {
+      const version = guardVersion();
+      const launcherWords = wrapLauncher(version, flags.wrapLauncher);
+      const problem = probeWrapLauncher(launcherWords, version, { cwd: projectDir });
+      if (problem) {
+        throw new InitError(
+          `The wrapped server "${server.name}" would start the guard with ${problem}. Nothing was changed, and init stopped before the login.\n` +
+          `  To proceed: run init from a published release (npx ${GUARD_PACKAGE}@latest init ...), or install this version in the project ` +
+          `(npm install --save-dev ${GUARD_PACKAGE}@${version}) and pass --wrap-launcher <project>/node_modules/.bin/mcp-guard, ` +
+          `or pass --wrap-launcher "<command>" that starts mcp-guard ${version} (for a source build: --wrap-launcher "node <checkout>/bin/mcp-guard").`,
+        );
+      }
+      io.out(`Wrap launcher: ${launcherWords.join(' ')} (checked: starts mcp-guard ${version})`);
+    }
 
     // 2-3. Device login and token. With only the hook to set up, a stored token is reused.
     let changedSomething = false;
@@ -500,9 +547,9 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
           throw new InitError(`Stopped. Nothing on this machine was changed. Revoke the token "MCP Guard${label ? ` (${label})` : ''}" in that workspace under Settings > Developer access.`);
         }
       }
-      const stored = saveInstallToken(connected.token);
+      const stored = saveInstallToken(connected.token, { platform: deps.protect?.platform, exec: deps.protect?.exec });
       changedSomething = true;
-      io.out(stored.kind === 'keychain' ? 'Install token: stored in the OS keychain.' : `Install token: stored in ${stored.path} (owner-only).`);
+      io.out(tokenStoredMessage(stored));
     }
 
     // 4. Local signing key (allow and block decisions are signed on this machine).
@@ -510,9 +557,11 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       loadSigningKey();
     } catch (err: any) {
       if (err?.code !== 'SIGNING_KEY_MISSING') throw err;
-      const key = createKey();
+      const keyProtection: { value: WindowsProtection | null } = { value: null };
+      const key = createKey({ protect: deps.protect, onWindowsProtection: (p) => { keyProtection.value = p; } });
       changedSomething = true;
       io.out(`Local signing key: created ${key.keyId} in ${keysDir()}.`);
+      if (keyProtection.value) io.out(keyProtectionMessage(keyProtection.value));
     }
 
     // 5. Which tool to hold (a preset names its own rules).
@@ -581,7 +630,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
         }
         if (hookChange.changed) changedSomething = true;
         io.out(`Claude Code hook: ${hookChange.changed ? 'installed' : 'already installed'} in ${hookChange.path} (PreToolUse, matcher "${DEFAULT_MATCHER}", onFailure block)`);
-        io.out(`  undo:   npx mcp-guard hook uninstall --project ${projectDir}`);
+        io.out(`  undo:   ${pinnedCli()} hook uninstall --project ${projectDir}`);
       }
     }
 
@@ -589,7 +638,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     const agentId = flags.agentId ?? server?.client ?? 'claude-code';
     if (!TOOL_NAME_PATTERN.test(agentId)) throw new InitError('--agent-id may contain letters, digits and _ . : / @ - only.');
     if (server) {
-      const wrapped = wrapServer(server, { policyPath: policyPath!, agentId, version: guardVersion(), now: new Date(now()) });
+      const wrapped = wrapServer(server, { policyPath: policyPath!, agentId, version: guardVersion(), launcher: flags.wrapLauncher, now: new Date(now()) });
       io.out(`Wrapped "${server.name}" in ${server.file}`);
       io.out(`  before: ${[server.command, ...server.args].join(' ')}`);
       io.out(`  now:    ${[wrapped.command, ...wrapped.args].join(' ')}`);
@@ -616,7 +665,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       for (const c of check.checks) io.out(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: Bash "${c.command}": ${c.detail}`);
       if (!check.ok) {
         io.err(`[mcp-guard] Hook self-test failed: ${check.reason}`);
-        io.err(`[mcp-guard] The hook is installed and fails closed: Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} are blocked until it works. Fix the cause above, or remove it with: npx mcp-guard hook uninstall --project ${projectDir}`);
+        io.err(`[mcp-guard] The hook is installed and fails closed: Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} are blocked until it works. Fix the cause above, or remove it with: ${pinnedCli()} hook uninstall --project ${projectDir}`);
         return 1;
       }
     }
@@ -662,7 +711,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.err('[mcp-guard] The setup is in place and fails closed: the held tool stays blocked until a signature works. Fix the cause above, then call the tool from your client.');
       return 1;
     }
-    const verifyCommand = `npx ${'@permission-protocol/mcp-guard'} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath ?? hookPolicyPath}"` : ''}`;
+    const verifyCommand = `${pinnedCli()} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath ?? hookPolicyPath}"` : ''}`;
     io.out('');
     io.out(`Signed receipt: ${test.receiptId}${test.signer ? `, signed by ${test.signer}` : ''}`);
     if (test.receiptUrl) io.out(`  View it:   ${test.receiptUrl}`);

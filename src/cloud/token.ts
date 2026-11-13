@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { keysDir } from '../keystore.js';
+import { restrictToCurrentUser, type ExecFile, type WindowsProtection } from '../win-protect.js';
 
 /**
  * The install token that authenticates this guard to Permission Protocol: a workspace
@@ -13,7 +14,8 @@ import { keysDir } from '../keystore.js';
  *   2. the OS keychain, where `mcp-guard init` puts it (macOS Keychain, or the Secret
  *      Service on Linux when `secret-tool` is installed);
  *   3. the token file beside the key directory, owner-readable only. `init` writes it
- *      there, mode 0600, when no keychain is available (always on Windows).
+ *      there, mode 0600, when no keychain is available (always on Windows, where it is
+ *      restricted to the current user with icacls when that works: win-protect.ts).
  *
  * A missing, malformed or exposed token is a typed error: cloud approvals then refuse
  * to start in enforce mode. There is no anonymous fallback.
@@ -91,17 +93,19 @@ export function writeKeychainToken(token: string, options: KeychainOptions = {})
   return false;
 }
 
-export type TokenLocation = { kind: 'keychain' } | { kind: 'file'; path: string };
+/** `windows`: on win32 only, whether icacls restricted the file to the current user. */
+export type TokenLocation = { kind: 'keychain' } | { kind: 'file'; path: string; windows?: WindowsProtection };
 
-/** Where `init` puts a new token: the OS keychain, else a 0600 file. */
-export function saveInstallToken(token: string, options: KeychainOptions & { path?: string } = {}): TokenLocation {
+/** Where `init` puts a new token: the OS keychain, else a 0600 file (on Windows, restricted with icacls when possible). */
+export function saveInstallToken(token: string, options: KeychainOptions & { path?: string; exec?: ExecFile } = {}): TokenLocation {
   const value = checked(token, 'the login');
   if (writeKeychainToken(value, options)) return { kind: 'keychain' };
   const path = options.path ?? installTokenPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, `${value}\n`, { mode: 0o600 });
   try { chmodSync(path, 0o600); } catch { /* best effort on platforms without chmod */ }
-  return { kind: 'file', path };
+  const windows = restrictToCurrentUser(path, { platform: options.platform, exec: options.exec, env: options.env });
+  return windows ? { kind: 'file', path, windows } : { kind: 'file', path };
 }
 
 export function loadInstallToken(env: NodeJS.ProcessEnv = process.env, path: string = installTokenPath(), keychain: KeychainOptions = {}): string {

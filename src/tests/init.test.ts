@@ -8,15 +8,21 @@ import { parseConfig } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { InstallTokenError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, loadInstallToken, saveInstallToken, type KeychainRunner } from '../cloud/token.js';
-import { policyText } from '../init/init.js';
-import { findServers, isWrapped, wrapServer, wrappedCommand } from '../init/mcp-clients.js';
+import { keyProtectionMessage, policyText, tokenStoredMessage } from '../init/init.js';
+import { findServers, isWrapped, probeWrapLauncher, splitLauncher, wrapLauncher, wrapServer, wrappedCommand } from '../init/mcp-clients.js';
+import { restrictToCurrentUser, type ExecFile } from '../win-protect.js';
+import { createKey } from '../keystore.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
+import { fakeNpx } from './fake-npx.js';
 import { settingsPath } from '../hook/install.js';
 
 const CLI = join(__dirname, '..', 'cli.js');
 const ECHO = join(__dirname, 'fixtures-echo-server.js');
 const TOKEN = `pp_test_${'init'.repeat(8)}`;
 const temp = (name: string) => mkdtempSync(join(tmpdir(), `mcp-guard-${name}-`));
+const VERSION: string = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')).version;
+const BIN = join(__dirname, '..', '..', '..', 'bin', 'mcp-guard');
+
 
 // ---------------------------------------------------------------------------
 // Where the token is kept
@@ -61,9 +67,11 @@ describe('install token storage', () => {
     const dir = temp('token');
     const file = join(dir, 'nested', 'install-token');
     const unavailable: KeychainRunner = () => ({ status: null, stdout: '' });
-    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+    for (const platform of ['linux', 'darwin'] as const) {
       assert.deepEqual(saveInstallToken(TOKEN, { platform, run: unavailable, env: {}, path: file }), { kind: 'file', path: file });
     }
+    const icacls: ExecFile = () => ({ status: 0 });
+    assert.deepEqual(saveInstallToken(TOKEN, { platform: 'win32', run: unavailable, env: { USERNAME: 'maria' }, path: file, exec: icacls }), { kind: 'file', path: file, windows: 'restricted' });
     assert.equal(readFileSync(file, 'utf-8'), `${TOKEN}\n`);
     if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600);
     assert.equal(loadInstallToken({}, file, { platform: 'win32', run: unavailable }), TOKEN);
@@ -86,8 +94,69 @@ describe('install token storage', () => {
   });
 
   it('never stores something that is not a token', () => {
-    assert.throws(() => saveInstallToken('hunter2', { platform: 'win32', path: join(temp('token'), 't') }), InstallTokenError);
+    assert.throws(() => saveInstallToken('hunter2', { platform: 'win32', path: join(temp('token'), 't'), exec: () => ({ status: 0 }) }), InstallTokenError);
     assert.throws(() => saveInstallToken(`${TOKEN} -s other-service`, { platform: 'darwin', run: () => ({ status: 0, stdout: '' }), env: {}, path: join(temp('token'), 't') }), InstallTokenError);
+  });
+});
+
+describe('Windows: the token and private key restricted with icacls', () => {
+  function recorder(status: number | null, throws = false) {
+    const calls: Array<{ file: string; args: string[]; timeout: number }> = [];
+    const exec: ExecFile = (file, args, options) => {
+      calls.push({ file, args, timeout: options.timeout });
+      if (throws) throw new Error('spawn icacls ENOENT');
+      return { status };
+    };
+    return { exec, calls };
+  }
+  const tricky = (dir: string) => join(dir, 'a dir & "x"; del *', 'install-token');
+
+  it('icacls succeeds: the file is restricted to the current user, and init says so', () => {
+    const dir = temp('win');
+    const file = tricky(dir);
+    const { exec, calls } = recorder(0);
+    const stored = saveInstallToken(TOKEN, { platform: 'win32', env: { USERNAME: 'maria', USERDOMAIN: 'ACME' }, path: file, exec });
+    assert.deepEqual(stored, { kind: 'file', path: file, windows: 'restricted' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, 'icacls');
+    assert.deepEqual(calls[0].args, [file, '/inheritance:r', '/grant:r', 'ACME\\maria:F'], 'the path is its own argument, never part of a command string');
+    assert.ok(calls[0].timeout > 0);
+    assert.equal(tokenStoredMessage(stored), `Install token: stored in ${file} (restricted to the current user (icacls)).`);
+    assert.equal(keyProtectionMessage('restricted'), '  Private key: restricted to the current user (icacls).');
+  });
+
+  it('icacls fails or is missing: init does not fail, and never says owner-only', () => {
+    for (const [status, throws] of [[5, false], [null, false], [0, true]] as const) {
+      const file = tricky(temp('win'));
+      const { exec } = recorder(status, throws);
+      const stored = saveInstallToken(TOKEN, { platform: 'win32', env: { USERNAME: 'maria' }, path: file, exec });
+      assert.deepEqual(stored, { kind: 'file', path: file, windows: 'profile-only' });
+      const message = tokenStoredMessage(stored);
+      assert.equal(message, `Install token: stored in ${file} (not restricted (icacls failed or is missing); protected only by the permissions of your user profile folder).`);
+      assert.equal(message.includes('owner-only'), false);
+      assert.equal(readFileSync(file, 'utf-8'), `${TOKEN}\n`);
+    }
+    assert.equal(keyProtectionMessage('profile-only'), '  Private key: not restricted (icacls failed or is missing); protected only by the permissions of your user profile folder.');
+    assert.equal(restrictToCurrentUser('C:\\x', { platform: 'win32', env: {}, user: '', exec: () => ({ status: 0 }) }), 'profile-only', 'no user name: nothing to grant');
+  });
+
+  it('the private key gets the same treatment; POSIX runs nothing and keeps its wording', () => {
+    const { exec, calls } = recorder(0);
+    let seen: string | null = null;
+    const key = createKey({ dir: join(temp('win'), 'keys'), protect: { platform: 'win32', exec, user: 'maria' }, onWindowsProtection: (p) => { seen = p; } });
+    assert.equal(seen, 'restricted');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[0].endsWith(`${key.keyId}.private.pem`), true);
+    assert.deepEqual(calls[0].args.slice(1), ['/inheritance:r', '/grant:r', 'maria:F']);
+
+    const posix = recorder(0);
+    let posixSeen: string | null = null;
+    createKey({ dir: join(temp('posix'), 'keys'), protect: { platform: 'linux', exec: posix.exec }, onWindowsProtection: (p) => { posixSeen = p; } });
+    const file = join(temp('posix'), 'install-token');
+    const stored = saveInstallToken(TOKEN, { platform: 'linux', run: () => ({ status: null, stdout: '' }), env: {}, path: file, exec: posix.exec });
+    assert.equal(posix.calls.length, 0);
+    assert.equal(posixSeen, null);
+    assert.equal(tokenStoredMessage(stored), `Install token: stored in ${file} (owner-only).`);
   });
 });
 
@@ -103,7 +172,7 @@ describe('MCP client configs', () => {
     mkdirSync(join(home, '.cursor'), { recursive: true });
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'], env: { A: 'b' } }, remote: { url: 'https://example.test/mcp' } } }, null, 2) + '\n');
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ numStartups: 7, mcpServers: { github: { command: 'docker', args: ['run', 'ghcr.io/github/github-mcp-server'] } }, projects: { [cwd]: { mcpServers: { db: { command: 'node', args: ['db.js'] } } }, '/somewhere/else': { mcpServers: { other: { command: 'node', args: ['x.js'] } } } } }));
-    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.4.0', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.0', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
     writeFileSync(join(cwd, '.cursor', 'mcp.json'), '{ not json');
     return { home, cwd };
   }
@@ -122,12 +191,12 @@ describe('MCP client configs', () => {
     const file = join(cwd, '.mcp.json');
     const before = readFileSync(file, 'utf-8');
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
-    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.4.0', now: new Date('2026-11-10T12:00:00.000Z') });
+    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.0', now: new Date('2026-11-10T12:00:00.000Z') });
 
     assert.equal(readFileSync(result.backup, 'utf-8'), before);
     assert.match(result.backup, /\.mcp\.json\.mcp-guard-backup-2026-11-10T12-00-00-000Z$/);
     const after = JSON.parse(readFileSync(file, 'utf-8'));
-    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.4.0' });
+    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.0' });
     assert.deepEqual(after.mcpServers.filesystem, { ...expected, env: { A: 'b' } });
     assert.deepEqual(after.mcpServers.remote, { url: 'https://example.test/mcp' });
     assert.equal(readFileSync(file, 'utf-8').endsWith('\n'), true);
@@ -138,13 +207,13 @@ describe('MCP client configs', () => {
     // It is now seen as wrapped, and wrapping it twice is refused.
     const again = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     assert.equal(again.wrapped, true);
-    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.4.0' }), /already wrapped/);
+    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.5.0' }), /already wrapped/);
   });
 
   it('wraps a project-scoped server in ~/.claude.json without touching other projects', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'db')!;
-    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.4.0' });
+    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.5.0' });
     const after = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
     assert.equal(isWrapped(after.projects[cwd].mcpServers.db.command, after.projects[cwd].mcpServers.db.args), true);
     assert.deepEqual(after.projects['/somewhere/else'].mcpServers.other, { command: 'node', args: ['x.js'] });
@@ -156,14 +225,14 @@ describe('MCP client configs', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'python', args: ['other.py'] } } }));
-    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.4.0' }), /changed since it was read/);
+    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.5.0' }), /changed since it was read/);
     assert.equal(readdirSync(cwd).some((name) => name.includes('mcp-guard-backup')), false);
   });
 
   it('pins the guard version and goes through cmd on Windows', () => {
     const server = { command: 'node', args: ['s.js'] };
-    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.4.0' };
-    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.4.0', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
+    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.5.0' };
+    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.0', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
     assert.deepEqual(wrappedCommand(server, options, 'win32').command, 'cmd');
     assert.deepEqual(wrappedCommand(server, options, 'win32').args.slice(0, 3), ['/c', 'npx', '-y']);
     assert.equal(isWrapped('cmd', wrappedCommand(server, options, 'win32').args), true);
@@ -252,9 +321,11 @@ function freshMachine(servers: Record<string, unknown> = { filesystem: { command
   const mcpConfig = join(project, '.mcp.json');
   writeFileSync(mcpConfig, JSON.stringify({ mcpServers: servers }, null, 2) + '\n');
   const config = join(root, 'config');
-  const env: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: config, MCP_GUARD_TOKEN_STORE: 'file', ECHO_LOG: join(root, 'server.log'), HOME: root, USERPROFILE: root };
+  // The wrap step checks its `npx -y @permission-protocol/mcp-guard@<version>` launcher: a stand-in runs this build.
+  const npx = fakeNpx(join(root, 'wrap'));
+  const env: NodeJS.ProcessEnv = { ...process.env, XDG_CONFIG_HOME: config, MCP_GUARD_TOKEN_STORE: 'file', ECHO_LOG: join(root, 'server.log'), HOME: root, USERPROFILE: root, ...npx.env };
   for (const key of Object.keys(env)) if (key.startsWith('PP_')) delete env[key];
-  return { root, project, mcpConfig, guardDir: join(config, 'mcp-guard'), env };
+  return { root, project, mcpConfig, guardDir: join(config, 'mcp-guard'), env, npxLog: npx.log };
 }
 
 function runCli(args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<Run> {
@@ -284,7 +355,7 @@ describe('mcp-guard init, end to end', () => {
 
       // What the person saw, in order.
       const out = run.stdout;
-      const order = ['Server: filesystem', `Open ${fake.url}/mcp/connect?code=ABCD-EFGH`, 'this code: ABCD-EFGH', 'Connected to workspace: Acme Eng (acme-eng)', 'Install token: stored in', 'Local signing key: created mcpg-', 'Hold rule: "delete_file" needs a signature', 'Policy: ', 'Wrapped "filesystem"', 'Self-test: holding a do-nothing call', 'Sign it here: ', 'Signed receipt: rcpt_fake_', 'Verify it: npx @permission-protocol/mcp-guard receipt verify rcpt_fake_', 'Time to first signed receipt: '];
+      const order = ['Server: filesystem', `Open ${fake.url}/mcp/connect?code=ABCD-EFGH`, 'this code: ABCD-EFGH', 'Connected to workspace: Acme Eng (acme-eng)', 'Install token: stored in', 'Local signing key: created mcpg-', 'Hold rule: "delete_file" needs a signature', 'Policy: ', 'Wrapped "filesystem"', 'Self-test: holding a do-nothing call', 'Sign it here: ', 'Signed receipt: rcpt_fake_', `Verify it: npx @permission-protocol/mcp-guard@${VERSION} receipt verify rcpt_fake_`, 'Time to first signed receipt: '];
       let at = 0;
       for (const piece of order) {
         const found = out.indexOf(piece, at);
@@ -328,7 +399,9 @@ describe('mcp-guard init, end to end', () => {
       assert.equal(fake.redeemed.length, 1);
 
       // The verify command init printed works as printed (through this build instead of npx).
-      const verify = /Verify it: npx @permission-protocol\/mcp-guard (receipt verify \S+) --receipts-path "([^"]+)" --config "([^"]+)"/.exec(out)!;
+      const printed = /Verify it: npx @permission-protocol\/mcp-guard@(\S+) (receipt verify \S+) --receipts-path "([^"]+)" --config "([^"]+)"/.exec(out)!;
+      assert.equal(printed[1], VERSION, 'the printed command is pinned to the running version, not latest');
+      const verify = [printed[0], printed[2], printed[3], printed[4]];
       assert.equal(verify[3], policyPath);
       const verifyArgs = [...verify[1].split(' '), '--receipts-path', verify[2], '--config', verify[3]];
       const verified = spawnSync(process.execPath, [CLI, ...verifyArgs], { env: machine.env, encoding: 'utf-8' });
@@ -358,10 +431,10 @@ describe('mcp-guard init, end to end', () => {
     const machine = freshMachine();
     try {
       assert.equal((await runCli(initArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project)).code, 0);
-      // Start the server the way the client now would, through this build of the guard.
+      // Start the server exactly as the client now would: the written command and args (npx is the stand-in running this build).
       const wrapped = JSON.parse(readFileSync(machine.mcpConfig, 'utf-8')).mcpServers.filesystem;
-      const guardArgs: string[] = wrapped.args.slice(wrapped.args.indexOf('--config'));
-      const child = spawn(process.execPath, [CLI, ...guardArgs], { env: machine.env, stdio: ['pipe', 'pipe', 'pipe'] });
+      assert.deepEqual(wrapped.args.slice(0, 2), ['-y', `@permission-protocol/mcp-guard@${VERSION}`]);
+      const child = spawn(wrapped.command, wrapped.args, { env: { ...machine.env, ...wrapped.env }, stdio: ['pipe', 'pipe', 'pipe'] });
       const responses = new Map<number, any>();
       let buffer = '';
       child.stdout.on('data', (d) => {
@@ -378,6 +451,75 @@ describe('mcp-guard init, end to end', () => {
         assert.equal(readFileSync(join(machine.root, 'server.log'), 'utf-8').includes('held-marker'), false);
       } finally { child.kill(); }
     } finally { await fake.close(); }
+  });
+
+  it('the wrap launcher is checked before the login: an unstartable or wrong version is refused and nothing changes', async () => {
+    const cases: Array<[string, string, RegExp]> = [
+      ['unpublished', '#!/bin/sh\necho "npm error 404 Not Found - @permission-protocol/mcp-guard@x" >&2\nexit 1\n', /did not start mcp-guard \S+ \(exit 1\)/],
+      ['other version', '#!/bin/sh\necho 0.3.1\n', /reported version "0\.3\.1", not /],
+    ];
+    for (const [name, script, problem] of cases) {
+      const fake = await startFakePp(TOKEN);
+      const machine = freshMachine();
+      try {
+        const bin = join(machine.root, `bad-npx-${name.replace(' ', '-')}`);
+        mkdirSync(bin, { recursive: true });
+        writeFileSync(join(bin, 'npx'), script);
+        chmodSync(join(bin, 'npx'), 0o755);
+        const before = readFileSync(machine.mcpConfig, 'utf-8');
+        const run = await runCli(initArgs(fake, machine.mcpConfig), { ...machine.env, PATH: `${bin}:${machine.env.PATH}` }, machine.project);
+        assert.equal(run.code, 1, name);
+        assert.match(run.stderr, problem, name);
+        assert.match(run.stderr, /Nothing was changed, and init stopped before the login/);
+        assert.match(run.stderr, /--wrap-launcher/);
+        assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), before, 'client config untouched');
+        assert.equal(readdirSync(machine.project).some((f) => f.includes('backup')), false);
+        assert.equal(existsSync(join(machine.guardDir, 'install-token')), false);
+        assert.equal(fake.calls.length, 0, 'no login was started');
+      } finally { await fake.close(); }
+    }
+  });
+
+  it('the probe ran the pinned launcher with --version and no PP_* variables', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = freshMachine();
+    try {
+      const run = await runCli(initArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, run.stderr);
+      assert.ok(run.stdout.includes(`Wrap launcher: npx -y @permission-protocol/mcp-guard@${VERSION} (checked: starts mcp-guard ${VERSION})`), run.stdout);
+      assert.equal(readFileSync(machine.npxLog, 'utf-8').trim().split('\n')[0], `-y @permission-protocol/mcp-guard@${VERSION} --version`);
+    } finally { await fake.close(); }
+    // The probe's environment: a launcher that reports the version only when it sees no PP_* variable.
+    const script = join(temp('probe'), 'launcher.js');
+    writeFileSync(script, `console.log(Object.keys(process.env).some((k) => k.startsWith('PP_')) ? 'leak' : ${JSON.stringify(VERSION)});\n`);
+    const saved = process.env.PP_INSTALL_TOKEN;
+    process.env.PP_INSTALL_TOKEN = TOKEN;
+    let leaked: string | null;
+    try { leaked = probeWrapLauncher([process.execPath, script], VERSION); } finally { if (saved === undefined) delete process.env.PP_INSTALL_TOKEN; else process.env.PP_INSTALL_TOKEN = saved; }
+    const tagged = { status: leaked === null ? 0 : 3 };
+    assert.equal(tagged.status, 0, 'the probe environment carries no PP_* variable');
+  });
+
+  it('--wrap-launcher: checked the same way, written as given, detected as wrapped', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = freshMachine();
+    try {
+      const launcher = `"${process.execPath}" "${BIN}"`;
+      const run = await runCli(initArgs(fake, machine.mcpConfig, ['--skip-self-test', '--wrap-launcher', launcher]), machine.env, machine.project);
+      assert.equal(run.code, 0, run.stderr);
+      const wrapped = JSON.parse(readFileSync(machine.mcpConfig, 'utf-8')).mcpServers.filesystem;
+      assert.equal(wrapped.command, process.execPath);
+      assert.equal(wrapped.args[0], BIN);
+      assert.equal(isWrapped(wrapped.command, wrapped.args), true);
+      assert.equal(existsSync(machine.npxLog), false, 'npx was not used');
+      const bad = await runCli(initArgs(fake, machine.mcpConfig, ['--wrap-launcher', '/nonexistent/mcp-guard']), freshMachine().env, machine.project);
+      assert.equal(bad.code, 1);
+    } finally { await fake.close(); }
+    assert.deepEqual(splitLauncher('node "C:\\Program Files\\x\\bin\\mcp-guard"'), ['node', 'C:\\Program Files\\x\\bin\\mcp-guard']);
+    assert.throws(() => splitLauncher('   '), /needs a command/);
+    assert.deepEqual(wrapLauncher('9.9.9', undefined, 'win32'), ['cmd', '/c', 'npx', '-y', '@permission-protocol/mcp-guard@9.9.9']);
+    assert.deepEqual(wrapLauncher('9.9.9', ['node', 'x/bin/mcp-guard'], 'win32'), ['node', 'x/bin/mcp-guard']);
+    assert.equal(probeWrapLauncher(['/nonexistent/launcher'], '1.0.0')!.includes('could not be run (ENOENT)'), true);
   });
 
   it('a cancelled login changes nothing on the machine', async () => {
@@ -467,7 +609,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
       const out = run.stdout;
-      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', 'undo:   npx mcp-guard hook uninstall', 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
+      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', `undo:   npx @permission-protocol/mcp-guard@${VERSION} hook uninstall`, 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
       let at = 0;
       for (const piece of order) {
         const found = out.indexOf(piece, at);
@@ -684,16 +826,6 @@ describe('mcp-guard init --preset coding-agent', () => {
   });
 
   describe('the default launcher', () => {
-    const VERSION = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'package.json'), 'utf-8')).version;
-    /** A stand-in `npx` first on PATH: records its arguments and runs this build. Never the registry. */
-    function fakeNpx(root: string): { env: NodeJS.ProcessEnv; log: string } {
-      const bin = join(root, 'fake-bin');
-      mkdirSync(bin, { recursive: true });
-      const log = join(root, 'npx.log');
-      writeFileSync(join(bin, 'npx'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(log)}\ncase "$1" in -y|--no-install) shift;; esac\nshift\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(__dirname, '..', '..', '..', 'bin', 'mcp-guard'))} "$@"\n`);
-      chmodSync(join(bin, 'npx'), 0o755);
-      return { env: { PATH: `${bin}:${process.env.PATH}` }, log };
-    }
     const noLauncher = (fake: FakePp, mcpConfig: string, extra: string[]) => {
       const args = presetArgs(fake, mcpConfig, extra);
       args.splice(args.indexOf('--launcher'), 2);

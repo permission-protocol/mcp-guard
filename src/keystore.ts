@@ -1,4 +1,5 @@
 import { createPrivateKey, createPublicKey, generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { restrictToCurrentUser, type ProtectOptions, type WindowsProtection } from './win-protect.js';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -142,7 +143,7 @@ export function loadSigningKey(dir: string = keysDir()): SigningKey {
 }
 
 /** Create a key and append it to keys.json. `init` refuses when a key set exists; `rotate` requires one. */
-export function createKey(opts: { demo?: boolean; rotate?: boolean; dir?: string; now?: Date } = {}): SigningKey {
+export function createKey(opts: { demo?: boolean; rotate?: boolean; dir?: string; now?: Date; protect?: ProtectOptions; onWindowsProtection?: (p: WindowsProtection) => void } = {}): SigningKey {
   const dir = opts.dir ?? keysDir();
   const existing = readKeySet(dir);
   if (opts.rotate && !existing) throw new SigningError('SIGNING_KEY_MISSING', `no key set in ${dir} to rotate; run \`mcp-guard keys init\``);
@@ -156,6 +157,9 @@ export function createKey(opts: { demo?: boolean; rotate?: boolean; dir?: string
   const raw = rawPublicKey(pair.publicKey);
   const keyId = mcpgKeyId(raw, !!opts.demo);
   writeFileSync(privatePath(dir, keyId), pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), { mode: 0o600, flag: 'wx' });
+  // Windows has no file modes: restrict the private key with icacls (never fails key creation).
+  const windows = restrictToCurrentUser(privatePath(dir, keyId), opts.protect);
+  if (windows) opts.onWindowsProtection?.(windows);
 
   const entry: KeySetEntry = {
     key_id: keyId,

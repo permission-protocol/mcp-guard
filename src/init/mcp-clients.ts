@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -52,9 +53,12 @@ export function configLocations(home: string = homedir(), cwd: string = process.
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+const GUARD_BIN = /(^|[\\/])mcp-guard(\.cmd)?$/;
+
 export function isWrapped(command: string, args: string[]): boolean {
-  if (/(^|[\\/])mcp-guard(\.cmd)?$/.test(command)) return true;
-  return args.some((arg) => arg === GUARD_PACKAGE || arg.startsWith(`${GUARD_PACKAGE}@`)) && args.includes('--');
+  if (GUARD_BIN.test(command)) return true;
+  // `npx -y @permission-protocol/mcp-guard@<v> ... --`, or a --wrap-launcher such as `node <dir>/bin/mcp-guard ... --`.
+  return args.some((arg) => arg === GUARD_PACKAGE || arg.startsWith(`${GUARD_PACKAGE}@`) || GUARD_BIN.test(arg)) && args.includes('--');
 }
 
 function serversIn(root: unknown, path: string[]): Array<{ name: string; command: string; args: string[] }> {
@@ -110,7 +114,54 @@ export interface WrapOptions {
   agentId: string;
   /** Pinned so the client always starts the guard version that was set up. */
   version: string;
+  /** `--wrap-launcher`, split into words: replaces `npx -y @permission-protocol/mcp-guard@<version>`. */
+  launcher?: string[];
   now?: Date;
+}
+
+/**
+ * How the client starts the guard: `npx -y @permission-protocol/mcp-guard@<version>`, or
+ * the `--wrap-launcher` words. On Windows an MCP client cannot start `npx` directly (it
+ * is npx.cmd), so an npx launcher goes through `cmd /c`.
+ */
+export function wrapLauncher(version: string, launcher?: string[], platform: NodeJS.Platform = process.platform): string[] {
+  const words = launcher && launcher.length > 0 ? launcher : ['npx', '-y', `${GUARD_PACKAGE}@${version}`];
+  return platform === 'win32' && /^npx(\.cmd)?$/i.test(words[0]) ? ['cmd', '/c', ...words] : words;
+}
+
+/**
+ * Split a `--wrap-launcher` value into words: whitespace separates, double quotes group
+ * (for paths with spaces). No other shell syntax: the client runs it without a shell.
+ */
+export function splitLauncher(value: string): string[] {
+  const words: string[] = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(value)) !== null) {
+    const word = m[1] ?? m[2];
+    if (m[2] !== undefined && m[2].includes('"')) throw new Error('--wrap-launcher: put each quoted word in its own pair of double quotes');
+    words.push(word);
+  }
+  if (words.length === 0 || words[0] === '') throw new Error('--wrap-launcher needs a command');
+  return words;
+}
+
+/**
+ * Does this launcher start this package at this version? Runs `<launcher> --version`
+ * without a shell, with a timeout and without PP_* variables, the way the client will run
+ * it (from `cwd`). Returns null when it printed exactly `version`, else what went wrong.
+ */
+export function probeWrapLauncher(launcher: string[], version: string, options: { cwd?: string; timeoutMs?: number } = {}): string | null {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('PP_')));
+  const shown = launcher.map((w) => (/\s/.test(w) ? `"${w}"` : w)).join(' ');
+  const run = spawnSync(launcher[0], [...launcher.slice(1), '--version'], {
+    cwd: options.cwd, env, encoding: 'utf8', timeout: options.timeoutMs ?? 60_000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false,
+  });
+  if (run.error) return `"${shown}" could not be run (${(run.error as NodeJS.ErrnoException).code ?? run.error.name})`;
+  const printed = (run.stdout ?? '').trim().split(/\r?\n/).pop() ?? '';
+  if (run.status === 0 && printed === version) return null;
+  if (run.status === 0) return `"${shown}" started, but reported version "${printed.replace(/[^\x20-\x7e]/g, '').slice(0, 40)}", not ${version}`;
+  return `"${shown}" did not start mcp-guard ${version} (exit ${run.status ?? run.signal})`;
 }
 
 export interface WrapResult {
@@ -120,16 +171,15 @@ export interface WrapResult {
 }
 
 /**
- * The guard command line that replaces a server's own. On Windows an MCP client cannot
- * start `npx` directly (it is npx.cmd), so it goes through `cmd /c`.
+ * The guard command line that replaces a server's own (see wrapLauncher).
  */
 export function wrappedCommand(
   server: Pick<FoundServer, 'command' | 'args'>,
   options: WrapOptions,
   platform: NodeJS.Platform = process.platform,
 ): { command: string; args: string[] } {
-  const guard = ['-y', `${GUARD_PACKAGE}@${options.version}`, '--config', options.policyPath, '--agent-id', options.agentId, '--', server.command, ...server.args];
-  return platform === 'win32' ? { command: 'cmd', args: ['/c', 'npx', ...guard] } : { command: 'npx', args: guard };
+  const launcher = wrapLauncher(options.version, options.launcher, platform);
+  return { command: launcher[0], args: [...launcher.slice(1), '--config', options.policyPath, '--agent-id', options.agentId, '--', server.command, ...server.args] };
 }
 
 /**
