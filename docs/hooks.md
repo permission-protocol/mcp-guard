@@ -4,12 +4,43 @@ A coding agent's most dangerous actions are its own tools, a shell and file edit
 
 Claude Code is supported. The adapter interface (`src/hook/adapter.ts`) is built so Cursor and Codex can be added without touching the decision path (`src/hook/decide.ts`).
 
+The one-command path, in the project:
+
+```bash
+npm install --save-dev @permission-protocol/mcp-guard
+npx mcp-guard init --preset coding-agent   # policy, hook, local hook check, first signed receipt
+```
+
+By hand, with a policy you write:
+
 ```bash
 npm install --save-dev @permission-protocol/mcp-guard
 npx mcp-guard keys init               # once per machine: every decision is signed
 npx mcp-guard hook install            # writes .claude/settings.json in the current project
 npx mcp-guard hook uninstall          # removes only the mcp-guard entry
 ```
+
+## Set up with `init --preset coding-agent`
+
+`init --preset coding-agent` installs the hook when the project directory (the current directory, or `--project <dir>`) is a Claude Code project, meaning it has a `.claude/` directory or a `CLAUDE.md`. `--hook claude-code` installs it in any directory; `--no-hook` skips it. `--hook` needs `--preset coding-agent`. Without `--preset`, init does exactly what it did before and never touches `.claude/`.
+
+Before the device login, so that a refusal changes nothing, init checks:
+
+- `<project>/pp.config.yaml`: absent, or byte-for-byte the preset init would write. Any other content is refused: init never overwrites a policy. Keep yours and run `hook install`, move it aside, or pass `--no-hook`.
+- `<project>/.claude/settings.json`: the same checks as `hook install` (valid JSON, documented `hooks` shape), run as a dry run. A file that fails them is refused and left untouched (`SETTINGS_INVALID_JSON`, `SETTINGS_UNEXPECTED_SHAPE`).
+- The launcher (`npx --no-install mcp-guard`, or `--launcher <cmd>`): `<launcher> hook --help` must run from the project directory under `sh`. If it does not, the installed hook would block every guarded call, so init stops and says to `npm install --save-dev @permission-protocol/mcp-guard`.
+- An MCP server to wrap is optional with the hook. With none (or every one already wrapped), init sets up the hook alone. If the policy is in place and the hook already installed, it says `Already set up` and exits 1 without logging in.
+
+Then, after the login: it writes `pp.config.yaml` (the preset plus the `cloud:` section; created only if still absent), installs the hook with the same code as `hook install` (idempotent: a second run never adds a second entry), wraps the MCP server if there is one, and runs the **hook self-test**:
+
+| Check | Event | Command run | Expected |
+|-------|-------|-------------|----------|
+| allowed | `Bash` `git status` | the command exactly as installed in `.claude/settings.json` | no decision (exit 0, empty stdout) |
+| held | `Bash` `terraform destroy -auto-approve` | the same launcher, `hook --config <temporary copy of the preset without cloud:> --wait 0` | `deny`, exit 2, naming rule `terraform-destroy` |
+
+Nothing is sent to Permission Protocol and nothing runs: the hook only decides, an allowed call touches no network, and with no `cloud:` section a hold is denied locally instead of opening a signing request. The self-test's receipts go to `~/.config/mcp-guard/self-test-receipts.jsonl`, not the project's log. If a check fails, the hook stays installed and fails closed (guarded calls are blocked), init says so with the undo command and exits 1. `--skip-self-test` skips only the signed-receipt self-test that follows, not the hook check.
+
+The hook's receipts log is `pp-receipts.jsonl` beside `pp.config.yaml`, in the project root: add it to `.gitignore` if you commit the project's guard files.
 
 ## The Claude Code hook contract (verified)
 
@@ -48,6 +79,8 @@ Verified on 2026-11-12 against the official reference, **https://code.claude.com
 A deny is answered twice: the JSON decision on stdout and exit 2 with the reason on stderr, so the call stays blocked even if stdout is polluted (for example by a shell profile). While deciding, the guard's own diagnostics (receipt lines, the signing link) are held back; on a deny, stderr is exactly the reason; otherwise they are written after the decision and land in Claude Code's debug log.
 
 Reasons name rule ids, detector names and kinds, error codes and the signing link. Raw arguments never reach the reason, stderr, the receipts log or the resume file. As in the proxy, Permission Protocol receives the argument hash and a preview it redacts.
+
+**`observe: true` rules** behave as in the proxy: when one matches (the preset's `secret-read`), the call's outcome is what it would be without that rule, stderr says `OBSERVE: Matched rule "<id>" (<detector>: <kind>) would hold "<tool>"; not enforced (observe: true)`, and the receipts log gets an unsigned `{"observed": ...}` line with the rule id, detector, kind, tool, agent and input hash. Never the arguments or the path that was read.
 
 **`mode: observe`** (or `--mode observe`) behaves as in the proxy: everything goes through with no decision, policy decisions are signed and logged, holds are recorded and not sent for signature, and stderr says what would have been blocked or held.
 

@@ -11,6 +11,7 @@ import { InstallTokenError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, loadInstallToken
 import { policyText } from '../init/init.js';
 import { findServers, isWrapped, wrapServer, wrappedCommand } from '../init/mcp-clients.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
+import { settingsPath } from '../hook/install.js';
 
 const CLI = join(__dirname, '..', 'cli.js');
 const ECHO = join(__dirname, 'fixtures-echo-server.js');
@@ -430,5 +431,206 @@ describe('mcp-guard init, end to end', () => {
     assert.equal(unknown.code, 2);
     assert.match(unknown.stderr, /unknown option: --fail-open/);
     assert.equal(readdirSync(machine.project).some((name) => name.includes('backup')), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// init --preset coding-agent: the policy, the Claude Code hook and its self-test
+// ---------------------------------------------------------------------------
+
+/** This build, started the way the installed hook starts the guard. Contains "mcp-guard", as install requires. */
+const LAUNCHER = `${process.execPath} ${join(__dirname, '..', '..', '..', 'bin', 'mcp-guard')}`;
+
+const presetArgs = (fake: FakePp, mcpConfig: string, extra: string[] = []) => [
+  'init', '--api-url', fake.url, '--trust-key', `${fake.issuer.keyId}=${fake.issuer.publicKeyB64}`,
+  '--mcp-config', mcpConfig, '--preset', 'coding-agent', '--launcher', LAUNCHER, '--label', 'ci-machine', '--yes', '--no-browser', ...extra,
+];
+
+/** A fresh machine whose project is a Claude Code project. */
+function claudeProject(servers?: Record<string, unknown>) {
+  const machine = freshMachine(servers);
+  mkdirSync(join(machine.project, '.claude'), { recursive: true });
+  return machine;
+}
+
+const ourEntries = (project: string): number => {
+  const settings = JSON.parse(readFileSync(settingsPath(project), 'utf-8'));
+  return settings.hooks.PreToolUse.flatMap((g: any) => g.hooks).filter((h: any) => / hook --config /.test(h.command) && h.command.includes('mcp-guard')).length;
+};
+
+describe('mcp-guard init --preset coding-agent', () => {
+  it('in a Claude Code project: writes the preset, installs the hook, checks it locally, then signs a first receipt', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      writeFileSync(settingsPath(machine.project), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }, null, 2) + '\n');
+      const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      const out = run.stdout;
+      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', 'undo:   npx mcp-guard hook uninstall', 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
+      let at = 0;
+      for (const piece of order) {
+        const found = out.indexOf(piece, at);
+        assert.notEqual(found, -1, `missing or out of order: "${piece}"\n${out}`);
+        at = found;
+      }
+      assert.equal(`${run.stdout}${run.stderr}`.includes(TOKEN), false, 'the install token is never printed');
+
+      // The hook's policy: the preset, with cloud approvals, and it loads.
+      const hookPolicy = parseConfig(readFileSync(join(machine.project, 'pp.config.yaml'), 'utf-8'));
+      assert.equal(hookPolicy.cloud?.api_url, fake.url);
+      assert.ok(hookPolicy.rules.some((r) => r.id === 'terraform-destroy'));
+      assert.deepEqual(hookPolicy.rules.filter((r) => r.observe).map((r) => r.id), ['secret-read']);
+      // The wrapped server's policy is the preset too.
+      const serverPolicy = parseConfig(readFileSync(join(machine.guardDir, 'policies', 'filesystem.yaml'), 'utf-8'));
+      assert.ok(serverPolicy.rules.some((r) => r.id === 'destructive-shell'));
+
+      // The hook entry is there, once, and the other settings are kept.
+      const settings = JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8'));
+      assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] });
+      assert.equal(ourEntries(machine.project), 1);
+      const handler = settings.hooks.PreToolUse[0].hooks[0];
+      assert.equal(handler.onFailure, 'block');
+      assert.ok(handler.command.startsWith(`${LAUNCHER} hook --config "\${CLAUDE_PROJECT_DIR}"/pp.config.yaml`));
+
+      // The hook self-test sent nothing: the only approval request is the do-nothing self-test tool.
+      const created = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests');
+      assert.equal(created.length, 1);
+      assert.equal(created[0].body.tool, 'mcp_guard_self_test');
+      // Its receipts went to the self-test log, not the project's.
+      assert.equal(existsSync(join(machine.project, 'pp-receipts.jsonl')), false);
+      const selfTestLog = readFileSync(join(machine.guardDir, 'self-test-receipts.jsonl'), 'utf-8');
+      assert.match(selfTestLog, /"tool":"Bash"/);
+      assert.doesNotMatch(selfTestLog, /terraform destroy|git status/, 'no argument text in the log');
+
+      // hook uninstall recognises the entry init wrote.
+      const removed = spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env: machine.env, encoding: 'utf-8' });
+      assert.equal(removed.status, 0, removed.stderr);
+      assert.match(removed.stdout, /removed 1 mcp-guard PreToolUse hook/);
+      assert.deepEqual(JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8')), { permissions: { allow: ['Bash(ls)'] } });
+    } finally { await fake.close(); }
+  });
+
+  it('running it again is safe: no second entry, no overwritten policy', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      assert.equal((await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project)).code, 0);
+      const policyFile = join(machine.project, 'pp.config.yaml');
+      const files = [policyFile, settingsPath(machine.project), machine.mcpConfig];
+      const snapshot = () => files.map((f) => readFileSync(f, 'utf-8'));
+      const before = snapshot();
+      const calls = fake.calls.length;
+
+      // Everything is in place: nothing to do, and no new login.
+      const again = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(again.code, 1);
+      assert.match(again.stderr, /Already set up/);
+      assert.deepEqual(snapshot(), before);
+      assert.equal(fake.calls.length, calls);
+
+      // The person edited the policy: init refuses to overwrite it, before any login.
+      const edited = before[0].replace('databases: []', 'databases: [prod-db.internal]');
+      writeFileSync(policyFile, edited);
+      spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env: machine.env });
+      const settingsBefore = readFileSync(settingsPath(machine.project), 'utf-8');
+      const refused = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(refused.code, 1);
+      assert.match(refused.stderr, /already exists and is not the coding-agent preset init would write\. init never overwrites a policy/);
+      assert.equal(readFileSync(policyFile, 'utf-8'), edited);
+      assert.equal(readFileSync(settingsPath(machine.project), 'utf-8'), settingsBefore);
+      assert.equal(fake.calls.length, calls);
+
+      // Policy restored, hook removed: init puts the hook back, once, and leaves the policy alone.
+      writeFileSync(policyFile, before[0]);
+      const restored = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(restored.code, 0, `${restored.stdout}\n${restored.stderr}`);
+      assert.match(restored.stdout, /every one found is already wrapped; setting up the Claude Code hook only/);
+      assert.match(restored.stdout, /Hook policy: .*already the coding-agent preset; unchanged/);
+      assert.equal(readFileSync(policyFile, 'utf-8'), before[0]);
+      assert.equal(ourEntries(machine.project), 1);
+      assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), before[2]);
+    } finally { await fake.close(); }
+  });
+
+  it('refuses a settings file that is not valid JSON, before login, and changes nothing', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      writeFileSync(settingsPath(machine.project), '{ "hooks": { not json');
+      const mcpBefore = readFileSync(machine.mcpConfig, 'utf-8');
+      const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /SETTINGS_INVALID_JSON: .*settings\.json is not valid JSON.*init stopped before changing anything/);
+      assert.equal(readFileSync(settingsPath(machine.project), 'utf-8'), '{ "hooks": { not json');
+      assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
+      assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), mcpBefore);
+      assert.equal(existsSync(join(machine.guardDir, 'install-token')), false);
+      assert.equal(fake.calls.length, 0);
+
+      // The documented shape is checked too.
+      writeFileSync(settingsPath(machine.project), JSON.stringify({ hooks: { PreToolUse: { matcher: 'Bash' } } }));
+      const shape = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
+      assert.equal(shape.code, 1);
+      assert.match(shape.stderr, /SETTINGS_UNEXPECTED_SHAPE/);
+      assert.equal(fake.calls.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  it('a launcher that cannot start the guard is refused before anything changes', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      const args = presetArgs(fake, machine.mcpConfig);
+      args[args.indexOf('--launcher') + 1] = '/nonexistent/bin/mcp-guard';
+      const run = await runCli(args, machine.env, machine.project);
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /did not start mcp-guard.*npm install --save-dev @permission-protocol\/mcp-guard/);
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
+      assert.equal(fake.calls.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  it('with no MCP server, --hook claude-code sets up the hook alone; without a Claude Code project and no --hook, no hook', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = freshMachine({ remote: { url: 'https://example.test/mcp' } });
+    try {
+      const plain = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(plain.code, 1, 'no hook and no server: the existing refusal');
+      assert.match(plain.stderr, /No stdio MCP server was found/);
+      assert.equal(fake.calls.length, 0);
+
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--hook', 'claude-code', '--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.match(run.stdout, /MCP servers: none found to wrap; setting up the Claude Code hook only/);
+      assert.match(run.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
+      assert.match(run.stdout, /Restart Claude Code so it loads the hook\./);
+      assert.doesNotMatch(run.stdout, /Wrapped "/);
+      assert.equal(ourEntries(machine.project), 1);
+      assert.equal(existsSync(join(machine.guardDir, 'policies')), false);
+      assert.equal(fake.calls.filter((c) => c.path === '/api/mcp/approval-requests').length, 0);
+    } finally { await fake.close(); }
+  });
+
+  it('flag rules: --hook needs --preset; --hook and --no-hook conflict; --no-hook keeps the old behaviour', async () => {
+    const machine = claudeProject();
+    const noPreset = await runCli(['init', '--hook', 'claude-code'], machine.env, machine.project);
+    assert.equal(noPreset.code, 2);
+    assert.match(noPreset.stderr, /--hook needs --preset coding-agent/);
+    const both = await runCli(['init', '--preset', 'coding-agent', '--hook', 'claude-code', '--no-hook'], machine.env, machine.project);
+    assert.equal(both.code, 2);
+    const unknown = await runCli(['init', '--preset', 'coding-agent', '--hook', 'cursor'], machine.env, machine.project);
+    assert.equal(unknown.code, 2);
+    assert.match(unknown.stderr, /--hook must be one of: claude-code/);
+
+    const fake = await startFakePp(TOKEN);
+    try {
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--no-hook', '--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, run.stderr);
+      assert.match(run.stdout, /Claude Code's own tools \(shell, file edits\) are not guarded: --no-hook was passed/);
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(existsSync(join(machine.project, 'pp.config.yaml')), false);
+    } finally { await fake.close(); }
   });
 });

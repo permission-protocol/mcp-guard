@@ -1,6 +1,13 @@
 # Presets
 
-A preset is a ready policy. `mcp-guard init --preset coding-agent` writes it in place of the single hold rule `init` writes by default, then adds `server_label` and the `cloud:` section as usual. It asks nothing extra. The policy text is in [`src/presets/coding-agent.ts`](../src/presets/coding-agent.ts); `init` writes it to `~/.config/mcp-guard/policies/<server>.yaml`, where you edit it.
+A preset is a ready policy. `mcp-guard init --preset coding-agent` writes it in place of the single hold rule `init` writes by default, then adds `server_label` and the `cloud:` section as usual. It asks nothing extra. The policy text is in [`src/presets/coding-agent.ts`](../src/presets/coding-agent.ts).
+
+Where `init` writes it:
+
+- For a wrapped MCP server: `~/.config/mcp-guard/policies/<server>.yaml`, as before (an existing different file is copied aside first).
+- For Claude Code's own tools, in a Claude Code project (`.claude/` or `CLAUDE.md`) or with `--hook claude-code`: `<project>/pp.config.yaml`, and the Claude Code hook is installed to read it. An existing `pp.config.yaml` that differs is never overwritten: init stops before logging in. `--no-hook` skips this. See [hooks](hooks.md#set-up-with-init---preset-coding-agent).
+
+Edit the written files; the loader refuses anything it does not recognise.
 
 The preset is built from the [detectors](detectors.md). **Detectors are heuristics that stop mistakes, not a sandbox.** Everything in [Known limits](detectors.md#known-limits) applies.
 
@@ -29,7 +36,7 @@ A command a detector cannot read (`eval`, `python -c`, `curl | sh`, a non-text a
 |------|-----------------|
 | `secret-read` | `secret_read` over the shell arguments and `path`, `file_path`, `target_file`: `.env` files, cloud credentials, SSH keys, environment dumps, token printers |
 
-The rule has `observe: true`. When it matches, the call proceeds, stderr says `OBSERVE: Matched rule "secret-read" (secret_read: secret_file) would hold "Bash"; not enforced (observe: true)`, and the receipts file gets an unsigned `{"observed": ...}` line with the rule id, detector, kind, tool, agent and input hash. Never the arguments, never the path that was read.
+The rule has `observe: true`. When it matches, through the proxy or the Claude Code hook, the call proceeds, stderr says `OBSERVE: Matched rule "secret-read" (secret_read: secret_file) would hold "Bash"; not enforced (observe: true)`, and the receipts file gets an unsigned `{"observed": ...}` line with the rule id, detector, kind, tool, agent and input hash. Never the arguments, never the path that was read.
 
 It stays observed until you delete `observe: true` from the rule. Nothing switches it automatically.
 
