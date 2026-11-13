@@ -282,6 +282,16 @@ export interface SelfTestResult {
 }
 
 /**
+ * The environment of the self-test's guard process: its receipts go to the self-test
+ * log, and it never starts a usage heartbeat. A self-test is not usage; without this
+ * the proxy's heartbeat timer fires while the person is still signing, and the
+ * self-test's holds are reported as the install's first activity.
+ */
+export function selfTestEnv(base: NodeJS.ProcessEnv, receiptsPath: string): NodeJS.ProcessEnv {
+  return { ...base, PP_SHARED_RECEIPTS_PATH: receiptsPath, MCP_GUARD_HEARTBEAT: 'off' };
+}
+
+/**
  * Hold one do-nothing call through the real guard and the real approval flow: the same
  * code path every held call takes. Resolves when the call is released or refused.
  */
@@ -310,7 +320,7 @@ export function runSelfTest(input: { apiUrl: string; trustKeys: KeySetEntry[]; a
     const server = join(__dirname, 'selftest-server.js');
     const child = spawn(process.execPath, [cli, '--config', policyPath, '--agent-id', input.agentId, '--', process.execPath, server], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PP_SHARED_RECEIPTS_PATH: receiptsPath },
+      env: selfTestEnv(process.env, receiptsPath),
     });
     let stderr = '';
     let stdout = '';

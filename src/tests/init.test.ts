@@ -8,7 +8,8 @@ import { parseConfig } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { InstallTokenError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, loadInstallToken, saveInstallToken, type KeychainRunner } from '../cloud/token.js';
-import { keyProtectionMessage, policyText, tokenStoredMessage } from '../init/init.js';
+import { keyProtectionMessage, policyText, selfTestEnv, tokenStoredMessage } from '../init/init.js';
+import { heartbeatEnvOff } from '../heartbeat/launch.js';
 import { findServers, isWrapped, probeWrapLauncher, splitLauncher, wrapLauncher, wrapServer, wrappedCommand } from '../init/mcp-clients.js';
 import { restrictToCurrentUser, type ExecFile } from '../win-protect.js';
 import { createKey } from '../keystore.js';
@@ -344,6 +345,16 @@ const initArgs = (fake: FakePp, mcpConfig: string, extra: string[] = []) => [
   'init', '--api-url', fake.url, '--trust-key', `${fake.issuer.keyId}=${fake.issuer.publicKeyB64}`,
   '--mcp-config', mcpConfig, '--tool', 'delete_file', '--label', 'ci-machine', '--yes', '--no-browser', ...extra,
 ];
+
+describe('init self-test environment', () => {
+  it('sends its receipts to the self-test log and never starts a usage heartbeat', () => {
+    const env = selfTestEnv({ PATH: '/usr/bin', MCP_GUARD_HEARTBEAT: 'on' }, '/tmp/self-test-receipts.jsonl');
+    assert.equal(env.PP_SHARED_RECEIPTS_PATH, '/tmp/self-test-receipts.jsonl');
+    assert.equal(env.MCP_GUARD_HEARTBEAT, 'off');
+    assert.equal(env.PATH, '/usr/bin');
+    assert.equal(heartbeatEnvOff(env), true);
+  });
+});
 
 describe('mcp-guard init, end to end', () => {
   it('fresh machine to first signed receipt, in well under ten minutes', async () => {

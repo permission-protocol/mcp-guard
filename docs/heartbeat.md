@@ -74,6 +74,8 @@ Turning it off changes nothing else: held calls still go to Permission Protocol 
 
 ## How the counts are made
 
+`mcp-guard init`'s self-tests are not counted: they run with the heartbeat off and write to their own log (`self-test-receipts.jsonl`), which is never read for the heartbeat.
+
 From the local receipt log, the guard's record of every decision (`src/receipt-log.ts`). Each line counts as follows:
 
 | Line | Counts as |

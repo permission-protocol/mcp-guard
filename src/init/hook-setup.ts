@@ -307,5 +307,5 @@ export function claudeCodeVersionNote(run: VersionRunner = defaultVersionRunner)
   const [a, b, c] = ON_FAILURE_MIN_VERSION;
   const older = v[0] !== a ? v[0] < a : v[1] !== b ? v[1] < b : v[2] < c;
   if (!older) return null;
-  return `Note: Claude Code ${v.join('.')} is older than ${ON_FAILURE_MIN_VERSION.join('.')}, which ignores the hook's onFailure: "block"; the installed command's own wrapper still blocks a guard that fails to run, and the guard denies a held call before Claude Code's timeout (docs/hooks.md#limits).`;
+  return `Note: Claude Code ${v.join('.')} is older than ${ON_FAILURE_MIN_VERSION.join('.')} and ignores the hook's onFailure: "block" setting. The installed command's own wrapper still blocks a guard that fails to run, and the guard denies a held call before Claude Code's timeout (docs/hooks.md#limits).`;
 }
