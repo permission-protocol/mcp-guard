@@ -235,6 +235,7 @@ npx @permission-protocol/verify receipt.json --keys .pp/keys.json --trust "$MCP_
 mcp-guard init                   # connect to Permission Protocol, wrap one MCP server, sign a first receipt
 mcp-guard init --preset coding-agent  # the same, with the coding-agent policy (docs/presets.md)
 mcp-guard [options] -- <server command>
+mcp-guard hook [install|uninstall]  # guard Claude Code's own shell and file tools (docs/hooks.md)
 mcp-guard receipt verify <receipt id> [--receipts-path <file>] [--config <policy.yaml>]
 mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
 mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
@@ -356,6 +357,18 @@ Create the token in Permission Protocol under Settings > Developer access, with 
 - `mode: observe` still forwards everything and asks no one.
 - Tool, server and agent names must be 1 to 128 characters of letters, digits and `_ . : / @ -`. A held call whose name has other characters is blocked.
 - While a signature is pending, a failed status check (network, 429, 5xx) is retried until the timeout. It can only end in a verified receipt or a block.
+
+## Built-in tools: Claude Code hook
+
+A coding agent's shell and file edits never pass through an MCP proxy. `mcp-guard hook` applies the same policy to them through Claude Code's `PreToolUse` hook, with the same rules, detectors, receipts and signed approvals:
+
+```bash
+npm install --save-dev @permission-protocol/mcp-guard
+npx mcp-guard keys init
+npx mcp-guard hook install      # adds one entry to .claude/settings.json; idempotent, keeps everything else
+```
+
+The tool's input is evaluated as `tools/call` with the Claude Code tool name (`Bash`, `Write`, `Edit`, ...); a shell command is the argument `command`, so `detect: { detector: shell_destructive, args: [command] }` applies. Blocked calls are denied with the rule id and detector kind. Held calls wait for a Permission Protocol signature, verified offline exactly as in the proxy; anything short of a verified, redeemed approval is denied. Allowed calls get no answer from the guard, so Claude Code's own permission prompts still apply. Every error denies. See [docs/hooks.md](docs/hooks.md) for the verified hook contract, the wait and timeout, and the limits.
 
 ## Why not just use X?
 

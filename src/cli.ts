@@ -5,6 +5,7 @@ import { exportLegacyPublicKey } from './signer.js';
 import { runKeys } from './keys-cli.js';
 import { runReceipt } from './receipt-cli.js';
 import { runInit, terminalIo } from './init/init.js';
+import { runHook } from './hook/cli.js';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -28,6 +29,11 @@ export function main(): void {
 
   if (args[0] === 'init') {
     void runInit(args.slice(1), terminalIo()).then((code) => process.exit(code));
+    return;
+  }
+
+  if (args[0] === 'hook') {
+    void runHook(args.slice(1)).then((code) => process.exit(code));
     return;
   }
 
@@ -119,6 +125,7 @@ mcp-guard — MCP policy proxy
 Usage:
   mcp-guard init                   connect to Permission Protocol, wrap one MCP server, get a first signed receipt
   mcp-guard [options] -- <server command>
+  mcp-guard hook [install|uninstall]  guard Claude Code's built-in tools with the same policy (docs/hooks.md)
   mcp-guard receipt verify <receipt id> [--receipts-path <file>]
   mcp-guard keys init [--demo] | keys rotate [--demo] | keys revoke <key id> | keys show
   mcp-guard verify --receipt-file <path> --keys <keys.json> --trust ID=sha256:<hex> --scope s [--scope-ref r] [--scope-sha h]
