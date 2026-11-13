@@ -428,7 +428,7 @@ describe('detector guard_tamper', () => {
     ['rm $HOME/.config/mcp-guard/install-token', 'edit_keys'],
     ['find ~/.config/mcp-guard -delete', 'edit_keys'],
     ['mcp-guard keys revoke mcpg-1', 'guard_cli'],
-    ['npx -y @permission-protocol/mcp-guard@0.5.2 keys rotate', 'guard_cli'],
+    ['npx -y @permission-protocol/mcp-guard@0.6.0 keys rotate', 'guard_cli'],
     ['cp /tmp/plain.json .mcp.json', 'edit_client_config'],
     ['mv .mcp.json .mcp.json.off', 'edit_client_config'],
     ['cp ~/Downloads/.mcp.json ./', 'edit_client_config'],

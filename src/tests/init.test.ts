@@ -173,7 +173,7 @@ describe('MCP client configs', () => {
     mkdirSync(join(home, '.cursor'), { recursive: true });
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'], env: { A: 'b' } }, remote: { url: 'https://example.test/mcp' } } }, null, 2) + '\n');
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ numStartups: 7, mcpServers: { github: { command: 'docker', args: ['run', 'ghcr.io/github/github-mcp-server'] } }, projects: { [cwd]: { mcpServers: { db: { command: 'node', args: ['db.js'] } } }, '/somewhere/else': { mcpServers: { other: { command: 'node', args: ['x.js'] } } } } }));
-    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.2', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.6.0', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
     writeFileSync(join(cwd, '.cursor', 'mcp.json'), '{ not json');
     return { home, cwd };
   }
@@ -192,12 +192,12 @@ describe('MCP client configs', () => {
     const file = join(cwd, '.mcp.json');
     const before = readFileSync(file, 'utf-8');
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
-    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.2', now: new Date('2026-11-10T12:00:00.000Z') });
+    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.6.0', now: new Date('2026-11-10T12:00:00.000Z') });
 
     assert.equal(readFileSync(result.backup, 'utf-8'), before);
     assert.match(result.backup, /\.mcp\.json\.mcp-guard-backup-2026-11-10T12-00-00-000Z$/);
     const after = JSON.parse(readFileSync(file, 'utf-8'));
-    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.2' });
+    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.6.0' });
     assert.deepEqual(after.mcpServers.filesystem, { ...expected, env: { A: 'b' } });
     assert.deepEqual(after.mcpServers.remote, { url: 'https://example.test/mcp' });
     assert.equal(readFileSync(file, 'utf-8').endsWith('\n'), true);
@@ -208,13 +208,13 @@ describe('MCP client configs', () => {
     // It is now seen as wrapped, and wrapping it twice is refused.
     const again = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     assert.equal(again.wrapped, true);
-    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.5.2' }), /already wrapped/);
+    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.6.0' }), /already wrapped/);
   });
 
   it('wraps a project-scoped server in ~/.claude.json without touching other projects', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'db')!;
-    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.5.2' });
+    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.6.0' });
     const after = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
     assert.equal(isWrapped(after.projects[cwd].mcpServers.db.command, after.projects[cwd].mcpServers.db.args), true);
     assert.deepEqual(after.projects['/somewhere/else'].mcpServers.other, { command: 'node', args: ['x.js'] });
@@ -226,14 +226,14 @@ describe('MCP client configs', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'python', args: ['other.py'] } } }));
-    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.5.2' }), /changed since it was read/);
+    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.6.0' }), /changed since it was read/);
     assert.equal(readdirSync(cwd).some((name) => name.includes('mcp-guard-backup')), false);
   });
 
   it('pins the guard version and goes through cmd on Windows', () => {
     const server = { command: 'node', args: ['s.js'] };
-    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.5.2' };
-    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.2', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
+    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.6.0' };
+    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.6.0', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
     assert.deepEqual(wrappedCommand(server, options, 'win32').command, 'cmd');
     assert.deepEqual(wrappedCommand(server, options, 'win32').args.slice(0, 3), ['/c', 'npx', '-y']);
     assert.equal(isWrapped('cmd', wrappedCommand(server, options, 'win32').args), true);
