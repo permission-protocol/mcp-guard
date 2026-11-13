@@ -119,7 +119,9 @@ const firstLine = (text: string): string => (text.trim().split('\n')[0] ?? '').s
  */
 export function runHookSelfTest(input: { projectDir: string; launcher?: string; policy: Config; localPolicy: string; receiptsPath: string; env?: NodeJS.ProcessEnv }): HookSelfTestResult {
   const checks: HookCheck[] = [];
-  const env: NodeJS.ProcessEnv = { ...(input.env ?? process.env), CLAUDE_PROJECT_DIR: input.projectDir, PP_SHARED_RECEIPTS_PATH: input.receiptsPath };
+  // The self-test says nothing is sent to Permission Protocol: that includes the usage
+  // heartbeat, which a hook run could otherwise start when a send is due.
+  const env: NodeJS.ProcessEnv = { ...(input.env ?? process.env), CLAUDE_PROJECT_DIR: input.projectDir, PP_SHARED_RECEIPTS_PATH: input.receiptsPath, MCP_GUARD_HEARTBEAT: 'off' };
   const fail = (reason: string): HookSelfTestResult => ({ ok: false, checks, reason });
 
   // The command Claude Code will run, read back from the settings file.
