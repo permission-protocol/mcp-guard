@@ -27,10 +27,13 @@ Verified on 2026-11-12 against the official reference, **https://code.claude.com
 | `timeout` | Per handler, in seconds. Default 600 for `command` hooks. On a timeout the hook is cancelled and its output discarded. |
 | Settings | `~/.claude/settings.json` (all projects), `.claude/settings.json` (project, can be committed), `.claude/settings.local.json` (project, gitignored). Format: `hooks.PreToolUse[]` of `{ matcher, hooks: [{ type: "command", command, timeout, onFailure, statusMessage }] }`. |
 | Matcher | `"*"`, `""` or omitted match all tools. Only letters, digits, `_`, `-`, spaces, `,` and `|`: exact names, `|`- or `,`-separated. Anything else: an unanchored JavaScript regex. |
-| `${CLAUDE_PROJECT_DIR}` | The project root where the session started. |
+| `${CLAUDE_PROJECT_DIR}` | The project root where the session started; also exported as an environment variable to the hook. |
+| Execution | **Shell form** (no `args`): the `command` string runs under `sh -c` on macOS and Linux, Git Bash on Windows, or PowerShell on Windows when Git Bash is not installed; the `shell` field (`"bash"` or `"powershell"`) overrides it. **Exec form** (`args` present): `command` is spawned directly with no shell; on Windows it must be a real executable, not an npm `.cmd` shim. |
+| Working directory | "Handlers run in the current directory with Claude Code's environment", falling back to the session's start directory, the project root, home or temp if that directory was deleted. |
+| Windows without Git Bash | A failing shell-form PreToolUse hook with `onFailure` unset blocks the call: only exit 0 or 2 counts as a verdict. |
 | Several hooks | Precedence `deny` > `defer` > `ask` > `allow`. |
 
-**Not verified:** behaviour against a real Claude Code install (the tests feed the documented event shape to the real CLI; no Claude Code binary was run); the `tool_input` shapes of `NotebookEdit` and `MultiEdit` (not in the reference's tables; they are guarded with their input passed as-is); what Claude Code shows the user while a hook waits (only that `statusMessage` exists); whether versions older than v2.1.295 ignore the `onFailure` key or reject it; the hook's working directory (the event carries `cwd`).
+**Not verified:** behaviour against a real Claude Code install (the tests feed the documented event shape to the real CLI; no Claude Code binary was run); the `tool_input` shapes of `NotebookEdit` and `MultiEdit` (not in the reference's tables; they are guarded with their input passed as-is); what Claude Code shows the user while a hook waits (only that `statusMessage` exists); whether versions older than v2.1.295 ignore the `onFailure` key or reject it; the wrapper below under Git Bash or PowerShell on a real Windows machine (it was tested under `sh` on Linux only).
 
 ## What the hook answers
 
@@ -86,6 +89,19 @@ cloud:
 
 The signing link is printed to stderr while the hook waits, but Claude Code does not show a running hook's stderr. Signers see pending requests in Permission Protocol; the denial carries the link when the wait runs out.
 
+## Fail closed when the guard cannot run
+
+Claude Code counts any exit other than 0 or 2 as a non-blocking failure, so a missing package (`127`), a crash (`1`) or a signal (`128+n`) would let the call through on versions without `onFailure`. The installed command is shell form and wraps the launcher in POSIX `sh`:
+
+```sh
+npx --no-install mcp-guard hook --config "${CLAUDE_PROJECT_DIR}"/pp.config.yaml --wait 240; c=$?; case $c in 0|2) exit $c;; esac; echo 'mcp-guard: the guard did not run (missing package, crash or bad exit); call blocked. Fix: npm install --save-dev @permission-protocol/mcp-guard' >&2; exit 2
+```
+
+- Exit 0 and exit 2 pass through unchanged; stdout is the guard's own. Every other exit becomes 2 with that fixed reason.
+- Works under `sh -c` (macOS, Linux) and Git Bash (Windows), the shells Claude Code uses for shell form.
+- **Not portable to PowerShell** (Windows without Git Bash): the `case` syntax does not parse there. That case is still blocked: Claude Code documents that without Git Bash a failing PreToolUse hook blocks even with `onFailure` unset, and `onFailure: "block"` is the second layer everywhere.
+- It cannot help when Claude Code itself kills the hook at its timeout; the guard's own watchdog (below) and `onFailure: "block"` cover that.
+
 ## Install
 
 ```bash
@@ -103,7 +119,7 @@ It adds to `<project>/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "npx --no-install mcp-guard hook --config \"${CLAUDE_PROJECT_DIR}\"/pp.config.yaml --wait 240",
+            "command": "npx --no-install mcp-guard hook --config \"${CLAUDE_PROJECT_DIR}\"/pp.config.yaml --wait 240; c=$?; case $c in 0|2) exit $c;; esac; echo '…did not run…' >&2; exit 2",
             "timeout": 300,
             "onFailure": "block",
             "statusMessage": "mcp-guard: checking policy (a held call waits for a Permission Protocol signature)"
@@ -118,14 +134,15 @@ It adds to `<project>/.claude/settings.json`:
 - Idempotent: a second run changes nothing. A run with other options replaces the mcp-guard entry in place.
 - Every other key, matcher group and hook is kept as it was.
 - A settings file that is not valid JSON, or whose `hooks` / `hooks.PreToolUse` is not the documented shape, is refused and left untouched.
-- `npx --no-install` never downloads: if the package is not installed, the hook fails to start and `onFailure: block` blocks the call. Install it as a dev dependency so the whole team runs the same version, or pass `--launcher`.
+- `npx --no-install` never downloads: if the package is not installed, the launcher fails, the wrapper turns that into exit 2, and `onFailure: block` backs it up. Install it as a dev dependency so the whole team runs the same version, or pass `--launcher`.
 - `.claude/settings.json` is the shared, committed project file. Committing it guards every teammate's session in this repo.
-- `hook uninstall` removes only handlers that run `mcp-guard ... hook --config`, and empty groups it leaves behind.
+- `hook uninstall` removes only handlers that run `mcp-guard ... hook --config` (wrapped or not, so entries from earlier versions are found too), and empty groups it leaves behind.
 
-The receipts log is `pp-receipts.jsonl` in the hook's working directory, or `PP_SHARED_RECEIPTS_PATH`, as for the proxy.
+**Receipts log.** `PP_SHARED_RECEIPTS_PATH` if set; otherwise `pp-receipts.jsonl` **beside the policy file** (the directory of the resolved `--config` path), not in the working directory: Claude Code runs hooks in its current directory, which moves as the session `cd`s, and a cwd-relative log would scatter. The proxy keeps its own default (the working directory).
 
 ## Limits
 
 - A hook guards what the agent runs through its tools. Detectors are heuristics, not a sandbox (see [detectors](detectors.md#known-limits)).
 - Anyone who can edit the project's or their own Claude Code settings can remove the hook, and commands run outside the agent are not seen. `hook install` writes only the project file.
-- Requires Claude Code v2.1.295 or later for `onFailure`. On older versions, a hook that cannot start (package missing, Node missing) lets calls through; the guard's own watchdog still answers before the timeout.
+- Each guarded tool call (`Bash`, `Write`, `Edit`, ...) starts a new process through the launcher, which adds process-start latency to every one. Measured locally (Linux, 2 vCPU, Node 22.23, an allowed `Bash` call through the installed wrapper, average of 10 runs): **about 310-320 ms per call** with the default `npx --no-install mcp-guard`; about 90 ms with `--launcher '"${CLAUDE_PROJECT_DIR}"/node_modules/.bin/mcp-guard'` (bare `node -e 0` is about 26 ms). Held calls add the signing wait.
+- Requires Claude Code v2.1.295 or later for `onFailure`. On older versions the installed command's exit-code wrapper still turns a missing package or crash into exit 2, and the guard's own watchdog answers before the timeout; a hook killed at Claude Code's timeout is not covered.

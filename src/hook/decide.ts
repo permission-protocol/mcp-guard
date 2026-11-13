@@ -1,3 +1,4 @@
+import { dirname, join, resolve } from 'node:path';
 import { loadConfig, TOOLS_CALL, type Config } from '../config.js';
 import { evaluate, type Decision } from '../engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash } from '../issuer.js';
@@ -36,6 +37,17 @@ export interface HookOptions {
   waitSeconds: number;
   modeOverride?: 'enforce' | 'observe';
   resumeStore?: ResumeStore;
+  /** Receipt log. Default: PP_SHARED_RECEIPTS_PATH, else pp-receipts.jsonl beside the policy file. */
+  receiptsPath?: string;
+}
+
+/**
+ * The hook's working directory is wherever Claude Code is, so a cwd-relative log would
+ * scatter across subdirectories. The hook anchors it beside the policy instead. The
+ * proxy keeps receipt-log.ts's own default.
+ */
+export function hookReceiptsPath(configPath: string, env: NodeJS.ProcessEnv = process.env): string {
+  return env.PP_SHARED_RECEIPTS_PATH || join(dirname(resolve(configPath)), 'pp-receipts.jsonl');
 }
 
 const PREFIX = 'mcp-guard:';
@@ -52,6 +64,7 @@ const deny = (reason: string): HookVerdict => ({ kind: 'deny', reason: `${PREFIX
 
 export async function decideHook(raw: string, opts: HookOptions): Promise<HookVerdict> {
   const { adapter } = opts;
+  const receipts = opts.receiptsPath ?? hookReceiptsPath(opts.configPath);
 
   let config: Config;
   try {
@@ -91,7 +104,7 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
   const hold = (): void => emitHold({
     id: null, method: TOOLS_CALL, tool: call.tool, agentId: adapter.agentId, ruleId: decision.rule_id,
     inputHash: hashablePayloadInputHash(call.tool, TOOLS_CALL, call.args), createdAt: new Date().toISOString(),
-  });
+  }, receipts);
 
   // Allow and block are final policy decisions: signed now, as the proxy does.
   if (decision.decision !== 'held_for_approval') {
@@ -106,7 +119,7 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
         decider: { kind: 'policy' },
         reversibility: decision.reversibility,
         argKeys: Object.keys(call.args).sort(),
-      }));
+      }), receipts);
     } catch (err: any) {
       // Enforce mode: no receipt, no call. A blocked call stays blocked either way.
       if (decision.decision === 'allowed') return deny(`denied: the decision could not be signed (${err?.message ?? err}).`);
@@ -194,7 +207,7 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
     code: outcome.kind === 'blocked' ? outcome.code : null,
     at: new Date().toISOString(),
     artifact: outcome.kind === 'released' || outcome.kind === 'denied' ? outcome.artifact : null,
-  });
+  }, receipts);
 
   // Only a request still pending after this run's wait is worth resuming.
   const waitRanOut = outcome.kind === 'expired' && client.lastStatus === 'pending';

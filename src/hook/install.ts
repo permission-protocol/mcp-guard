@@ -14,6 +14,21 @@ import { DEFAULT_HOOK_WAIT_SECONDS, HOOK_TIMEOUT_MARGIN_SECONDS } from './decide
 /** Claude Code's built-in tools that change things. MCP tools go through the proxy. */
 export const DEFAULT_MATCHER = 'Bash|PowerShell|Write|Edit|NotebookEdit';
 export const DEFAULT_LAUNCHER = 'npx --no-install mcp-guard';
+/** What Claude Code shows when the launcher could not run the guard at all. Fixed text, no input. */
+export const LAUNCH_FAILED_REASON = 'mcp-guard: the guard did not run (missing package, crash or bad exit); call blocked. Fix: npm install --save-dev @permission-protocol/mcp-guard';
+
+/**
+ * Shell-form hooks run under `sh -c` on macOS and Linux and Git Bash on Windows
+ * (https://code.claude.com/docs/en/hooks). Claude Code counts any exit other than 0 or 2
+ * as a non-blocking failure, so the installed command maps every other exit (127 for a
+ * missing launcher, 1 for a crash, 128+n for a signal) to 2 with a fixed reason. 0 and 2
+ * pass through, and stdout is the guard's own. POSIX sh only: under PowerShell (Windows
+ * without Git Bash) the wrapper does not parse, and `onFailure: "block"` is the layer
+ * that blocks.
+ */
+export function failClosed(command: string): string {
+  return `${command}; c=$?; case $c in 0|2) exit $c;; esac; echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`;
+}
 
 export class SettingsError extends Error {
   constructor(readonly code: 'SETTINGS_INVALID_JSON' | 'SETTINGS_UNEXPECTED_SHAPE', message: string) {
@@ -57,7 +72,7 @@ export function hookHandler(opts: InstallOptions): HookHandler {
   const configArg = config.startsWith('/') ? shellQuote(config) : `"\${CLAUDE_PROJECT_DIR}"/${shellQuote(config)}`;
   return {
     type: 'command',
-    command: `${launcher} hook --config ${configArg} --wait ${wait}`,
+    command: failClosed(`${launcher} hook --config ${configArg} --wait ${wait}`),
     // Longer than the wait, so the guard always answers before Claude Code gives up on it.
     timeout: wait + HOOK_TIMEOUT_MARGIN_SECONDS,
     // A crash, a missing binary or a timeout blocks the call instead of letting it through.

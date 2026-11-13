@@ -1,13 +1,14 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fingerprintOfCall } from '../cloud/fingerprint.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import { verifyCloudReceipt } from '../cloud/verify.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
+import { LAUNCH_FAILED_REASON } from '../hook/install.js';
 
 /**
  * `mcp-guard hook` through the real CLI: one Claude Code PreToolUse event on stdin, the
@@ -142,6 +143,24 @@ describe('mcp-guard hook: policy decisions', () => {
     assertDenied(r, /no receipt can be signed .*keys init/);
   });
 
+  it('without PP_SHARED_RECEIPTS_PATH the log goes beside the policy, whatever the working directory', async () => {
+    const own = workspace(LOCAL_POLICY);
+    const elsewhere = mkdtempSync(join(tmpdir(), 'mcp-guard-hook-cwd-'));
+    mkdirSync(join(elsewhere, 'src', 'deep'), { recursive: true });
+    const r = await new Promise<number | null>((done) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, PP_KEYS_DIR: join(own, 'keys') };
+      delete env.PP_SHARED_RECEIPTS_PATH;
+      const proc = spawn('node', [CLI, 'hook', '--config', join(own, 'pp.config.yaml')], { env, cwd: join(elsewhere, 'src', 'deep') });
+      proc.on('close', done);
+      proc.stdin.end(bash('ls'));
+    });
+    assert.equal(r, 0);
+    const beside = readFileSync(join(own, 'pp-receipts.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(beside.length, 1, 'receipt beside the policy');
+    assert.equal(JSON.parse(beside[0]).record.status, 'APPROVED');
+    assert.equal(existsSync(join(elsewhere, 'src', 'deep', 'pp-receipts.jsonl')), false);
+  });
+
   it('observe mode lets blocked and held calls through and records them, as the proxy does', async () => {
     const r = await runHook(dir, bash('cat ~/.aws/credentials'), ['--mode', 'observe']);
     assert.equal(r.code, 0);
@@ -270,7 +289,8 @@ describe('mcp-guard hook install / uninstall', () => {
           matcher: 'Bash|PowerShell|Write|Edit|NotebookEdit',
           hooks: [{
             type: 'command',
-            command: 'npx --no-install mcp-guard hook --config "${CLAUDE_PROJECT_DIR}"/pp.config.yaml --wait 240',
+            command: 'npx --no-install mcp-guard hook --config "${CLAUDE_PROJECT_DIR}"/pp.config.yaml --wait 240; c=$?; case $c in 0|2) exit $c;; esac; '
+              + `echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`,
             timeout: 300,
             onFailure: 'block',
             statusMessage: 'mcp-guard: checking policy (a held call waits for a Permission Protocol signature)',
@@ -337,5 +357,71 @@ describe('mcp-guard hook install / uninstall', () => {
     const shape = install(dir);
     assert.equal(shape.status, 1);
     assert.match(shape.stderr, /SETTINGS_UNEXPECTED_SHAPE/);
+  });
+});
+
+describe('installed hook command: fail closed on any exit but 0 and 2', () => {
+  // The command Claude Code runs in shell form (sh -c on macOS and Linux), with a stand-in launcher.
+  const run = (launcher: string, env: Record<string, string> = {}) => {
+    const project = mkdtempSync(join(tmpdir(), 'mcp-guard-wrap-'));
+    assert.equal(spawnSync('node', [CLI, 'hook', 'install', '--project', project, '--launcher', launcher]).status, 0);
+    const { command } = JSON.parse(readFileSync(join(project, '.claude', 'settings.json'), 'utf8')).hooks.PreToolUse[0].hooks[0];
+    return spawnSync('sh', ['-c', command], { input: bash('ls'), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: project, ...env } });
+  };
+  const fake = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-guard-fake-'));
+    const path = join(dir, 'fake-mcp-guard');
+    writeFileSync(path, '#!/bin/sh\nprintf "%s" "$FAKE_STDOUT"\n[ -n "$FAKE_STDERR" ] && printf "%s" "$FAKE_STDERR" >&2\nexit "$FAKE_CODE"\n');
+    chmodSync(path, 0o755);
+    return path;
+  };
+
+  it('launcher not found exits 2 with the fixed reason', () => {
+    const r = run('/nonexistent/dir/mcp-guard');
+    assert.equal(r.status, 2);
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, new RegExp(LAUNCH_FAILED_REASON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+
+  it('launcher exiting 1 (or any other code) exits 2', () => {
+    for (const code of ['1', '3', '127', '137']) {
+      const r = run(fake(), { FAKE_CODE: code, FAKE_STDOUT: '' });
+      assert.equal(r.status, 2, `exit ${code}`);
+      assert.ok(r.stderr.includes(LAUNCH_FAILED_REASON));
+    }
+  });
+
+  it('exit 0 and exit 2 pass through with stdout and stderr untouched', () => {
+    const allow = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"x"}}\n';
+    const ok = run(fake(), { FAKE_CODE: '0', FAKE_STDOUT: allow });
+    assert.equal(ok.status, 0);
+    assert.equal(ok.stdout, allow);
+    assert.equal(ok.stderr, '');
+    const denied = run(fake(), { FAKE_CODE: '2', FAKE_STDOUT: '{"d":1}\n', FAKE_STDERR: 'mcp-guard: blocked by rule "x".\n' });
+    assert.equal(denied.status, 2);
+    assert.equal(denied.stdout, '{"d":1}\n');
+    assert.equal(denied.stderr, 'mcp-guard: blocked by rule "x".\n');
+  });
+
+  it('the real guard through the wrapper: allow passes, block stays 2', () => {
+    const dir = workspace(LOCAL_POLICY);
+    const binDir = mkdtempSync(join(tmpdir(), 'mcp-guard-bin-'));
+    const launcher = join(binDir, 'mcp-guard');
+    writeFileSync(launcher, `#!/bin/sh\nexec node ${JSON.stringify(CLI)} "$@"\n`);
+    chmodSync(launcher, 0o755);
+    const project = mkdtempSync(join(tmpdir(), 'mcp-guard-wrap-'));
+    assert.equal(spawnSync('node', [CLI, 'hook', 'install', '--project', project, '--launcher', launcher, '--config', join(dir, 'pp.config.yaml')]).status, 0);
+    const { command } = JSON.parse(readFileSync(join(project, '.claude', 'settings.json'), 'utf8')).hooks.PreToolUse[0].hooks[0];
+    const env = { ...process.env, CLAUDE_PROJECT_DIR: project, PP_KEYS_DIR: join(dir, 'keys'), PP_SHARED_RECEIPTS_PATH: join(dir, 'receipts.jsonl') };
+    const allowed = spawnSync('sh', ['-c', command], { input: bash('ls'), encoding: 'utf8', env });
+    assert.equal(allowed.status, 0);
+    assert.equal(allowed.stdout, '');
+    const blocked = spawnSync('sh', ['-c', command], { input: bash('cat ~/.aws/credentials'), encoding: 'utf8', env });
+    assert.equal(blocked.status, 2);
+    assert.equal(JSON.parse(blocked.stdout).hookSpecificOutput.permissionDecision, 'deny');
+    assert.doesNotMatch(blocked.stderr, /did not run/);
+    // Re-install is still idempotent and uninstall still finds the wrapped entry.
+    assert.match(spawnSync('node', [CLI, 'hook', 'install', '--project', project, '--launcher', launcher, '--config', join(dir, 'pp.config.yaml')], { encoding: 'utf8' }).stdout, /nothing changed/);
+    assert.match(spawnSync('node', [CLI, 'hook', 'uninstall', '--project', project], { encoding: 'utf8' }).stdout, /removed 1/);
   });
 });
