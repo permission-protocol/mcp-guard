@@ -86,7 +86,7 @@ A definite finding in one argument wins over an unreadable one.
 
 ## What the approver and the logs see
 
-The `Decision` carries `effect: { detector, kind, target, parsed, reason }`. `kind` and `reason` come from fixed sets. `target` (a table, path, branch, bucket) comes from the agent's text: control and format characters (including bidi overrides) are removed and it is cut to 120 characters. It is for showing an approver and is **never** written to a receipt, the receipt log, stderr decision lines or a client error. Receipts still bind arguments only by `inputHash`. The decision reason names the rule id and the detector kind only, for example `Matched rule "shell" (shell_destructive: rm_recursive)`.
+The `Decision` carries `effect: { detector, kind, target, parsed, reason }`. `kind` and `reason` come from fixed sets. `target` (a table, path, branch, bucket) comes from the agent's text: control and format characters (including bidi overrides), Hangul fillers, blank Braille and variation selectors are removed, other space separators become a plain space, whitespace runs collapse, credentials are masked (`src/cloud/preview.ts`), and then it is cut to 120 characters. When one text has several `shell_destructive` findings, the widest is reported (the file system root, the whole home directory, a disk write or format); otherwise the first. Which finding is reported never changes whether the rule matches. It is for showing an approver and is **never** written to a receipt, the receipt log, stderr decision lines or a client error. Receipts still bind arguments only by `inputHash`. The decision reason names the rule id and the detector kind only, for example `Matched rule "shell" (shell_destructive: rm_recursive)`.
 
 ## Detectors
 

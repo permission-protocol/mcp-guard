@@ -7,9 +7,9 @@
 ### Added
 
 - **A held call says why it was held.** The approval request carries three optional fields, which Permission Protocol shows to the signer on the signing page and in the phone notification:
-  - `ruleId`: the id of the rule that held the call, when it matches `^[A-Za-z0-9_.:-]{1,128}$`.
-  - `effect`: `{ detector, kind, target, parsed }`, what the rule's detector found, when `detector` and `kind` match `^[a-z0-9_]{1,40}$`. `target` is masked like the argument preview, cut to 120 characters and left out when empty. Rules without a detector send no `effect`.
-  - `project`: the name of the project folder, never its path, so a signer can tell which of many agents is asking. For the hook it is the folder that holds the policy file; for the proxy, the folder it was started in. Characters other than letters, digits, `_ . @ -` and spaces become `-`; at most 64 characters; not sent for the home folder or the file system root.
+  - `ruleId`: the id of the rule that held the call, when it matches `^[A-Za-z0-9_.:-]{1,128}$` and the guard's masking leaves it unchanged (an id that looks like a credential is left out, never sent masked).
+  - `effect`: `{ detector, kind, target, parsed }`, what the rule's detector found, when `detector` and `kind` match `^[a-z0-9_]{1,40}$`. `target` is cleaned, then masked like the argument preview, then cut to 120 code points, and left out when nothing is left. Cleaning removes control and format characters, Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the blank Braille pattern (U+2800) and variation selectors (U+FE00–U+FE0F, U+E0100–U+E01EF), turns every other space separator (no-break, em, ideographic and the rest) into a plain space and collapses whitespace runs; combining marks stay. Masking runs before the cut, so a credential is never cut in half and left readable. When one command has several findings, `effect` shows the widest: deleting the file system root or the whole home directory, or writing or formatting a disk, over a narrower path or a minor finding named first (`rm -rf /var/old ~/` shows `~/`); otherwise the first. This changes only what is shown, never whether the call is held. Rules without a detector send no `effect`.
+  - `project`: the name of the project folder, never its path, so a signer can tell which of many agents is asking. For the hook it is the folder that holds the policy file; for the proxy, the folder it was started in. Characters other than letters, digits, `_ . @ -` and spaces become `-`; at most 64 characters; not sent for the home folder or the file system root, and not sent when the guard's masking would change it.
 - With `cloud.args_preview: false` the guard sends no preview, no `effect.target` and no `project`; it still sends `ruleId` and the detector, kind and `parsed` of `effect`.
 - None of the three is part of the argument hash, the call fingerprint or the signed receipt. Verification, redeem and resuming a request after the hook's wait ran out are unchanged.
 - A rule's `detect` takes `kinds` or `except_kinds` (for `shell_destructive`, with its own kinds only) to count only some definite findings. Text the detector cannot read still matches.
@@ -21,6 +21,7 @@
 - `shell_destructive` reports `git push --all` and `--branches` as `git_push_all` (before: `git_push_protected`). Policies that use `shell_destructive` without a kind filter hold them as before.
 - `git-push-protected` is added to the built-in rule ids the usage heartbeat may report. An observe-only rule never blocks or holds, so it is not counted there.
 - The receipt-gate template pins the verifier to 0.6.0.
+- Masking of credentials in URLs (preview and `effect.target`) now covers a password that holds an unencoded `@` (`postgres://admin:p@ss@db` sends `postgres://[masked]@db`), and the URL rule no longer slows down quadratically on long `a.a.a…` text.
 
 ## 0.5.2: the hook setup leaves MCP servers alone
 
