@@ -70,10 +70,79 @@ rules:
     ['rule receipt ttl over a day', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: allow, receipt_ttl_seconds: 90000 }', /at most 86400/],
     ['server label with spaces (a command line)', 'default_action: allow\nserver_label: node server.js --token x\nrules: []', /Invalid server_label/],
     ['unknown signing mode', 'default_action: allow\nsigning: maybe\nrules: []', /Invalid signing/],
+    // Argument rules (match / detect)
+    ['bare wildcard', 'default_action: allow\nrules:\n  - { id: a, tool: "*", action: block }', /tool "\*" requires "match" or "detect"/],
+    ['match on a non-tools method', 'default_action: allow\nrules:\n  - { id: a, method: resources/read, match: { uri: { equals: x } }, action: block }', /apply only to tools\/call/],
+    ['detect on a non-tools method', 'default_action: allow\nrules:\n  - { id: a, method: resources/read, detect: { detector: secret_read, args: [uri] }, action: block }', /apply only to tools\/call/],
+    ['match not an object', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: [cmd], action: block }', /"match" must map argument names/],
+    ['empty match', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: {}, action: block }', /at least one argument/],
+    ['match condition not an object', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { env: production }, action: block }', /must be an object with one of/],
+    ['match condition unknown key', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { env: { equal: production } }, action: block }', /unknown key: "equal"/],
+    ['match condition with no operator', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { env: { ignore_case: true } }, action: block }', /exactly one of/],
+    ['match condition with two operators', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { env: { equals: a, contains: b } }, action: block }', /exactly one of/],
+    ['match operator not a string', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { n: { equals: 5 } }, action: block }', /equals must be a string/],
+    ['match ignore_case not boolean', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { n: { equals: a, ignore_case: yes please } }, action: block }', /ignore_case must be true or false/],
+    ['empty contains', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { n: { contains: "" } }, action: block }', /contains must not be empty/],
+    ['bad regex', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { n: { pattern: "([a-z" } }, action: block }', /not a valid regular expression/],
+    ['overlong regex', `default_action: allow\nrules:\n  - { id: a, tool: x, match: { n: { pattern: "${'a'.repeat(513)}" } }, action: block }`, /longer than 512/],
+    ['match reading _pp', 'default_action: allow\nrules:\n  - { id: a, tool: x, match: { _pp: { contains: a } }, action: block }', /cannot read agent metadata/],
+    ['detect not an object', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: shell_destructive, action: block }', /"detect" must be an object/],
+    ['detect unknown key', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [c], mode: strict }, action: block }', /detect has unknown key: "mode"/],
+    ['unknown detector', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: rm_rf, args: [c] }, action: block }', /detector "rm_rf" is unknown/],
+    ['detect without args', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive }, action: block }', /args must be a non-empty list/],
+    ['detect with empty args', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [] }, action: block }', /args must be a non-empty list/],
+    ['detect arg not a string', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [1] }, action: block }', /argument names must be non-empty strings/],
+    ['detect arg twice', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [c, c] }, action: block }', /lists an argument twice/],
+    ['detect arg reading _pp', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [_pp] }, action: block }', /cannot read agent metadata/],
+    ['detect with too many args', `default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [${Array.from({ length: 17 }, (_, k) => `a${k}`).join(', ')}] }, action: block }`, /more than 16/],
+    ['detect with allow', 'default_action: allow\nrules:\n  - { id: a, tool: x, detect: { detector: shell_destructive, args: [c] }, action: allow }', /cannot be used with action "allow"/],
+    ['conditional rule shadowed by an unconditional one', 'default_action: allow\nrules:\n  - { id: a, tool: x, action: allow }\n  - { id: b, tool: x, detect: { detector: shell_destructive, args: [c] }, action: block }', /"b"\) can never match/],
   ];
   for (const [name, yaml, re] of bad) {
     it(`rejects ${name}`, () => assert.throws(() => parseConfig(yaml), re));
   }
+
+  it('parses match and detect rules, compiling patterns once', () => {
+    const config = parseConfig(`
+default_action: allow
+rules:
+  - id: hold-destructive-shell
+    tool: "*"
+    detect: { detector: shell_destructive, args: [command, cmd] }
+    action: require_approval
+  - id: block-prod-sql
+    tool: run_sql
+    match:
+      database: { equals: PROD, ignore_case: true }
+      sql: { pattern: "^\\\\s*(drop|truncate)\\\\b", ignore_case: true }
+    action: block
+  - id: hold-sql
+    tool: run_sql
+    detect: { detector: sql_destructive, args: [sql] }
+    action: require_approval
+  - id: run-sql
+    tool: run_sql
+    action: allow
+`);
+    assert.equal(config.rules.length, 4);
+    assert.equal(config.rules[0].tool, '*');
+    assert.deepEqual(config.rules[0].detect, { detector: 'shell_destructive', args: ['command', 'cmd'] });
+    assert.equal(config.rules[1].match!.database.equals, 'PROD');
+    assert.ok(config.rules[1].match!.sql.regex instanceof RegExp);
+    assert.equal(config.rules[1].match!.sql.regex!.flags, 'i');
+    assert.equal(config.rules[3].match, undefined);
+  });
+
+  it('allows several conditional rules for one tool and a wildcard after an exact rule', () => {
+    assert.doesNotThrow(() => parseConfig(`
+default_action: block
+rules:
+  - { id: a, tool: shell, match: { command: { equals: "git status" } }, action: allow }
+  - { id: b, tool: shell, detect: { detector: shell_destructive, args: [command] }, action: block }
+  - { id: c, tool: shell, action: require_approval }
+  - { id: d, tool: "*", detect: { detector: secret_read, args: [path] }, action: block }
+`));
+  });
 
   it('throws on missing file', () => {
     assert.throws(() => loadConfig('/nonexistent/path.yaml'), /Failed to read config file/);
