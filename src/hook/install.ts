@@ -14,6 +14,8 @@ import { DEFAULT_HOOK_WAIT_SECONDS, HOOK_TIMEOUT_MARGIN_SECONDS } from './decide
 /** Claude Code's built-in tools that change things. MCP tools go through the proxy. */
 export const DEFAULT_MATCHER = 'Bash|PowerShell|Write|Edit|NotebookEdit';
 export const DEFAULT_LAUNCHER = 'npx --no-install mcp-guard';
+/** The spinner text while the hook runs (`statusMessage`, https://code.claude.com/docs/en/hooks). */
+export const HOOK_STATUS_MESSAGE = 'mcp-guard is checking this call. If it is held, it waits here for a named person to sign it in Permission Protocol, and the signing page opens in your browser when it can.';
 /** What Claude Code shows when the launcher could not run the guard at all. Fixed text, no input. */
 export const LAUNCH_FAILED_REASON = 'mcp-guard: the guard did not run (missing package, crash or bad exit); call blocked. Fix: npm install --save-dev @permission-protocol/mcp-guard';
 
@@ -97,7 +99,9 @@ export function hookHandler(opts: InstallOptions): HookHandler {
     timeout: wait + HOOK_TIMEOUT_MARGIN_SECONDS,
     // A crash, a missing binary or a timeout blocks the call instead of letting it through.
     onFailure: 'block',
-    statusMessage: 'mcp-guard: checking policy (a held call waits for a Permission Protocol signature)',
+    // Claude Code shows this beside its spinner for as long as the hook runs, including
+    // the whole wait of a held call. It is fixed text: the signing link cannot be shown here.
+    statusMessage: HOOK_STATUS_MESSAGE,
   };
 }
 

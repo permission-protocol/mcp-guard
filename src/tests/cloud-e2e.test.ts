@@ -138,7 +138,9 @@ describe('cloud approvals end to end', () => {
 
     const create = fake.calls.find((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests')!;
     assert.equal(create.authorization, `Bearer ${TOKEN}`);
-    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
+    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'ruleId', 'server', 'timeoutSec', 'tool']);
+    // The rule id goes along as context; this rule has no detector, so there is no effect.
+    assert.equal(create.body.ruleId, 'delete');
     assert.deepEqual({ tool: create.body.tool, server: create.body.server, agentId: create.body.agentId, env: create.body.env, timeoutSec: create.body.timeoutSec }, { tool: 'delete_file', server: 'filesystem', agentId: 'claude-code', env: 'staging', timeoutSec: 30 });
     assert.equal(fake.redeemed.length, 1);
 

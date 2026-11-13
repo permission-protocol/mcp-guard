@@ -10,6 +10,7 @@ import { signHeld, forwardReleased, releaseOnCountdown } from './release.js';
 import { ReplayCache } from './verify-core.js';
 import { createCloudClient, type CloudClient } from './cloud/client.js';
 import { decideInCloud, type CloudOutcome } from './cloud/hold.js';
+import { openSigningPage } from './cloud/open-browser.js';
 import { fingerprintOfCall } from './cloud/fingerprint.js';
 import { PRODUCTION_API_URL, PRODUCTION_KEY_SET, pinsFor } from './cloud/pinned-keys.js';
 import { loadInstallToken } from './cloud/token.js';
@@ -445,11 +446,16 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
         tool: label,
         args: forwardArgs,
         sendPreview: cloud!.args_preview !== false,
+        ruleId: decision.rule_id,
+        effect: decision.effect,
         agentId,
         environment: cloud!.environment,
         timeoutSeconds: cloud!.approval_timeout_seconds,
         onPending: ({ requestId, approvalUrl }) => {
           process.stderr.write(`[mcp-guard] Held "${label}" for signature (${requestId}). Sign or reject: ${approvalUrl ?? 'no approval URL returned'}\n`);
+          // Best effort, never awaited: the decision and the poll do not depend on it.
+          const page = openSigningPage({ requestId, approvalUrl, apiUrl: cloud!.api_url, policyOpenBrowser: cloud!.open_browser });
+          if (page.opened) process.stderr.write('[mcp-guard] Opened the signing page in your browser.\n');
         },
       });
     } catch (err: any) {

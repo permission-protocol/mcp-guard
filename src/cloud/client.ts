@@ -35,12 +35,17 @@ export interface CreateRequestBody {
   argsHash: string;
   /** Masked and capped by the guard (cloud/preview.ts); omitted with `cloud.args_preview: false`. */
   argsPreview?: string;
+  /** The matched rule's id (cloud/preview.ts requestContextOf). Not part of the hash or the fingerprint. */
+  ruleId?: string;
+  /** What the rule's detector found; `target` masked, capped, and omitted with `cloud.args_preview: false`. */
+  effect?: { detector: string; kind: string; target?: string; parsed: boolean };
   agentId: string;
   env: string;
   timeoutSec: number;
 }
 
 export interface CloudClient {
+  /** Open a request. Throws CloudApiError on anything but a JSON object answer. */
   create(body: CreateRequestBody): Promise<Record<string, unknown>>;
   read(requestId: string): Promise<Record<string, unknown>>;
   redeem(requestId: string): Promise<Record<string, unknown>>;

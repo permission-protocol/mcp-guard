@@ -173,7 +173,7 @@ describe('MCP client configs', () => {
     mkdirSync(join(home, '.cursor'), { recursive: true });
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/srv'], env: { A: 'b' } }, remote: { url: 'https://example.test/mcp' } } }, null, 2) + '\n');
     writeFileSync(join(home, '.claude.json'), JSON.stringify({ numStartups: 7, mcpServers: { github: { command: 'docker', args: ['run', 'ghcr.io/github/github-mcp-server'] } }, projects: { [cwd]: { mcpServers: { db: { command: 'node', args: ['db.js'] } } }, '/somewhere/else': { mcpServers: { other: { command: 'node', args: ['x.js'] } } } } }));
-    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.0', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { linear: { command: 'node', args: ['linear.js'] }, guarded: { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.1', '--config', 'p.yaml', '--', 'node', 's.js'] } } }));
     writeFileSync(join(cwd, '.cursor', 'mcp.json'), '{ not json');
     return { home, cwd };
   }
@@ -192,12 +192,12 @@ describe('MCP client configs', () => {
     const file = join(cwd, '.mcp.json');
     const before = readFileSync(file, 'utf-8');
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
-    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.0', now: new Date('2026-11-10T12:00:00.000Z') });
+    const result = wrapServer(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.1', now: new Date('2026-11-10T12:00:00.000Z') });
 
     assert.equal(readFileSync(result.backup, 'utf-8'), before);
     assert.match(result.backup, /\.mcp\.json\.mcp-guard-backup-2026-11-10T12-00-00-000Z$/);
     const after = JSON.parse(readFileSync(file, 'utf-8'));
-    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.0' });
+    const expected = wrappedCommand(server, { policyPath: '/cfg/policies/filesystem.yaml', agentId: 'claude-code', version: '0.5.1' });
     assert.deepEqual(after.mcpServers.filesystem, { ...expected, env: { A: 'b' } });
     assert.deepEqual(after.mcpServers.remote, { url: 'https://example.test/mcp' });
     assert.equal(readFileSync(file, 'utf-8').endsWith('\n'), true);
@@ -208,13 +208,13 @@ describe('MCP client configs', () => {
     // It is now seen as wrapped, and wrapping it twice is refused.
     const again = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     assert.equal(again.wrapped, true);
-    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.5.0' }), /already wrapped/);
+    assert.throws(() => wrapServer(again, { policyPath: 'p', agentId: 'a', version: '0.5.1' }), /already wrapped/);
   });
 
   it('wraps a project-scoped server in ~/.claude.json without touching other projects', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'db')!;
-    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.5.0' });
+    wrapServer(server, { policyPath: 'p.yaml', agentId: 'claude-code', version: '0.5.1' });
     const after = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf-8'));
     assert.equal(isWrapped(after.projects[cwd].mcpServers.db.command, after.projects[cwd].mcpServers.db.args), true);
     assert.deepEqual(after.projects['/somewhere/else'].mcpServers.other, { command: 'node', args: ['x.js'] });
@@ -226,14 +226,14 @@ describe('MCP client configs', () => {
     const { home, cwd } = machine();
     const server = findServers({ home, cwd }).servers.find((s) => s.name === 'filesystem')!;
     writeFileSync(join(cwd, '.mcp.json'), JSON.stringify({ mcpServers: { filesystem: { command: 'python', args: ['other.py'] } } }));
-    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.5.0' }), /changed since it was read/);
+    assert.throws(() => wrapServer(server, { policyPath: 'p', agentId: 'a', version: '0.5.1' }), /changed since it was read/);
     assert.equal(readdirSync(cwd).some((name) => name.includes('mcp-guard-backup')), false);
   });
 
   it('pins the guard version and goes through cmd on Windows', () => {
     const server = { command: 'node', args: ['s.js'] };
-    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.5.0' };
-    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.0', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
+    const options = { policyPath: 'p.yaml', agentId: 'cursor', version: '0.5.1' };
+    assert.deepEqual(wrappedCommand(server, options, 'linux'), { command: 'npx', args: ['-y', '@permission-protocol/mcp-guard@0.5.1', '--config', 'p.yaml', '--agent-id', 'cursor', '--', 'node', 's.js'] });
     assert.deepEqual(wrappedCommand(server, options, 'win32').command, 'cmd');
     assert.deepEqual(wrappedCommand(server, options, 'win32').args.slice(0, 3), ['/c', 'npx', '-y']);
     assert.equal(isWrapped('cmd', wrappedCommand(server, options, 'win32').args), true);
@@ -366,7 +366,9 @@ describe('mcp-guard init, end to end', () => {
 
       // What the person saw, in order.
       const out = run.stdout;
-      const order = ['Server: filesystem', `Open ${fake.url}/mcp/connect?code=ABCD-EFGH`, 'this code: ABCD-EFGH', 'Connected to workspace: Acme Eng (acme-eng)', 'Install token: stored in', 'Local signing key: created mcpg-', 'Hold rule: "delete_file" needs a signature', 'Policy: ', 'Wrapped "filesystem"', 'Self-test: holding a do-nothing call', 'Sign it here: ', 'Signed receipt: rcpt_fake_', `Verify it: npx @permission-protocol/mcp-guard@${VERSION} receipt verify rcpt_fake_`, 'Time to first signed receipt: '];
+      // Progress first (the login and the self-test need the person), then what is guarded,
+      // what happens next time, the commands worth knowing, how to undo, and the setup details.
+      const order = ['Server: filesystem', `Open ${fake.url}/mcp/connect?code=ABCD-EFGH`, 'this code: ABCD-EFGH', 'Connected to workspace: Acme Eng (acme-eng)', 'Self-test: holding a do-nothing call', 'Sign it here: ', 'Self-test: ok. Signed receipt: rcpt_fake_', 'Guarded now:', 'MCP server "filesystem"', 'Next time, a call to "delete_file" on "filesystem" is held', 'Restart Claude Code', 'Worth knowing:', `Verify it: npx @permission-protocol/mcp-guard@${VERSION} receipt verify rcpt_fake_`, 'To undo:', 'Unwrap "filesystem": copy ', 'Set up:', 'Install token: stored in', 'Local signing key: created mcpg-', 'Hold rule: "delete_file" needs a signature', 'Policy: ', 'Wrapped "filesystem"', 'Time to first signed receipt: '];
       let at = 0;
       for (const piece of order) {
         const found = out.indexOf(piece, at);
@@ -620,7 +622,9 @@ describe('mcp-guard init --preset coding-agent', () => {
       const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
       const out = run.stdout;
-      const order = ['Server: filesystem', 'Connected to workspace', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', `undo:   ${LAUNCHER} hook uninstall --project `, 'Wrapped "filesystem"', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Hook self-test (local', 'ok   allowed: Bash "git status"', 'ok   held: Bash "terraform destroy -auto-approve": denied by rule "terraform-destroy"', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Signed receipt: rcpt_fake_', 'Time to first signed receipt: '];
+      const order = ['Server: filesystem', 'Connected to workspace', 'Hook self-test (local, nothing sent): ok. "git status" got no decision; "terraform destroy -auto-approve" was stopped by rule "terraform-destroy"', 'Self-test: ok. Signed receipt: rcpt_fake_', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Next time Claude Code tries something destructive here', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Worth knowing:', `See what the guard decided: npx @permission-protocol/mcp-guard@${VERSION} report --config `, 'To undo:', `Remove the Claude Code hook: ${LAUNCHER} hook uninstall --project `, 'Set up:', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', 'Wrapped "filesystem"', 'Time to first signed receipt: '];
+      // One line per self-test: the per-check lines appear only when a check fails.
+      assert.doesNotMatch(out, /ok   allowed: Bash/);
       let at = 0;
       for (const piece of order) {
         const found = out.indexOf(piece, at);
@@ -690,8 +694,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       const kept = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
       assert.equal(kept.code, 0, kept.stderr);
       assert.match(kept.stdout, /your own policy, kept byte for byte/);
-      assert.match(kept.stdout, /ok   allowed: Bash "git status"/);
-      assert.match(kept.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
+      assert.match(kept.stdout, /Hook self-test \(local, nothing sent\): ok\. "git status" got no decision; "terraform destroy -auto-approve" was stopped/);
       assert.equal(readFileSync(policyFile, 'utf-8'), edited);
       assert.equal(fake.calls.length, calls);
 
@@ -806,7 +809,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--hook', 'claude-code', '--skip-self-test']), machine.env, machine.project);
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
       assert.match(run.stdout, /MCP servers: none found to wrap; setting up the Claude Code hook only/);
-      assert.match(run.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
+      assert.match(run.stdout, /"terraform destroy -auto-approve" was stopped by rule "terraform-destroy"/);
       assert.match(run.stdout, /Restart Claude Code so it loads the hook\./);
       assert.doesNotMatch(run.stdout, /Wrapped "/);
       assert.equal(ourEntries(machine.project), 1);
@@ -856,9 +859,8 @@ describe('mcp-guard init --preset coding-agent', () => {
         assert.ok(run.stdout.includes(`Launcher: ${pinned} (@permission-protocol/mcp-guard is not installed in this project`), run.stdout);
         const handler = JSON.parse(readFileSync(settingsPath(machine.project), 'utf-8')).hooks.PreToolUse[0].hooks[0];
         assert.ok(handler.command.startsWith(`${pinned} hook --config `), handler.command);
-        assert.ok(run.stdout.includes(`undo:   ${pinned} hook uninstall --project ${machine.project}`), 'the undo hint runs the resolved launcher, not a bare npx mcp-guard');
-        assert.match(run.stdout, /ok   allowed: Bash "git status"/);
-        assert.match(run.stdout, /ok   held: Bash "terraform destroy -auto-approve"/);
+        assert.ok(run.stdout.includes(`Remove the Claude Code hook: ${pinned} hook uninstall --project ${machine.project}`), 'the undo hint runs the resolved launcher, not a bare npx mcp-guard');
+        assert.match(run.stdout, /Hook self-test \(local, nothing sent\): ok\. "git status" got no decision; "terraform destroy -auto-approve" was stopped/);
         // The probe and both self-test runs went through the stand-in, with the pinned spec.
         const calls = readFileSync(npx.log, 'utf-8').trim().split('\n');
         assert.ok(calls.length >= 3);

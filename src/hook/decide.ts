@@ -7,6 +7,8 @@ import { emitReceipt, emitHold, emitCloudDecision, emitObserved } from '../recei
 import { ReplayCache } from '../verify-core.js';
 import { createCloudClient } from '../cloud/client.js';
 import { decideInCloud, type CloudOutcome } from '../cloud/hold.js';
+import { openSigningPage, trustedSigningUrl, type OpenBrowserDeps } from '../cloud/open-browser.js';
+import type { VerifiedCloudReceipt } from '../cloud/verify.js';
 import { fingerprintOfCall } from '../cloud/fingerprint.js';
 import { PRODUCTION_API_URL, PRODUCTION_KEY_SET, pinsFor } from '../cloud/pinned-keys.js';
 import { loadInstallToken } from '../cloud/token.js';
@@ -39,6 +41,8 @@ export interface HookOptions {
   resumeStore?: ResumeStore;
   /** Receipt log. Default: PP_SHARED_RECEIPTS_PATH, else pp-receipts.jsonl beside the policy file. */
   receiptsPath?: string;
+  /** How the signing page is opened (tests). */
+  browser?: OpenBrowserDeps;
 }
 
 /**
@@ -60,7 +64,28 @@ export function ruleLabel(decision: Decision, defaultAction: string): string {
   return `rule "${decision.rule_id}" (${e.detector}: ${e.parsed ? e.kind : 'unreadable argument, fail-safe'})`;
 }
 
-const deny = (reason: string): HookVerdict => ({ kind: 'deny', reason: `${PREFIX} ${reason}` });
+const deny = (reason: string, notice?: string): HookVerdict => ({ kind: 'deny', reason: `${PREFIX} ${reason}`, ...(notice ? { notice } : {}) });
+
+/** Signed but still free text: one line, no control characters, bounded. */
+function plain(text: string | null | undefined, max = 80): string | null {
+  if (typeof text !== 'string') return null;
+  const cleaned = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  const chars = Array.from(cleaned);
+  return chars.length > max ? chars.slice(0, max - 1).join('') + '…' : cleaned;
+}
+
+/**
+ * The sentence Claude (and the person) get when a verified, redeemed receipt released a
+ * call. The signer comes from the verified receipt only; the link only if it is an https
+ * page of the configured Permission Protocol, else the verified receipt id.
+ */
+export function approvedMessage(receipt: VerifiedCloudReceipt, receiptUrl: string | null, apiUrl: string): string {
+  const id = receipt.decider.id && receipt.decider.id !== 'unknown' ? receipt.decider.id : null;
+  const signer = plain(receipt.decider.display) ?? plain(id);
+  const url = trustedSigningUrl(receiptUrl, apiUrl);
+  return `${signer ? `Approved by ${signer}` : 'Approved'} through Permission Protocol. Receipt: ${url ?? plain(receipt.receiptId, 128)}`;
+}
 
 export async function decideHook(raw: string, opts: HookOptions): Promise<HookVerdict> {
   const { adapter } = opts;
@@ -187,6 +212,8 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
       tool: call.tool,
       args: call.args,
       sendPreview: cloud.args_preview !== false,
+      ruleId: decision.rule_id,
+      effect: decision.effect,
       agentId: adapter.agentId,
       environment: cloud.environment,
       timeoutSeconds: waitSeconds,
@@ -194,6 +221,9 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
         pendingId = requestId;
         approvalUrl = url;
         process.stderr.write(`[mcp-guard] Held "${call.tool}" for signature (${requestId})${client.resumed ? ' [resumed]' : ''}. Sign or reject: ${url ?? 'no approval URL returned'}\n`);
+        // Best effort, never awaited: the decision and the poll do not depend on it.
+        const page = openSigningPage({ requestId, approvalUrl: url, apiUrl: cloud.api_url, policyOpenBrowser: cloud.open_browser, resumed: client.resumed }, opts.browser);
+        if (page.opened) process.stderr.write('[mcp-guard] Opened the signing page in your browser.\n');
       },
     });
   } catch (err: any) {
@@ -231,7 +261,13 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
   switch (outcome.kind) {
     case 'released': {
       const who = outcome.receipt.decider.display ?? outcome.receipt.decider.id;
-      return { kind: 'allow', reason: `${PREFIX} released by receipt ${outcome.receipt.receiptId}, signed by ${who} in Permission Protocol (${label}).` };
+      const approved = approvedMessage(outcome.receipt, outcome.receiptUrl, cloud.api_url);
+      return {
+        kind: 'allow',
+        reason: `${PREFIX} released by receipt ${outcome.receipt.receiptId}, signed by ${who} in Permission Protocol (${label}).`,
+        context: approved,
+        notice: `mcp-guard: ${approved}`,
+      };
     }
     case 'denied':
       return deny(`denied in Permission Protocol (${label}): ${outcome.reason}${outcome.receipt ? ` [receipt ${outcome.receipt.receiptId}]` : ''}. Do not retry this call unchanged.`);
@@ -241,6 +277,7 @@ export async function decideHook(raw: string, opts: HookOptions): Promise<HookVe
           `held by ${label} for a Permission Protocol signature; nobody signed within the hook's ${waitSeconds}-second wait. ` +
           `Request ${pendingId ?? outcome.requestId ?? 'unknown'} stays open for up to ${cloud.approval_timeout_seconds} seconds` +
           `${approvalUrl ? `: sign it at ${approvalUrl}` : ''}. After it is signed, run exactly the same call again; the guard resumes that request instead of opening a new one.`,
+          `mcp-guard: a held "${call.tool}" call is still waiting for a signature. After someone signs, the same call can be retried.${approvalUrl ? ` Signing link: ${approvalUrl}` : ''}`,
         );
       }
       return deny(`held by ${label}; the approval request expired without a signature (${outcome.reason}). Running the same call again opens a new request.`);

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { resolve } from 'node:path';
 import { loadConfig, type Config } from '../config.js';
 import { hookReceiptsPath } from '../hook/decide.js';
+import { childEnv, neutralCwd } from '../child-cwd.js';
 import { CLI, flag, heartbeatDisabledReason, heartbeatEnvOff } from './launch.js';
 import { MIN_INTERVAL_MS } from './send.js';
 import { defaultStatePath, isDue, loadState } from './state.js';
@@ -34,7 +35,9 @@ export function heartbeatAfterHook(args: string[], deps: HookHeartbeatDeps = {})
     const child = (deps.spawn ?? spawn)(
       process.execPath,
       [CLI, 'heartbeat', '--background', '--client', 'claude-code', '--config', configPath, '--receipts', receipts, '--mode', mode],
-      { detached: true, stdio: 'ignore', windowsHide: true, env },
+      // Started in the guard's config directory, never the project: on Windows a running
+      // process keeps its working directory from being deleted.
+      { detached: true, stdio: 'ignore', windowsHide: true, cwd: neutralCwd(), env: childEnv(env) },
     );
     child.on('error', () => undefined);
     child.unref();

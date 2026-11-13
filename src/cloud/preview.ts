@@ -121,3 +121,50 @@ export function argsPreviewOf(args: unknown): string {
   }
   return capUtf8(text);
 }
+
+/** What the guard's rule and detector found, as sent with a held call (`effect` in the request body). */
+export interface RequestEffect {
+  detector: string;
+  kind: string;
+  target?: string;
+  parsed: boolean;
+}
+
+export interface RequestContext {
+  ruleId?: string;
+  effect?: RequestEffect;
+}
+
+export const RULE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+const IDENTIFIER_PATTERN = /^[a-z0-9_]{1,40}$/;
+export const MAX_TARGET_CHARS = 120;
+
+/**
+ * The rule id and detector finding sent with a held call, so the signer can see why it
+ * was held. Neither is part of the argument hash, the fingerprint or what is signed.
+ *
+ *   ruleId   only if it matches RULE_ID_PATTERN
+ *   effect   only if `detector` and `kind` are the engine's identifiers ([a-z0-9_]);
+ *            `target` is masked like the preview, capped at 120 characters, and left
+ *            out when empty or when `sendPreview` is false (`cloud.args_preview: false`)
+ */
+export function requestContextOf(
+  ruleId: string | null | undefined,
+  effect: { detector: string; kind: string; target?: string; parsed: boolean } | undefined,
+  sendPreview: boolean,
+): RequestContext {
+  const out: RequestContext = {};
+  if (typeof ruleId === 'string' && RULE_ID_PATTERN.test(ruleId)) out.ruleId = ruleId;
+  if (effect && typeof effect.detector === 'string' && typeof effect.kind === 'string'
+    && IDENTIFIER_PATTERN.test(effect.detector) && IDENTIFIER_PATTERN.test(effect.kind)) {
+    const e: RequestEffect = { detector: effect.detector, kind: effect.kind, parsed: effect.parsed === true };
+    if (sendPreview && typeof effect.target === 'string') {
+      const masked = maskText(effect.target).trim();
+      const chars = Array.from(masked);
+      const target = chars.length > MAX_TARGET_CHARS ? chars.slice(0, MAX_TARGET_CHARS - 1).join('') + CUT_MARK : masked;
+      if (target) e.target = target;
+    }
+    out.effect = e;
+  }
+  return out;
+}

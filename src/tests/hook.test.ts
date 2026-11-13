@@ -235,10 +235,19 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'allow');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /released by receipt rcpt_fake_\d+, signed by Maria Signer/);
+    // On an allow the reason reaches only the debug log: Claude gets additionalContext, the person systemMessage.
+    // The fake's receipt link is http, not an https page of the configured API, so the verified receipt id is named.
+    assert.match(r.json.hookSpecificOutput.additionalContext, /^Approved by Maria Signer through Permission Protocol\. Receipt: rcpt_fake_\d+$/);
+    assert.match(r.json.systemMessage, /^mcp-guard: Approved by Maria Signer through Permission Protocol\./);
     assert.equal(fake.redeemed.length, redeemedBefore + 1);
 
     const create = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests').at(-1)!;
     assert.deepEqual({ tool: create.body.tool, server: create.body.server, agentId: create.body.agentId, timeoutSec: create.body.timeoutSec }, { tool: 'Bash', server: 'claude-code', agentId: 'claude-code', timeoutSec: 60 });
+    // Why it was held travels with the request; the fingerprint does not include it.
+    assert.equal(create.body.ruleId, 'destructive-shell');
+    assert.equal(create.body.effect.detector, 'shell_destructive');
+    assert.match(create.body.effect.kind, /^[a-z0-9_]+$/);
+    assert.equal(create.body.effect.parsed, true);
 
     const line = logLines(dir).find((l) => l.cloud)!.cloud;
     assert.equal(line.decision, 'released');
@@ -271,6 +280,8 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
     const first = await runHook(dir, bash('rm -rf ~/resume'), ['--wait', '1']);
     assertDenied(first, /nobody signed within the hook's 1-second wait\. Request mcpreq_\d+ stays open .*sign it at http:\/\/127\.0\.0\.1:\d+\/sign\/mcpreq_\d+.*run exactly the same call again/);
     assert.equal(logLines(dir).at(-1).cloud.decision, 'expired');
+    // The person sees the link too, and that the same call can be retried after a signature.
+    assert.match(first.json.systemMessage, /still waiting for a signature\. After someone signs, the same call can be retried\. Signing link: http:\/\/127\.0\.0\.1:\d+\/sign\/mcpreq_\d+$/);
 
     // Same call; the model rewrote its description, which is not part of what is signed.
     const retry = await runHook(dir, event('Bash', { command: 'rm -rf ~/resume', description: 'another description' }), ['--wait', '5']);
@@ -342,7 +353,7 @@ describe('mcp-guard hook install / uninstall', () => {
               + `echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`,
             timeout: 300,
             onFailure: 'block',
-            statusMessage: 'mcp-guard: checking policy (a held call waits for a Permission Protocol signature)',
+            statusMessage: 'mcp-guard is checking this call. If it is held, it waits here for a named person to sign it in Permission Protocol, and the signing page opens in your browser when it can.',
           }],
         }],
       },

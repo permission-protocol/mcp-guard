@@ -6,6 +6,9 @@ import { createInterface } from 'node:readline/promises';
 import { loadConfig, parseConfig, type Config } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
+import { launchOpener, trustedSigningUrl } from '../cloud/open-browser.js';
+import { childEnv, neutralCwd } from '../child-cwd.js';
+import { DEFAULT_HOOK_WAIT_SECONDS } from '../hook/decide.js';
 import { loadInstallToken, saveInstallToken } from '../cloud/token.js';
 import { createKey, keysDir, loadSigningKey } from '../keystore.js';
 import type { KeySetEntry } from '../signing/keys.js';
@@ -288,7 +291,8 @@ export interface SelfTestResult {
  * self-test's holds are reported as the install's first activity.
  */
 export function selfTestEnv(base: NodeJS.ProcessEnv, receiptsPath: string): NodeJS.ProcessEnv {
-  return { ...base, PP_SHARED_RECEIPTS_PATH: receiptsPath, MCP_GUARD_HEARTBEAT: 'off' };
+  // init opens the self-test's signing link itself, once; the guard under test must not open a second tab.
+  return { ...base, PP_SHARED_RECEIPTS_PATH: receiptsPath, MCP_GUARD_HEARTBEAT: 'off', MCP_GUARD_OPEN_BROWSER: 'off' };
 }
 
 /**
@@ -320,7 +324,9 @@ export function runSelfTest(input: { apiUrl: string; trustKeys: KeySetEntry[]; a
     const server = join(__dirname, 'selftest-server.js');
     const child = spawn(process.execPath, [cli, '--config', policyPath, '--agent-id', input.agentId, '--', process.execPath, server], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: selfTestEnv(process.env, receiptsPath),
+      // Not the project: a guard (and its test server) running there would keep the folder busy on Windows.
+      cwd: neutralCwd(),
+      env: childEnv(selfTestEnv(process.env, receiptsPath)),
     });
     let stderr = '';
     let stdout = '';
@@ -413,6 +419,48 @@ async function choose<T>(io: InitIo, flags: InitFlags, question: string, options
   }
 }
 
+/** A path as one shell word, for a command init prints. */
+function shellArg(path: string): string {
+  return /^[A-Za-z0-9_./:\\-]+$/.test(path) ? path : `"${path.replace(/"/g, '\\"')}"`;
+}
+
+/** The hook self-test in one line; a failure is followed by every check in full. */
+export function hookSelfTestLine(check: { ok: boolean; checks: Array<{ name: string; command: string; ok: boolean; detail: string }>; failure?: string }): string {
+  if (!check.ok) return `Hook self-test (local, nothing sent): ${check.failure === 'could_not_run' ? 'could not run' : 'FAILED'}.`;
+  const parts = check.checks.map((c) => (c.name === 'held' ? `"${c.command}" was stopped by ${/rule "[^"]+"/.exec(c.detail)?.[0] ?? 'the policy'} (in use it would wait for a signature)` : c.detail.startsWith('not run') ? `the allowed-call check was not run (${c.detail.replace(/^not run: /, '')})` : `"${c.command}" got no decision`));
+  return `Hook self-test (local, nothing sent): ok. ${parts.join('; ')}.`;
+}
+
+export interface NextTimeInput {
+  hook: { ownPolicy: boolean; cloud: boolean; waitSeconds: number; receiptsPath: string; preset: boolean } | null;
+  server: { name: string; tool: string | null; preset: boolean; timeoutSeconds: number } | null;
+}
+
+/** What happens the next time an agent tries something the policy holds, in plain sentences. */
+export function nextTimeLines(input: NextTimeInput): string[] {
+  const lines: string[] = [];
+  const browser = 'the signing page opens in your browser (not over SSH or in CI)';
+  if (input.hook) {
+    const h = input.hook;
+    if (!h.cloud) {
+      lines.push('Next time Claude Code makes a call your policy holds, it is denied: the policy has no cloud: section, so nobody can sign it.');
+    } else {
+      const what = h.ownPolicy
+        ? 'Next time Claude Code makes a call your policy holds'
+        : 'Next time Claude Code tries something destructive here (for example rm -rf outside the project, a force push, or terraform destroy)';
+      lines.push(`${what}, the call is held: ${browser}, and the call runs only after a named person signs it in Permission Protocol.`);
+      lines.push(`If nobody signs within ${h.waitSeconds} seconds, Claude is denied with the signing link, and the same call can be retried after someone signs.`);
+      if (h.preset && !h.ownPolicy) lines.push(`Secret reads are not held; they are recorded in ${h.receiptsPath}.`);
+    }
+  }
+  if (input.server) {
+    const s = input.server;
+    const what = s.preset ? `a call to "${s.name}" that the policy holds` : s.tool ? `a call to "${s.tool}" on "${s.name}"` : `any call to "${s.name}"`;
+    lines.push(`${input.hook ? 'For the MCP server, ' : 'Next time, '}${what} is held: ${browser}, and it runs only after a named person signs it in Permission Protocol. If nobody signs within ${s.timeoutSeconds} seconds, it is refused.`);
+  }
+  return lines;
+}
+
 export interface InitDeps {
   fetchImpl?: typeof fetch;
   home?: string;
@@ -440,6 +488,27 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     return 2;
   }
   if (flags.help) { io.out(INIT_HELP); return 0; }
+
+  // Facts about what was set up, printed once at the end (after what is guarded and
+  // what to do next), and on every failure after something changed.
+  const details: string[] = [];
+  /** How to undo each change, printed with the next steps and on every failure. */
+  const undo: string[] = [];
+  let detailsPrinted = false;
+  const printDetails = (): void => {
+    if (detailsPrinted) return;
+    detailsPrinted = true;
+    if (undo.length > 0) {
+      io.out('');
+      io.out('To undo:');
+      for (const line of undo) io.out(`  ${line}`);
+    }
+    if (details.length > 0) {
+      io.out('');
+      io.out('Set up:');
+      for (const line of details) io.out(`  ${line}`);
+    }
+  };
 
   try {
     if (flags.apiUrl.replace(/\/+$/, '') !== PRODUCTION_API_URL && flags.trustKeys.length === 0) {
@@ -489,7 +558,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       const lookup = findPosixShell(deps.shellLookup);
       if (lookup.shell === null) throw new InitError(`${noShellMessage(lookup)}. init stopped before changing anything.`);
       shell = lookup.shell;
-      if (lookup.source !== 'sh on PATH') io.out(`Shell for the hook: ${shell} (${lookup.source})`);
+      if (lookup.source !== 'sh on PATH') details.push(`Shell for the hook: ${shell} (${lookup.source})`);
       const launchProblem = probeLauncher(projectDir, launcher.launcher, shell);
       if (launchProblem) {
         throw new InitError(`${launchProblem}. The hook would block every guarded call, so init stopped before changing anything. Fix: check the network (npx fetches the package once), or install it in the project with npm install --save-dev @permission-protocol/mcp-guard, or pass --launcher <cmd>; then run init again. Or pass --no-hook.`);
@@ -539,7 +608,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
           `or pass --wrap-launcher "<command>" that starts mcp-guard ${version} (for a source build: --wrap-launcher "node <checkout>/bin/mcp-guard").`,
         );
       }
-      io.out(`Wrap launcher: ${launcherWords.join(' ')} (checked: starts mcp-guard ${version})`);
+      details.push(`Wrap launcher: ${launcherWords.join(' ')} (checked: starts mcp-guard ${version})`);
     }
 
     // 2-3. Device login and token. With only the hook to set up, a stored token is reused.
@@ -554,7 +623,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       }
     }
     if (haveToken) {
-      io.out('Install token: already stored on this machine; not logging in again.');
+      details.push('Install token: already stored on this machine; not logging in again.');
     } else {
       const label = (flags.label ?? hostname()).replace(/[^A-Za-z0-9_.:@ -]/g, '-').slice(0, 64) || null;
       const login = await startLogin(apiUrl, label, { fetchImpl: deps.fetchImpl });
@@ -575,7 +644,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       }
       const stored = saveInstallToken(connected.token, { platform: deps.protect?.platform, exec: deps.protect?.exec });
       changedSomething = true;
-      io.out(tokenStoredMessage(stored));
+      details.push(tokenStoredMessage(stored));
     }
 
     // 4. Local signing key (allow and block decisions are signed on this machine).
@@ -586,14 +655,14 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       const keyProtection: { value: WindowsProtection | null } = { value: null };
       const key = createKey({ protect: deps.protect, onWindowsProtection: (p) => { keyProtection.value = p; } });
       changedSomething = true;
-      io.out(`Local signing key: created ${key.keyId} in ${keysDir()}.`);
-      if (keyProtection.value) io.out(keyProtectionMessage(keyProtection.value));
+      details.push(`Local signing key: created ${key.keyId} in ${keysDir()}.`);
+      if (keyProtection.value) details.push(keyProtectionMessage(keyProtection.value).trim());
     }
 
     // 5. Which tool to hold (a preset names its own rules).
     let tool = flags.tool ?? null;
     if (flags.preset) {
-      io.out(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads are recorded, not held. See docs/presets.md.`);
+      details.push(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads are recorded, not held. See docs/presets.md.`);
     } else if (!tool) {
       const tools = (await (deps.discover ?? discoverTools)(server!.command, server!.args)).filter((name) => TOOL_NAME_PATTERN.test(name));
       if (tools.length > 0) {
@@ -605,7 +674,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     } else if (!TOOL_NAME_PATTERN.test(tool)) {
       throw new InitError(`--tool "${tool}" has characters Permission Protocol does not accept in a tool name (letters, digits and _ . : / @ - only).`);
     }
-    if (!flags.preset) io.out(tool ? `Hold rule: "${tool}" needs a signature. Every other tool of this server runs as before.` : 'Hold rule: every call needs a signature.');
+    if (!flags.preset) details.push(tool ? `Hold rule: "${tool}" needs a signature. Every other tool of this server runs as before.` : 'Hold rule: every call needs a signature.');
 
     // 6. Policy file for the wrapped server.
     let policyPath: string | null = null;
@@ -618,20 +687,20 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       if (existsSync(policyPath) && readFileSync(policyPath, 'utf-8') !== policy) {
         const aside = `${policyPath}.backup-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
         copyFileSync(policyPath, aside);
-        io.out(`Policy: the existing ${policyPath} was copied to ${aside}.`);
+        details.push(`Policy: the existing ${policyPath} was copied to ${aside}.`);
       }
       writeFileSync(policyPath, policy);
-      io.out(`Policy: ${policyPath}`);
+      details.push(`Policy: ${policyPath}`);
     }
 
     // 6b. The hook's policy and the hook itself.
     let hookChange: SettingsChange | null = null;
     if (hookMode) {
       if (keptPolicy) {
-        io.out(keptIsPreset
+        details.push(keptIsPreset
           ? `Hook policy: ${hookPolicyPath} (already the ${flags.preset} preset; kept unchanged)`
           : `Hook policy: ${hookPolicyPath} (your own policy, kept byte for byte; the ${flags.preset} preset was not applied: its rules decide what the hook guards)`);
-        if (!keptPolicy.cloud) io.out('  It has no cloud: section, so a held call is denied instead of waiting for a Permission Protocol signature.');
+        if (!keptPolicy.cloud) io.out(`Warning: ${hookPolicyPath} has no cloud: section, so a call it holds is denied instead of waiting for a Permission Protocol signature. Add a cloud: section to get signed approvals.`);
       } else {
         // Written only if it is still absent: never overwrite a policy that appeared meanwhile.
         try {
@@ -641,22 +710,24 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
           throw err;
         }
         changedSomething = true;
-        io.out(`Hook policy: ${hookPolicyPath} (${flags.preset} preset; commit it with .claude/settings.json to guard the whole team)`);
+        details.push(`Hook policy: ${hookPolicyPath} (${flags.preset} preset; commit it with .claude/settings.json to guard the whole team)`);
       }
-      io.out(`Launcher: ${launcher!.launcher} (${launcher!.why})`);
+      details.push(`Launcher: ${launcher!.launcher} (${launcher!.why})`);
       if (hookAlreadyInstalled) {
-        io.out(`Claude Code hook: already installed in ${settingsPath(projectDir)}; unchanged`);
+        details.push(`Claude Code hook: already installed in ${settingsPath(projectDir)}; unchanged`);
+        undo.push(`Remove the Claude Code hook: ${undoHook(launcher!.launcher, projectDir)}`);
       } else {
         try {
           hookChange = installHook({ projectDir, launcher: launcher!.launcher });
         } catch (err: any) {
           io.err(`[mcp-guard] Claude Code hook: NOT installed: ${err?.code ? `${err.code}: ` : ''}${err?.message ?? err}`);
           io.err(server ? '[mcp-guard] Nothing was wrapped. Fix the cause above and run init again.' : '[mcp-guard] Fix the cause above and run init again.');
+          printDetails();
           return 1;
         }
         if (hookChange.changed) changedSomething = true;
-        io.out(`Claude Code hook: ${hookChange.changed ? 'installed' : 'already installed'} in ${hookChange.path} (PreToolUse, matcher "${DEFAULT_MATCHER}", onFailure block)`);
-        io.out(`  undo:   ${undoHook(launcher!.launcher, projectDir)}`);
+        details.push(`Claude Code hook: ${hookChange.changed ? 'installed' : 'already installed'} in ${hookChange.path} (PreToolUse, matcher "${DEFAULT_MATCHER}", onFailure block)`);
+        undo.push(`Remove the Claude Code hook: ${undoHook(launcher!.launcher, projectDir)}`);
       }
     }
 
@@ -665,22 +736,19 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     if (!TOOL_NAME_PATTERN.test(agentId)) throw new InitError('--agent-id may contain letters, digits and _ . : / @ - only.');
     if (server) {
       const wrapped = wrapServer(server, { policyPath: policyPath!, agentId, version: guardVersion(), launcher: flags.wrapLauncher, now: new Date(now()) });
-      io.out(`Wrapped "${server.name}" in ${server.file}`);
-      io.out(`  before: ${[server.command, ...server.args].join(' ')}`);
-      io.out(`  now:    ${[wrapped.command, ...wrapped.args].join(' ')}`);
-      io.out(`  undo:   copy ${wrapped.backup} back over ${server.file}`);
+      details.push(`Wrapped "${server.name}" in ${server.file}. It now starts: ${[wrapped.command, ...wrapped.args].join(' ')}`);
+      undo.push(`Unwrap "${server.name}": copy ${wrapped.backup} back over ${server.file}`);
     }
+    let restart: string | null = null;
     if (server) {
       const client = server.client === 'cursor' ? 'Cursor' : 'Claude Code';
-      io.out(`Restart ${client} so it starts "${server.name}" through the guard${hookMode && hookChange ? (client === 'Claude Code' ? ' and loads the hook' : ', and Claude Code so it loads the hook') : ''}.`);
+      restart = `Restart ${client} so it starts "${server.name}" through the guard${hookMode && hookChange ? (client === 'Claude Code' ? ' and loads the hook' : ', and Claude Code so it loads the hook') : ''}.`;
     } else if (hookMode && hookChange) {
-      io.out('Restart Claude Code so it loads the hook.');
+      restart = 'Restart Claude Code so it loads the hook.';
     }
 
     // 7b. The hook, checked locally: one allowed and one held synthetic call.
     if (hookMode) {
-      io.out('');
-      io.out('Hook self-test (local; nothing is sent to Permission Protocol, nothing is run):');
       const check = runHookSelfTest({
         projectDir,
         launcher: launcher!.launcher,
@@ -689,15 +757,21 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
         receiptsPath: join(dirname(keysDir()), 'self-test-receipts.jsonl'),
         shell,
       });
-      for (const c of check.checks) io.out(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: Bash "${c.command}": ${c.detail}`);
+      io.out(hookSelfTestLine(check));
+      if (!check.ok) {
+        // A failing step prints every check in full.
+        for (const c of check.checks) io.out(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: Bash "${c.command}": ${c.detail}`);
+      }
       if (!check.ok && check.failure === 'could_not_run') {
         io.err(`[mcp-guard] Hook self-test could not run: ${check.reason}`);
         io.err(`[mcp-guard] This is a problem with init's test, not a finding about the installed hook, which is in place and fails closed. Restart Claude Code and try a guarded call to see it work. To remove it: ${undoHook(launcher!.launcher, projectDir)}`);
+        printDetails();
         return 1;
       }
       if (!check.ok) {
         io.err(`[mcp-guard] Hook self-test failed: ${check.reason}`);
         io.err(`[mcp-guard] The installed hook did not answer as expected. It fails closed, so Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} may be blocked until it works. Fix the cause above, or remove it with: ${undoHook(launcher!.launcher, projectDir)}`);
+        printDetails();
         return 1;
       }
       // onFailure: "block" needs Claude Code 2.1.295; older versions rely on the wrapper (docs/hooks.md).
@@ -705,58 +779,83 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       if (note) io.out(note);
     }
 
-    // What is guarded now.
+    // 8. Self-test: one held call through the real cloud path, unless skipped or nothing changed.
+    const alreadySetUp = hookMode && !server && !changedSomething;
+    let test: SelfTestResult | null = null;
+    if (!alreadySetUp && !flags.skipSelfTest) {
+      io.out('');
+      io.out('Self-test: holding a do-nothing call for your signature.');
+      test = await (deps.selfTest ?? runSelfTest)({
+        apiUrl,
+        trustKeys: flags.trustKeys,
+        agentId,
+        onLink: (url) => {
+          io.out(`  Sign it here: ${url}`);
+          // The link came from the guard's output: opened only if it is a page of this Permission Protocol.
+          const trusted = trustedSigningUrl(url, apiUrl);
+          if (!flags.noBrowser && trusted) io.openBrowser(trusted);
+          io.out('  Waiting for your signature...');
+        },
+      });
+      if (test.ok) io.out(`Self-test: ok. Signed receipt: ${test.receiptId}${test.signer ? `, signed by ${test.signer}` : ''}.`);
+      else {
+        io.err(`[mcp-guard] Self-test did not produce a signed receipt: ${test.reason}`);
+        io.err('[mcp-guard] The setup is in place and fails closed: the held tool stays blocked until a signature works. Fix the cause above, then call the tool from your client.');
+      }
+    }
+
+    // What the person reads first: what is guarded, what happens next, what to run.
     io.out('');
     io.out('Guarded now:');
     if (hookMode) {
-      io.out(keptPolicy && !keptIsPreset
-        ? `  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against your policy ${hookPolicyPath}.`
-        : `  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against ${hookPolicyPath}. Destructive ones wait for a signature in Permission Protocol; secret reads are recorded in ${join(projectDir, 'pp-receipts.jsonl')}.`);
+      io.out(`  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against ${keptPolicy && !keptIsPreset ? 'your policy ' : ''}${hookPolicyPath}.`);
     }
     if (server) io.out(`  MCP server "${server.name}": every call is checked against ${policyPath}.`);
     if (flags.preset && !hookMode) io.out(`  Claude Code's own tools (shell, file edits) are not guarded: ${flags.noHook ? '--no-hook was passed' : `no Claude Code project was found in ${projectDir}`}. Add the hook with --hook claude-code.`);
 
-    // Hook only, and the token, key, policy and hook entry were all in place already.
-    if (hookMode && !server && !changedSomething) {
+    io.out('');
+    for (const line of nextTimeLines({
+      hook: hookMode ? { ownPolicy: Boolean(keptPolicy && !keptIsPreset), cloud: keptPolicy ? Boolean(keptPolicy.cloud) : true, waitSeconds: DEFAULT_HOOK_WAIT_SECONDS, receiptsPath: join(projectDir, 'pp-receipts.jsonl'), preset: Boolean(flags.preset) } : null,
+      server: server ? { name: server.name, tool, preset: Boolean(flags.preset), timeoutSeconds: 600 } : null,
+    })) io.out(line);
+    if (restart) {
       io.out('');
+      io.out(restart);
+    }
+
+    const commands: string[] = [];
+    if (hookMode) commands.push(`See what the guard decided: ${pinnedCli()} report --config ${shellArg(hookPolicyPath)}`);
+    if (test?.ok) {
+      const verifyCommand = `${pinnedCli()} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath ?? hookPolicyPath}"` : ''}`;
+      if (test.receiptUrl) commands.push(`View the self-test receipt: ${test.receiptUrl}`);
+      commands.push(`Verify it: ${verifyCommand}`);
+    }
+    if (commands.length > 0) {
+      io.out('');
+      io.out('Worth knowing:');
+      for (const line of commands) io.out(`  ${line}`);
+    }
+    printDetails();
+
+    io.out('');
+    if (alreadySetUp) {
       io.out(`Already set up: the install token, the signing key, ${hookPolicyPath} and the hook entry were all in place; nothing was changed.`);
       return 0;
     }
-
-    // 8. Self-test.
     if (flags.skipSelfTest) {
-      io.out('');
       io.out(`Set up in ${elapsed(now() - startedAt)}. The self-test was skipped, so no receipt has been signed yet.`);
       return 0;
     }
-    io.out('');
-    io.out('Self-test: holding a do-nothing call for your signature.');
-    const test = await (deps.selfTest ?? runSelfTest)({
-      apiUrl,
-      trustKeys: flags.trustKeys,
-      agentId,
-      onLink: (url) => {
-        io.out(`  Sign it here: ${url}`);
-        if (!flags.noBrowser) io.openBrowser(url);
-        io.out('  Waiting for your signature...');
-      },
-    });
-    if (!test.ok) {
-      io.err(`[mcp-guard] Self-test did not produce a signed receipt: ${test.reason}`);
-      io.err('[mcp-guard] The setup is in place and fails closed: the held tool stays blocked until a signature works. Fix the cause above, then call the tool from your client.');
+    if (!test?.ok) {
+      io.out('Set up, but the self-test did not produce a signed receipt (see the error above).');
       return 1;
     }
-    const verifyCommand = `${pinnedCli()} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath ?? hookPolicyPath}"` : ''}`;
-    io.out('');
-    io.out(`Signed receipt: ${test.receiptId}${test.signer ? `, signed by ${test.signer}` : ''}`);
-    if (test.receiptUrl) io.out(`  View it:   ${test.receiptUrl}`);
-    io.out(`  Verify it: ${verifyCommand}`);
-    io.out('');
     io.out(`Time to first signed receipt: ${elapsed(now() - startedAt)}.`);
     return 0;
   } catch (err: any) {
     if (err instanceof InitError || err instanceof DeviceLoginError) io.err(`[mcp-guard] ${err.message}`);
     else io.err(`[mcp-guard] init failed: ${err?.message ?? err}`);
+    printDetails();
     return 1;
   }
 }
@@ -774,10 +873,8 @@ export function terminalIo(): InitIo {
     },
     openBrowser: (url) => {
       if (!interactive) return;
-      try {
-        const [command, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
-        spawn(command as string, args as string[], { stdio: 'ignore', detached: true }).on('error', () => undefined).unref();
-      } catch { /* the link is printed too */ }
+      // No shell (on Windows, no cmd.exe parsing of `&` in the link), detached, outside the project; the link is printed too.
+      launchOpener(url);
     },
   };
 }

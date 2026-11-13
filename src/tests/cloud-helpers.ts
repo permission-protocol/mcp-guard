@@ -128,6 +128,10 @@ export interface FakePp {
   /** Requests received, newest last. */
   calls: Array<{ method: string; path: string; authorization: string | null; body: any }>;
   redeemed: string[];
+  /** Answer 400 to a create whose body has a field production did not accept before 0.5.1 (`ruleId`, `effect`). */
+  strictBody: boolean;
+  /** Origin for the links in answers (approvalUrl, receipt url), when they should not be this server's own. */
+  publicUrl: string | null;
   /** Device login: what the person in the browser does, after `pollsBeforeDecision` token polls. */
   device: { decision: 'connect' | 'cancel' | 'never'; pollsBeforeDecision: number; workspace: { name: string; slug: string }; started: number };
   close(): Promise<void>;
@@ -156,15 +160,16 @@ export async function startFakePp(token: string): Promise<FakePp> {
   let n = 0;
 
   const state: FakePp = {
-    url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], close: async () => undefined,
+    url: '', issuer, decision: 'approve', decideAfterReads: 1, calls: [], redeemed: [], strictBody: false, publicUrl: null, close: async () => undefined,
     device: { decision: 'connect', pollsBeforeDecision: 1, workspace: { name: 'Acme Eng', slug: 'acme-eng' }, started: 0 },
   };
   const devicePolls = new Map<string, number>();
 
+  const links = (): string => state.publicUrl ?? state.url;
   function view(r: FakeRequest): Record<string, unknown> {
     const base = { requestId: r.id, fingerprint: r.fingerprint };
     const receipt = (status: 'APPROVED' | 'DENIED', artifact: CloudReceiptArtifact, deciderId: string) => ({
-      id: r.receiptId, url: `${state.url}/r/${r.receiptId}`, decision: status === 'APPROVED' ? 'approve' : 'deny',
+      id: r.receiptId, url: `${links()}/r/${r.receiptId}`, decision: status === 'APPROVED' ? 'approve' : 'deny',
       requestId: r.id, fingerprint: r.fingerprint, decider: { id: deciderId, display: 'Maria Signer', authMethod: 'session_stepup_webauthn' }, artifact,
     });
     if (r.decision === 'frozen') {
@@ -172,7 +177,7 @@ export async function startFakePp(token: string): Promise<FakePp> {
       return { ...base, status: 'denied', approvalUrl: null, reason: 'Global freeze is active', reasonCodes: ['GLOBAL_FREEZE_ACTIVE'], receipt: receipt('DENIED', artifact, 'system/pp-engine') };
     }
     if (r.readsLeft > 0 || r.decision === 'never') {
-      return { ...base, status: 'pending', approvalUrl: `${state.url}/sign/${r.id}`, retryAfterSec: 1, receipt: null };
+      return { ...base, status: 'pending', approvalUrl: `${links()}/sign/${r.id}`, retryAfterSec: 1, receipt: null };
     }
     if (r.decision === 'reject') {
       const artifact = mintCloudReceipt(issuer, { fingerprint: r.fingerprint, requestId: r.id, receiptId: r.receiptId, status: 'DENIED' });
@@ -224,10 +229,13 @@ export async function startFakePp(token: string): Promise<FakePp> {
     if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'UNAUTHORIZED', message: 'bad token' } });
 
     if (req.method === 'POST' && path === '/api/mcp/approval-requests') {
+      if (state.strictBody && body && typeof body === 'object' && ('ruleId' in body || 'effect' in body)) {
+        return send(400, { error: { code: 'VALIDATION_ERROR', message: 'Unrecognized key(s) in object' } });
+      }
       const fingerprint = sha256(canonicalJsonText({ argsHash: body.argsHash, server: body.server, tool: body.tool }));
       const r: FakeRequest = { id: `mcpreq_${String(++n).padStart(32, '0')}`, fingerprint, decision: state.decision, readsLeft: state.decideAfterReads, redeemed: false, receiptId: `rcpt_fake_${n}` };
       requests.set(r.id, r);
-      return send(201, r.decision === 'frozen' ? view(r) : { requestId: r.id, fingerprint, status: 'pending', approvalUrl: `${state.url}/sign/${r.id}`, retryAfterSec: 1, receipt: null });
+      return send(201, r.decision === 'frozen' ? view(r) : { requestId: r.id, fingerprint, status: 'pending', approvalUrl: `${links()}/sign/${r.id}`, retryAfterSec: 1, receipt: null });
     }
     const match = path.match(/^\/api\/mcp\/approval-requests\/([A-Za-z0-9_]+)(\/redeem)?$/);
     const r = match ? requests.get(match[1]) : undefined;
