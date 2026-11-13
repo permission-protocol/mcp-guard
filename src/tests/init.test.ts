@@ -8,7 +8,7 @@ import { parseConfig } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { InstallTokenError, KEYCHAIN_ACCOUNT, KEYCHAIN_SERVICE, loadInstallToken, saveInstallToken, type KeychainRunner } from '../cloud/token.js';
-import { keyProtectionMessage, policyText, selfTestEnv, tokenStoredMessage } from '../init/init.js';
+import { keyProtectionMessage, notWrappedLines, policyText, runInit, selfTestEnv, tokenStoredMessage, wrapServerCommand, type InitIo } from '../init/init.js';
 import { heartbeatEnvOff } from '../heartbeat/launch.js';
 import { findServers, isWrapped, probeWrapLauncher, splitLauncher, wrapLauncher, wrapServer, wrappedCommand } from '../init/mcp-clients.js';
 import { restrictToCurrentUser, type ExecFile } from '../win-protect.js';
@@ -619,9 +619,11 @@ describe('mcp-guard init --preset coding-agent', () => {
     const machine = claudeProject();
     try {
       writeFileSync(settingsPath(machine.project), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }, null, 2) + '\n');
-      const run = await runCli(presetArgs(fake, machine.mcpConfig), machine.env, machine.project);
+      // With the hook, an MCP server is wrapped only when --server names it.
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--server', 'filesystem']), machine.env, machine.project);
       assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
       const out = run.stdout;
+      assert.doesNotMatch(out, /MCP servers are not guarded by this setup/);
       const order = ['Server: filesystem', 'Connected to workspace', 'Hook self-test (local, nothing sent): ok. "git status" got no decision; "terraform destroy -auto-approve" was stopped by rule "terraform-destroy"', 'Self-test: ok. Signed receipt: rcpt_fake_', 'Guarded now:', 'Claude Code in ', 'MCP server "filesystem"', 'Next time Claude Code tries something destructive here', 'Restart Claude Code so it starts "filesystem" through the guard and loads the hook.', 'Worth knowing:', `See what the guard decided: npx @permission-protocol/mcp-guard@${VERSION} report --config `, 'To undo:', `Remove the Claude Code hook: ${LAUNCHER} hook uninstall --project `, 'Set up:', 'Policy preset: coding-agent', 'Policy: ', 'Hook policy: ', 'Claude Code hook: installed in ', 'Wrapped "filesystem"', 'Time to first signed receipt: '];
       // One line per self-test: the per-check lines appear only when a check fails.
       assert.doesNotMatch(out, /ok   allowed: Bash/);
@@ -649,6 +651,10 @@ describe('mcp-guard init --preset coding-agent', () => {
       const handler = settings.hooks.PreToolUse[0].hooks[0];
       assert.equal(handler.onFailure, 'block');
       assert.ok(handler.command.startsWith(`${LAUNCHER} hook --config "\${CLAUDE_PROJECT_DIR}"/pp.config.yaml`));
+      // Exactly that server was wrapped, with one backup of its config file.
+      assert.equal(readdirSync(machine.project).filter((name) => name.includes('mcp-guard-backup')).length, 1);
+      assert.ok(out.includes(`Unwrap "filesystem": copy `));
+      assert.ok(out.includes(`Wrap launcher: npx -y @permission-protocol/mcp-guard@${VERSION} (checked: starts mcp-guard ${VERSION})`));
 
       // The hook self-test sent nothing: the only approval request is the do-nothing self-test tool.
       const created = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests');
@@ -685,6 +691,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       assert.match(again.stdout, /Install token: already stored on this machine; not logging in again/);
       assert.match(again.stdout, /Claude Code hook: already installed/);
       assert.match(again.stdout, /Already set up: .*nothing was changed/);
+      assert.match(again.stdout, /MCP servers are not guarded by this setup/, 'the unwrapped server does not stop "Already set up"');
       assert.deepEqual(snapshot(), before);
       assert.equal(fake.calls.length, calls);
 
@@ -702,7 +709,8 @@ describe('mcp-guard init --preset coding-agent', () => {
       spawnSync(process.execPath, [CLI, 'hook', 'uninstall', '--project', machine.project], { env: machine.env });
       const restored = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
       assert.equal(restored.code, 0, `${restored.stdout}\n${restored.stderr}`);
-      assert.match(restored.stdout, /every one found is already wrapped; setting up the Claude Code hook only/);
+      assert.match(restored.stdout, /MCP servers are not guarded by this setup/);
+      assert.doesNotMatch(restored.stdout, /Wrapped "/);
       assert.match(restored.stdout, /Claude Code hook: installed/);
       assert.equal(readFileSync(policyFile, 'utf-8'), edited);
       assert.equal(ourEntries(machine.project), 1);
@@ -907,5 +915,199 @@ describe('mcp-guard init --preset coding-agent', () => {
         assert.equal(fake.calls.length, 0);
       } finally { await fake.close(); }
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.5.2: with the Claude Code hook, MCP servers are wrapped only when --server names one
+// ---------------------------------------------------------------------------
+
+/** Run init in this process with these environment variables, restoring them after. */
+async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(vars)) { saved[key] = process.env[key]; if (vars[key] === undefined) delete process.env[key]; else process.env[key] = vars[key]; }
+  try { return await fn(); } finally {
+    for (const key of Object.keys(saved)) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+  }
+}
+
+/** An interactive terminal that records every question and answers from a script. */
+function recordingIo(answer: (question: string) => string) {
+  const out: string[] = [];
+  const questions: string[] = [];
+  const opened: string[] = [];
+  const io: InitIo = {
+    out: (l) => out.push(l),
+    err: (l) => out.push(l),
+    ask: async (q) => { questions.push(q); return answer(q); },
+    openBrowser: (url) => { opened.push(url); },
+    interactive: true,
+  };
+  return { io, out, questions, opened };
+}
+
+const backups = (dir: string): string[] => readdirSync(dir).filter((name) => name.includes('mcp-guard-backup'));
+
+describe('init with the Claude Code hook leaves MCP servers alone unless --server names one', () => {
+  it('one unwrapped server: nothing wrapped, no MCP config byte changed, and the summary says how to wrap it', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      const before = readFileSync(machine.mcpConfig, 'utf-8');
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      const out = run.stdout;
+      assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), before, 'the MCP config is byte for byte the same');
+      assert.deepEqual(backups(machine.project), []);
+      assert.equal(existsSync(join(machine.guardDir, 'policies')), false, 'no server policy was written');
+      assert.doesNotMatch(out, /Server: |Wrapped "|Wrap launcher:|Unwrap "|Which MCP server/);
+      assert.equal(ourEntries(machine.project), 1, 'the hook is installed');
+      assert.match(out, /Restart Claude Code so it loads the hook\./);
+
+      // In "Guarded now", once, before what happens next time; not as a failure.
+      const command = `npx @permission-protocol/mcp-guard@${VERSION} init --preset coding-agent --mcp-config ${machine.mcpConfig} --launcher "${LAUNCHER}" --api-url ${fake.url} --trust-key "${fake.issuer.keyId}=${fake.issuer.publicKeyB64}" --server filesystem`;
+      const expected = [
+        'Guarded now:',
+        `  Claude Code in ${machine.project}: Bash, PowerShell, Write, Edit, NotebookEdit calls are checked against ${join(machine.project, 'pp.config.yaml')}.`,
+        '  MCP servers are not guarded by this setup. This one was found and left as it is:',
+        `    filesystem  (claude-code, ${machine.mcpConfig})`,
+        `  To guard it, run: ${command}`,
+        '  That logs in again, copies the config file aside, and changes how the client starts that server. The hook and pp.config.yaml stay as they are.',
+        '',
+      ].join('\n');
+      assert.ok(out.includes(expected), out);
+      assert.equal(out.split('MCP servers are not guarded').length, 2, 'said once');
+      assert.equal(run.stderr, '');
+      assert.ok(out.indexOf(expected) < out.indexOf('Next time Claude Code tries something destructive'));
+
+      // The printed command is true: run as printed (this build instead of npx), it wraps
+      // exactly that server and leaves the hook and the policy as they are.
+      const policyBefore = readFileSync(join(machine.project, 'pp.config.yaml'), 'utf-8');
+      const settingsBefore = readFileSync(settingsPath(machine.project), 'utf-8');
+      const words = splitLauncher(command).slice(2);
+      const wrap = await runCli(words, machine.env, machine.project);
+      assert.equal(wrap.code, 0, `${wrap.stdout}\n${wrap.stderr}`);
+      assert.match(wrap.stdout, /Server: filesystem/);
+      assert.match(wrap.stdout, /Connected to workspace/, 'it logs in again, as the summary said');
+      assert.match(wrap.stdout, /Claude Code hook: already installed/);
+      assert.match(wrap.stdout, /already the coding-agent preset; kept unchanged/);
+      assert.equal(readFileSync(join(machine.project, 'pp.config.yaml'), 'utf-8'), policyBefore);
+      assert.equal(readFileSync(settingsPath(machine.project), 'utf-8'), settingsBefore);
+      const wrapped = JSON.parse(readFileSync(machine.mcpConfig, 'utf-8')).mcpServers.filesystem;
+      assert.equal(isWrapped(wrapped.command, wrapped.args), true);
+      assert.equal(backups(machine.project).length, 1);
+
+      // Then every server is wrapped: the hook-only run says so and is already set up.
+      const again = await runCli(presetArgs(fake, machine.mcpConfig, ['--skip-self-test']), machine.env, machine.project);
+      assert.equal(again.code, 0, again.stderr);
+      assert.match(again.stdout, /MCP servers: every one found is already wrapped; setting up the Claude Code hook only\./);
+      assert.doesNotMatch(again.stdout, /MCP servers are not guarded by this setup/);
+      assert.match(again.stdout, /Already set up/);
+    } finally { await fake.close(); }
+  });
+
+  it('several unwrapped servers, in an interactive terminal: asks nothing about them, wraps nothing, lists every one', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject({ filesystem: { command: process.execPath, args: [ECHO] }, db: { command: process.execPath, args: [ECHO, 'db'] } });
+    // A user-level server too: wrapping it would reach every Claude Code session on the machine.
+    const userConfig = join(machine.root, '.claude.json');
+    writeFileSync(userConfig, JSON.stringify({ numStartups: 3, mcpServers: { github: { command: process.execPath, args: [ECHO, 'gh'] } } }));
+    const files = [machine.mcpConfig, userConfig];
+    const before = files.map((f) => readFileSync(f, 'utf-8'));
+    const term = recordingIo((q) => (/workspace you meant/.test(q) ? 'y' : ''));
+    try {
+      const code = await withEnv({ XDG_CONFIG_HOME: join(machine.root, 'config'), MCP_GUARD_TOKEN_STORE: 'file', PP_INSTALL_TOKEN: undefined, PP_KEYS_DIR: undefined, HOME: machine.root, MCP_GUARD_OPEN_BROWSER: 'off' }, () =>
+        runInit(['--api-url', fake.url, '--trust-key', `${fake.issuer.keyId}=${fake.issuer.publicKeyB64}`, '--preset', 'coding-agent', '--launcher', LAUNCHER, '--skip-self-test'], term.io, { home: machine.root, cwd: machine.project }));
+      const out = term.out.join('\n');
+      assert.equal(code, 0, out);
+      assert.deepEqual(term.questions.map((q) => q.trim()), ['Is that the workspace you meant? [Y/n]'], 'the only question is the workspace');
+      assert.doesNotMatch(out, /Which MCP server|Server: |Wrapped "/);
+      assert.deepEqual(files.map((f) => readFileSync(f, 'utf-8')), before, 'no MCP config byte changed');
+      assert.deepEqual(backups(machine.project), []);
+      assert.deepEqual(readdirSync(machine.root).filter((n) => n.includes('mcp-guard-backup')), []);
+      assert.match(out, /MCP servers are not guarded by this setup\. These were found and left as they are:/);
+      for (const line of [`filesystem  (claude-code, ${machine.mcpConfig})`, `db  (claude-code, ${machine.mcpConfig})`, `github  (claude-code, ${userConfig})`]) assert.ok(out.includes(`    ${line}`), line);
+      assert.match(out, new RegExp(`To guard one, run: npx @permission-protocol/mcp-guard@${VERSION.replace(/\./g, '\\.')} init --preset coding-agent --launcher ".+" --api-url \\S+ --trust-key \\S+ --server <name>\\n`));
+      assert.equal(ourEntries(machine.project), 1);
+    } finally { await fake.close(); }
+  });
+
+  it('--server with the hook wraps exactly that server, and an unknown name is refused before anything changes', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject({ filesystem: { command: process.execPath, args: [ECHO] }, db: { command: process.execPath, args: [ECHO, 'db'] } });
+    try {
+      const missing = await runCli(presetArgs(fake, machine.mcpConfig, ['--server', 'nope', '--skip-self-test']), machine.env, machine.project);
+      assert.equal(missing.code, 1);
+      assert.match(missing.stderr, /No MCP server named "nope" was found/);
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(fake.calls.length, 0);
+
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--server', 'db', '--skip-self-test']), machine.env, machine.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      const after = JSON.parse(readFileSync(machine.mcpConfig, 'utf-8')).mcpServers;
+      assert.equal(isWrapped(after.db.command, after.db.args), true);
+      assert.deepEqual(after.filesystem, { command: process.execPath, args: [ECHO] }, 'the other server is untouched');
+      assert.match(run.stdout, /MCP server "db": every call is checked against /);
+      assert.match(run.stdout, /Unwrap "db": copy /);
+      assert.doesNotMatch(run.stdout, /MCP servers are not guarded by this setup/, 'with --server, the summary names the wrapped server only');
+      assert.equal(backups(machine.project).length, 1);
+      assert.equal(ourEntries(machine.project), 1);
+    } finally { await fake.close(); }
+  });
+
+  it('--wrap-launcher without --server in hook mode keeps its error, before anything changes', async () => {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject();
+    try {
+      const before = readFileSync(machine.mcpConfig, 'utf-8');
+      const run = await runCli(presetArgs(fake, machine.mcpConfig, ['--wrap-launcher', LAUNCHER]), machine.env, machine.project);
+      assert.equal(run.code, 1);
+      assert.match(run.stderr, /--wrap-launcher is for a wrapped MCP server, and there is none to wrap\. With the hook, a server is wrapped only when --server <name> names it\./);
+      assert.equal(readFileSync(machine.mcpConfig, 'utf-8'), before);
+      assert.equal(existsSync(settingsPath(machine.project)), false);
+      assert.equal(fake.calls.length, 0);
+    } finally { await fake.close(); }
+  });
+
+  it('without the hook nothing changed: one server is wrapped, several are asked about, none is an error', async () => {
+    // Several, interactive, --no-hook in a Claude Code project: the question is asked and the answer is wrapped.
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject({ filesystem: { command: process.execPath, args: [ECHO] }, db: { command: process.execPath, args: [ECHO, 'db'] } });
+    const term = recordingIo((q) => (/^Number/.test(q) ? '2' : 'y'));
+    try {
+      const code = await withEnv({ XDG_CONFIG_HOME: join(machine.root, 'config'), MCP_GUARD_TOKEN_STORE: 'file', PP_INSTALL_TOKEN: undefined, PP_KEYS_DIR: undefined, HOME: machine.root, MCP_GUARD_OPEN_BROWSER: 'off' }, () =>
+        runInit(['--api-url', fake.url, '--trust-key', `${fake.issuer.keyId}=${fake.issuer.publicKeyB64}`, '--mcp-config', machine.mcpConfig, '--preset', 'coding-agent', '--no-hook', '--wrap-launcher', `"${process.execPath}" "${BIN}"`, '--skip-self-test'], term.io, { home: machine.root, cwd: machine.project }));
+      const out = term.out.join('\n');
+      assert.equal(code, 0, out);
+      assert.match(out, /Which MCP server should the guard wrap\?/);
+      assert.match(out, /Server: db/);
+      const after = JSON.parse(readFileSync(machine.mcpConfig, 'utf-8')).mcpServers;
+      assert.equal(isWrapped(after.db.command, after.db.args), true);
+      assert.equal(isWrapped(after.filesystem.command, after.filesystem.args), false);
+      assert.equal(existsSync(settingsPath(machine.project)), false, 'no hook with --no-hook');
+      assert.doesNotMatch(out, /MCP servers are not guarded by this setup/);
+    } finally { await fake.close(); }
+    // One server, no hook: wrapped without a question (the end-to-end test above covers the
+    // full run); none: refused before the login (also above). Here: --preset with no Claude
+    // Code project and one server still wraps it.
+    const fake2 = await startFakePp(TOKEN);
+    const plain = freshMachine();
+    try {
+      const run = await runCli(presetArgs(fake2, plain.mcpConfig, ['--skip-self-test']), plain.env, plain.project);
+      assert.equal(run.code, 0, `${run.stdout}\n${run.stderr}`);
+      assert.match(run.stdout, /Server: filesystem/);
+      const after = JSON.parse(readFileSync(plain.mcpConfig, 'utf-8')).mcpServers.filesystem;
+      assert.equal(isWrapped(after.command, after.args), true);
+      assert.equal(existsSync(settingsPath(plain.project)), false);
+    } finally { await fake2.close(); }
+  });
+
+  it('the summary lines and the command, as functions', () => {
+    assert.deepEqual(notWrappedLines([], 'x'), []);
+    const flags = { environment: 'production', apiUrl: PRODUCTION_API_URL, trustKeys: [] };
+    assert.equal(wrapServerCommand(flags, 'filesystem'), `npx @permission-protocol/mcp-guard@${VERSION} init --preset coding-agent --server filesystem`);
+    assert.equal(wrapServerCommand(flags, null), `npx @permission-protocol/mcp-guard@${VERSION} init --preset coding-agent --server <name>`);
+    assert.equal(wrapServerCommand({ ...flags, hook: 'claude-code', project: '/home/a/my proj', environment: 'staging' }, 'my server'), `npx @permission-protocol/mcp-guard@${VERSION} init --preset coding-agent --hook claude-code --project "/home/a/my proj" --environment staging --server "my server"`);
+    for (const line of notWrappedLines([{ name: 'a', client: 'cursor', file: '/f' }], 'cmd')) assert.doesNotMatch(line, /—/, 'no em dashes');
   });
 });

@@ -26,7 +26,7 @@ This works in any folder. In a folder that already has `.claude/` or `CLAUDE.md`
 4. It holds one do-nothing test call and opens its signing page. Sign it to get your first receipt.
 5. It tells you to restart Claude Code, which then loads the hook.
 
-It also stores an install token (in the OS keychain, or in a file restricted to your user) and creates a local signing key under `~/.config/mcp-guard/`. An existing `pp.config.yaml` that loads is kept as it is. If Claude Code or Cursor already has an MCP server configured that is not wrapped yet, init also wraps one, and copies that config file aside first. The checks that can refuse run before the login, so a refusal changes nothing. Every step in detail: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
+It also stores an install token (in the OS keychain, or in a file restricted to your user) and creates a local signing key under `~/.config/mcp-guard/`. An existing `pp.config.yaml` that loads is kept as it is. It does not change any MCP server: init lists the ones it found that are not wrapped yet and prints the command that guards one (`init --preset coding-agent --server <name>`). The checks that can refuse run before the login, so a refusal changes nothing. Every step in detail: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
 
 ### What a held call looks like
 
@@ -57,7 +57,7 @@ This removes only the mcp-guard entry from `.claude/settings.json`. At the end o
 
 - `pp.config.yaml` (unless one was already there) and, once calls are checked, the log `pp-receipts.jsonl` beside it. Delete them if you no longer want them.
 - The install token and the signing key stay on this machine for other projects ([where](#where-the-token-and-keys-are-kept)). To disconnect the machine, revoke its token in your workspace under Settings > Developer access.
-- If init wrapped an MCP server, `To undo:` names the backup to copy back over that config file.
+- If you ran init with `--server <name>`, `To undo:` names the backup to copy back over that MCP config file.
 
 ### More
 
@@ -214,7 +214,7 @@ EOF
 npx mcp-guard --config pp.config.yaml -- node my-mcp-server.js
 ```
 
-`npx @permission-protocol/mcp-guard init` (without `--preset`) does this for an MCP server already configured in Claude Code or Cursor: it connects to Permission Protocol, wraps the server you pick (the client config is copied aside first), writes a policy that holds one tool, and holds a test call for your first signature. The client then starts the guard with `npx -y @permission-protocol/mcp-guard@<this version>`; init checks that command reports this version before changing anything. To start it another way (a project install, a source checkout), pass `--wrap-launcher "<command>"`, for example `--wrap-launcher "node <checkout>/bin/mcp-guard"`: words are split on spaces, double quotes group a path with spaces, and the client runs it without a shell.
+`npx @permission-protocol/mcp-guard init` (without `--preset`) does this for an MCP server already configured in Claude Code or Cursor: it connects to Permission Protocol, wraps the server you pick (the client config is copied aside first), writes a policy that holds one tool, and holds a test call for your first signature. With `--preset coding-agent` in a Claude Code project, init sets up the hook and wraps a server only when `--server <name>` names one. The client then starts the guard with `npx -y @permission-protocol/mcp-guard@<this version>`; init checks that command reports this version before changing anything. To start it another way (a project install, a source checkout), pass `--wrap-launcher "<command>"`, for example `--wrap-launcher "node <checkout>/bin/mcp-guard"`: words are split on spaces, double quotes group a path with spaces, and the client runs it without a shell.
 
 Proxy options: `--config <path>`, `--agent-id <id>`, `--operator <name>`, `--mode enforce|observe`, `--approval-port <port>` (local approval UI on 127.0.0.1, with a per-process token in the printed URL). Without a `cloud:` section the guard is local-only and says so: approvals are made on this machine and name `--operator`, not a signed-in person.
 
