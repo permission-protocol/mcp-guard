@@ -1111,3 +1111,96 @@ describe('init with the Claude Code hook leaves MCP servers alone unless --serve
     for (const line of notWrappedLines([{ name: 'a', client: 'cursor', file: '/f' }], 'cmd')) assert.doesNotMatch(line, /—/, 'no em dashes');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 0.5.2: init opens its links under the same conditions as a held call
+// ---------------------------------------------------------------------------
+
+describe('init opens a browser only where a held call would', () => {
+  const DESKTOP = { PATH: process.env.PATH, DISPLAY: ':0' };
+  /** A Permission Protocol that is never contacted: the token is already stored and the self-test is a stub. */
+  const OFFLINE_API = 'https://pp.example.test';
+
+  /**
+   * One hook-mode init in this process, on a fresh machine, with this browser environment.
+   * `login`: no token, so the device login runs against the stand-in. `self-test`: a stored
+   * token, so the only link is the self-test's signing page, on an https API.
+   */
+  async function initWith(step: 'login' | 'self-test', browser: { env: NodeJS.ProcessEnv; platform: NodeJS.Platform }, extra: string[] = [], policy?: (apiUrl: string, key: { key_id: string; alg: 'ed25519'; public_key_b64: string }) => string) {
+    const fake = await startFakePp(TOKEN);
+    const machine = claudeProject({ remote: { url: 'https://example.test/mcp' } });
+    const apiUrl = step === 'login' ? fake.url : OFFLINE_API;
+    const key = { key_id: fake.issuer.keyId, alg: 'ed25519' as const, public_key_b64: fake.issuer.publicKeyB64 };
+    if (policy) writeFileSync(join(machine.project, 'pp.config.yaml'), policy(apiUrl, key));
+    if (step === 'self-test') {
+      mkdirSync(machine.guardDir, { recursive: true });
+      writeFileSync(join(machine.guardDir, 'install-token'), `${TOKEN}\n`, { mode: 0o600 });
+    }
+    const term = recordingIo(() => 'y');
+    const signing = `${OFFLINE_API}/guard/requests/mcpreq_1`;
+    try {
+      const code = await withEnv({ XDG_CONFIG_HOME: join(machine.root, 'config'), MCP_GUARD_TOKEN_STORE: 'file', PP_INSTALL_TOKEN: undefined, PP_KEYS_DIR: undefined, HOME: machine.root }, () =>
+        runInit(['--api-url', apiUrl, '--trust-key', `${key.key_id}=${key.public_key_b64}`, '--preset', 'coding-agent', '--launcher', LAUNCHER, '--yes', ...(step === 'login' ? ['--skip-self-test'] : []), ...extra], term.io, {
+          home: machine.root, cwd: machine.project, browser,
+          // The self-test's link, as the guard prints it; only a page of the configured API is opened.
+          selfTest: async (input) => { input.onLink(signing); return { ok: true, receiptId: 'rcpt_stub', receiptUrl: null, signer: null, reason: null, receiptsPath: join(machine.root, 'r.jsonl'), policyPath: join(machine.root, 'p.yaml') }; },
+        }));
+      return { code, out: term.out.join('\n'), opened: term.opened, link: step === 'login' ? `${fake.url}/mcp/connect?code=ABCD-EFGH` : signing, calls: fake.calls.length };
+    } finally { await fake.close(); }
+  }
+
+  it('a desktop session: the pairing page and the signing page open, and no reason is printed', async () => {
+    for (const step of ['login', 'self-test'] as const) {
+      const r = await initWith(step, { env: DESKTOP, platform: 'linux' });
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.opened, [r.link], step);
+      assert.doesNotMatch(r.out, /No browser was opened/);
+      const mac = await initWith(step, { env: { PATH: process.env.PATH }, platform: 'darwin' });
+      assert.deepEqual(mac.opened, [mac.link], 'macOS needs no DISPLAY');
+    }
+  });
+
+  const cases: Array<[string, NodeJS.ProcessEnv, NodeJS.Platform, string]> = [
+    ['CI', { ...DESKTOP, CI: 'true' }, 'linux', 'CI is set'],
+    ['SSH_CONNECTION', { ...DESKTOP, SSH_CONNECTION: '10.0.0.1 5000 10.0.0.2 22' }, 'linux', 'this is an SSH session'],
+    ['SSH_TTY', { PATH: process.env.PATH, SSH_TTY: '/dev/pts/0' }, 'darwin', 'this is an SSH session'],
+    ['Linux without a display', { PATH: process.env.PATH }, 'linux', 'there is no display'],
+    ['MCP_GUARD_OPEN_BROWSER=off', { ...DESKTOP, MCP_GUARD_OPEN_BROWSER: 'off' }, 'linux', 'MCP_GUARD_OPEN_BROWSER is off'],
+    ['MCP_GUARD_OPEN_BROWSER=0', { PATH: process.env.PATH, MCP_GUARD_OPEN_BROWSER: '0' }, 'win32', 'MCP_GUARD_OPEN_BROWSER is off'],
+  ];
+  for (const [name, env, platform, why] of cases) {
+    it(`${name}: no browser is opened, the links are printed, and init says why`, async () => {
+      const line = `  No browser was opened (${why}). Open the link above.`;
+      const login = await initWith('login', { env, platform });
+      assert.equal(login.code, 0, login.out);
+      assert.deepEqual(login.opened, []);
+      assert.ok(login.out.includes(`  1. Open ${login.link}`));
+      assert.ok(login.out.includes(`  3. Choose Connect. You need the owner or admin role.\n${line}\nWaiting for you to connect...`), login.out);
+      assert.equal(login.out.split(line).length - 1, 1);
+
+      const signing = await initWith('self-test', { env, platform });
+      assert.equal(signing.code, 0, signing.out);
+      assert.deepEqual(signing.opened, []);
+      assert.ok(signing.out.includes(`  Sign it here: ${signing.link}\n${line}\n  Waiting for your signature...`), signing.out);
+      assert.equal(signing.calls, 0, 'nothing was sent anywhere');
+    });
+  }
+
+  it('a kept policy with cloud.open_browser: false is honoured too', async () => {
+    const r = await initWith('self-test', { env: DESKTOP, platform: 'linux' }, [], (apiUrl, key) =>
+      policyText({ serverLabel: 'claude-code', tool: null, environment: 'production', apiUrl, trustKeys: [key], preset: 'coding-agent' }) + '  open_browser: false\n');
+    assert.equal(r.code, 0, r.out);
+    assert.deepEqual(r.opened, []);
+    assert.match(r.out, /No browser was opened \(the policy sets cloud\.open_browser: false\)/);
+  });
+
+  it('--no-browser: nothing opened and no reason printed, as before', async () => {
+    for (const step of ['login', 'self-test'] as const) {
+      const r = await initWith(step, { env: DESKTOP, platform: 'linux' }, ['--no-browser']);
+      assert.equal(r.code, 0, r.out);
+      assert.deepEqual(r.opened, []);
+      assert.doesNotMatch(r.out, /No browser was opened/);
+      assert.ok(r.out.includes(r.link));
+    }
+  });
+});

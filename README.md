@@ -20,7 +20,7 @@ This works in any folder. In a folder that already has `.claude/` or `CLAUDE.md`
 
 ### What the command does
 
-1. It prints a pairing code and opens a Permission Protocol page in your browser. Check that the page shows the same code and choose Connect.
+1. It prints a pairing code and opens a Permission Protocol page in your browser. Over SSH, in CI or on Linux without a display it prints the link instead and says why. Check that the page shows the same code and choose Connect.
 2. It writes the `coding-agent` policy to `pp.config.yaml` and adds the hook to `.claude/settings.json`.
 3. It runs a local self-test of the hook. Nothing is sent and nothing runs.
 4. It holds one do-nothing test call and opens its signing page. Sign it to get your first receipt.
@@ -150,7 +150,7 @@ You see `mcp-guard: a held "<tool>" call is still waiting for a signature. After
 
 ### No browser opened
 
-The signing page is not opened when `CI` is set, in an SSH session, on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off`, or with `open_browser: false` under `cloud:`. Find the waiting call at https://app.permissionprotocol.com/guard and sign it there. Claude Code shows nothing from the hook until it ends, so otherwise the link arrives with the denial after 240 seconds.
+The signing page is not opened, and neither are init's own links, when `CI` is set, in an SSH session, on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off`, or with `open_browser: false` under `cloud:`. Find the waiting call at https://app.permissionprotocol.com/guard and sign it there. Claude Code shows nothing from the hook until it ends, so otherwise the link arrives with the denial after 240 seconds.
 
 ### No email arrives when a call is held
 

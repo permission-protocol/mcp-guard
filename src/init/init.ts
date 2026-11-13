@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline/promises';
 import { loadConfig, parseConfig, type Config } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
-import { launchOpener, trustedSigningUrl } from '../cloud/open-browser.js';
+import { browserDisabledReason, launchOpener, trustedSigningUrl } from '../cloud/open-browser.js';
 import { childEnv, neutralCwd } from '../child-cwd.js';
 import { DEFAULT_HOOK_WAIT_SECONDS } from '../hook/decide.js';
 import { loadInstallToken, saveInstallToken } from '../cloud/token.js';
@@ -111,7 +111,9 @@ Options:
   --environment <label>           development | staging | production (default production)
   --label <name>                  how this machine is named on the connect page (default: host name)
   --yes                           take the suggested answer to every question
-  --no-browser                    print the links instead of opening them
+  --no-browser                    print the links instead of opening them. They are only printed, with
+                                  the reason, when CI is set, over SSH, on Linux without a display, or
+                                  with MCP_GUARD_OPEN_BROWSER=off
   --skip-self-test                set up without holding a test call
   --api-url <origin>              a non-production Permission Protocol (needs --trust-key)
   --trust-key <key id>=<base64>   its receipt-signing public key; repeatable
@@ -508,6 +510,8 @@ export interface InitDeps {
   shellLookup?: ShellLookupDeps;
   /** Runs `claude --version` (tests). */
   claudeVersion?: VersionRunner;
+  /** The environment and platform that decide whether init opens a browser (tests). */
+  browser?: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform };
 }
 
 export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): Promise<number> {
@@ -654,6 +658,15 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       details.push(`Wrap launcher: ${launcherWords.join(' ')} (checked: starts mcp-guard ${version})`);
     }
 
+    // init opens its links under the same conditions as a held call (cloud/open-browser.ts);
+    // when it does not, it says why, and the printed link is the way in.
+    const openLink = (url: string): void => {
+      if (flags.noBrowser) return;
+      const off = browserDisabledReason(keptPolicy?.cloud?.open_browser, deps.browser?.env ?? process.env, deps.browser?.platform ?? process.platform);
+      if (off) io.out(`  No browser was opened (${off}). Open the link above.`);
+      else io.openBrowser(url);
+    };
+
     // 2-3. Device login and token. With only the hook to set up, a stored token is reused.
     let changedSomething = false;
     let haveToken = false;
@@ -675,7 +688,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.out(`  1. Open ${login.verificationUrlComplete}`);
       io.out(`  2. Check that the page shows this code: ${login.userCode}`);
       io.out('  3. Choose Connect. You need the owner or admin role.');
-      if (!flags.noBrowser) io.openBrowser(login.verificationUrlComplete);
+      openLink(login.verificationUrlComplete);
       io.out('Waiting for you to connect...');
       const connected = await awaitLogin(apiUrl, login, { fetchImpl: deps.fetchImpl });
       io.out(`Connected to workspace: ${connected.workspace.name}${connected.workspace.slug ? ` (${connected.workspace.slug})` : ''}`);
@@ -836,7 +849,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
           io.out(`  Sign it here: ${url}`);
           // The link came from the guard's output: opened only if it is a page of this Permission Protocol.
           const trusted = trustedSigningUrl(url, apiUrl);
-          if (!flags.noBrowser && trusted) io.openBrowser(trusted);
+          if (trusted) openLink(trusted);
           io.out('  Waiting for your signature...');
         },
       });
