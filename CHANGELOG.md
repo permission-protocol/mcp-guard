@@ -15,6 +15,7 @@ In one command (`npx @permission-protocol/mcp-guard init --preset coding-agent`)
 - **`observe: true` on a rule**: records what the rule would have done (an unsigned `{"observed": ...}` line, no argument text) and decides as if the rule were absent.
 - **`mcp-guard report`**: the last 7 days of the local receipt log, per day and in total (allowed, blocked, held, approved, denied, expired), the rules that blocked or held most, and observe-only matches. Text, or `--json`. Read-only: it sends nothing and prints no argument text.
 - **Usage heartbeat** and `mcp-guard heartbeat --show | --send` (below).
+- `cloud.args_preview: false` (new policy key, `true` or `false`): a held call sends the argument hash only, no preview. The signer then sees the tool, server, agent and environment, not what the call does.
 - `init --wrap-launcher "<command>"`: how the MCP client starts the guard for a wrapped server, instead of `npx -y @permission-protocol/mcp-guard@<version>` (a project install, a source checkout). Words split on spaces, double quotes group; no shell.
 - `mcp-guard --version`.
 
@@ -23,7 +24,11 @@ In one command (`npx @permission-protocol/mcp-guard init --preset coding-agent`)
 - **Usage heartbeat, on by default** for installs whose policy has a `cloud:` section and that have an install token. Once per UTC day (at most one attempt every 10 minutes), a separate process sends `POST /api/mcp/heartbeat` to Permission Protocol with the install token. The body is exactly: the guard version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode (`enforce` or `observe`), the UTC day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and up to 20 rule ids **shipped with the guard** (the `coding-agent` preset's) with how many calls each blocked or held. Your own rule ids, arguments, commands, paths, file contents, tool, server and target names, hostnames and usernames are never sent. It cannot allow, block or delay a call. `mcp-guard heartbeat --show` prints the exact body without sending it. **To turn it off**, either set `MCP_GUARD_HEARTBEAT=off` (or `0`, `false`, `no`) in the guard's environment, or put `heartbeat: false` under `cloud:` in the policy. Local-only installs (no `cloud:` section) and installs without a token never send it. See [docs/heartbeat.md](docs/heartbeat.md).
 - `mcp-guard init` without `--preset` writes the same policy as before and never touches `.claude/`.
 - **init checks the wrap launcher before the login.** The command the client will run for a wrapped server must report this exact version (`<launcher> --version`, no shell, a 60-second timeout, no `PP_*` variables); otherwise init stops with nothing changed. Before, init run from an unpublished build wrote a pinned `npx -y @permission-protocol/mcp-guard@<version>` the client could not start, and reported success.
-- The commands init prints (`receipt verify`, `hook uninstall`) are pinned to the running version: `npx @permission-protocol/mcp-guard@<version> ...`, never `latest`.
+- The `receipt verify` command init prints is pinned to the running version (`npx @permission-protocol/mcp-guard@<version> ...`), never `latest`.
+- **init's hook step on Windows finds Git Bash** without Git's `bin` on PATH: `CLAUDE_CODE_GIT_BASH_PATH`, then `sh.exe` / `bash.exe` on PATH (not WSL's), then Git for Windows' standard folders, then beside `git.exe`. If none is found it refuses before changing anything and lists where it looked.
+- **The hook self-test says which failure it was**: "could not run" (no shell, its temporary policy not written or read) is reported apart from "the installed hook did not answer as expected". Before, both said the installed hook blocks every call.
+- init prints one line when `claude --version` is older than 2.1.295, where `onFailure: "block"` does nothing (optional; never fails init).
+- The undo hint is printed with the launcher the hook was installed with (`npx -y @permission-protocol/mcp-guard@<version> hook uninstall --project <dir>`), so it works without a local install.
 - Local-only mode is labelled `local-only, unsigned by Permission Protocol` at startup and on every held call.
 - The receipt-gate template (`templates/github-actions/receipt-gate.yml`) pins the verifier to 0.5.0.
 
@@ -39,23 +44,27 @@ From the verifier hardening. Each fails closed; none can be switched off.
 
 ### Security
 
-Fixed in this release (detail under 0.4.0 below):
+- **Held calls uploaded unmasked argument text.** 0.4.0's code sent `argsPreview` as the arguments' JSON cut to 8,192 characters: for a held `Bash` call the command, for a held `Write` or `Edit` up to 8 KB of file content, credentials included (Permission Protocol masked it only after receiving it). The guard now masks the preview before upload (credential-keyed values, private keys, URL credentials, Bearer and Basic values, common token formats, `password=` / `token=` / `.env` assignments, long opaque strings), orders short fields first so the path survives, and caps it at 2,048 bytes. A held call sends exactly: the tool name, server label, agent id, environment label, the arguments' hash, and that preview (none with `cloud.args_preview: false`). The hash, the fingerprint and what the signature covers are unchanged. Statements that raw arguments never leave the machine were wrong and are corrected.
+- **Windows: init's hook self-test joined an absolute temporary policy path to the project directory** (`<project>/C:\Users\...\pp.config.yaml`), failed, and said the installed hook blocks every call, which was false. Drive-letter and UNC paths are now absolute in the hook command (`path.win32` rules).
+- **Windows: the install token and private signing key were plain files, and init said "owner-only".** File modes do not apply on Windows. After writing each file the guard now runs `icacls` (inheritance removed, the current user granted full control; exec form, the path as its own argument) and init prints whether it worked; if not, it says the file is protected only by the user profile folder's permissions. Not yet run on a real Windows machine.
+- init printed `npx mcp-guard hook uninstall ...` as the undo command. Without a local install, `npx mcp-guard` resolves to an unrelated npm package of that name; the undo command now uses the launcher the hook was installed with, and `receipt verify` names `@permission-protocol/mcp-guard@<version>`.
+
+Also fixed in this release (detail under 0.4.0 below):
 
 - One key could satisfy an N-of-M approval policy, and `allowed_roles` was checked against one token-wide roles list for every signer (enforcement module). Found through a private report.
-- `verify` refused a demo-key receipt only when it signed `scope: "demo"`; it now refuses any `mcpg-demo-` or `pp-demo-` key. Thanks tmkmaj (@tmkmaj, #18).
-- A gate could silently skip exact-call binding; `--require-call` makes `--call` mandatory, and the gate template no longer takes the call from its dispatch input. Thanks tmkmaj (@tmkmaj, #19).
-- `verify --call` did not bind the MCP server, so a receipt approved for one server verified for the same call to another. Thanks Yingjie Shang (@cybershang, #20).
-- The enforcement module accepted tokens and payloads issued in the future or not before their expiry, and applied `max_ttl_seconds` to the token only, so a future `signed_at` could stretch an authorization past the policy TTL; `verify` did not match scope exactly. Thanks ket4min-susan (@ket4min-susan, #21).
-
-- **Windows: the install token and private signing key were plain files, and init said "owner-only".** File modes do not apply on Windows. After writing each file the guard now runs `icacls` (inheritance removed, the current user granted full control; exec form, the path as its own argument) and init prints whether it worked; if not, it says the file is protected only by the user profile folder's permissions. Not yet run on a real Windows machine.
-- init printed `npx mcp-guard hook uninstall ...` as the undo command. Without a local install, `npx mcp-guard` resolves to an unrelated npm package of that name; the printed commands now name `@permission-protocol/mcp-guard@<version>`.
+- `verify` refused a demo-key receipt only when it signed `scope: "demo"`; it now refuses any `mcpg-demo-` or `pp-demo-` key. Thanks tmkmaj (#18).
+- A gate could silently skip exact-call binding; `--require-call` makes `--call` mandatory, and the gate template no longer takes the call from its dispatch input. Thanks tmkmaj (#19).
+- `verify --call` did not bind the MCP server, so a receipt approved for one server verified for the same call to another. Thanks Yingjie Shang (#20).
+- The enforcement module accepted tokens and payloads issued in the future or not before their expiry, and applied `max_ttl_seconds` to the token only, so a future `signed_at` could stretch an authorization past the policy TTL; `verify` did not match scope exactly. Thanks ket4min-susan (#21).
 
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ### Known limits
 
 - The detectors are heuristics that stop mistakes, not a sandbox: a script written to a file and then run is not read, and an agent running as the same OS user can remove the hook. See [docs/detectors.md](docs/detectors.md#known-limits).
-- The hook on Windows needs Git Bash.
+- The hook on Windows needs Git Bash (Git for Windows). The Windows changes in this release were tested with stand-ins (`path.win32`, an injected `icacls` and file lookup, POSIX `sh` in place of Git Bash), not on a Windows machine.
+- On Claude Code before 2.1.295 a hook that Claude Code kills at its own timeout is not a block; the guard denies before that timeout.
+- Preview masking is pattern-based: a short secret with no telling name around it (for example `mysql -pS3cret`) is not recognised. Use `cloud.args_preview: false` to send none.
 
 ## 0.4.0 (never published; shipped in 0.5.0): signed approvals by a named human
 
@@ -66,7 +75,7 @@ Requires Permission Protocol's MCP approval API (permission-protocol/app#1030) a
 ### Added
 
 - `cloud:` policy section (`api_url`, `environment`, `approval_timeout_seconds`, `trust_keys`). Absent, nothing changes except the label below.
-- Hold, request, verify, release: the guard computes the call's fingerprint locally (SHA-256 over canonical JSON of `{argsHash, server, tool}`), opens an approval request, polls with backoff, verifies the receipt against the pinned Permission Protocol key, redeems it once, then forwards. Raw arguments are never sent.
+- Hold, request, verify, release: the guard computes the call's fingerprint locally (SHA-256 over canonical JSON of `{argsHash, server, tool}`), opens an approval request, polls with backoff, verifies the receipt against the pinned Permission Protocol key, redeems it once, then forwards. The request carries the argument hash and an argument preview (in 0.4.0's code unmasked, up to 8,192 characters; 0.5.0 masks and caps it before upload, see Security above).
 - Offline receipt verification for the formats the app signs (`jcs_v2`, `jcs_v3`, `jcs_v4`): signature, canonical bytes, fingerprint equals the held call's, request id, human decider, approval, production scope, expiry, replay.
 - Permission Protocol's production signing keys pinned in the release (`src/cloud/pinned-keys.ts`). No key is fetched at decision time.
 - `PP_INSTALL_TOKEN` (or `~/.config/mcp-guard/install-token`, owner-only): a workspace API key with the single scope `mcp:guard`.
@@ -82,10 +91,10 @@ Requires Permission Protocol's MCP approval API (permission-protocol/app#1030) a
 ### Security fixes
 
 - **One key could satisfy an N-of-M approval policy (enforcement module).** Reported privately. An authorization token has one signature under one `key_id`, but `required_approvals: N` was met by N distinct names listed inside it, and `allowed_roles` was checked against the token's single `roles` list for every signer. A policy with `required_approvals` above 1 is now refused at load and at verification (`PP_POLICY_UNSUPPORTED`; `interceptToolCall` denies); names are never counted as approvals. `allowed_roles` is enforced only on a token with exactly one signer; a multi-signer token under a role policy is refused (`PP_ROLE_NOT_BOUND`). `allowed_signers` / `allowed_roles` must be lists (a string was matched as a substring). **Breaking:** policies with `required_approvals` above 1 stop working until real multi-signature exists.
-- **Demo keys were refused only by the scope they signed.** `mcp-guard verify` refused a demo-key receipt only when it signed `scope: "demo"`. It now refuses any `mcpg-demo-` or `pp-demo-` key whatever scope it claims (`--allow-demo` still accepts them), and the cloud release path now refuses `mcpg-demo-` keys as well as `pp-demo-` ones. Thanks @tmkmaj (#18).
-- **`--require-call`** makes `verify --call` mandatory, so a gate cannot silently skip exact-call binding. `--call` / `--require-call` on a legacy 0.2 receipt, which signs no input hash, is now refused instead of ignored. Thanks @tmkmaj (#19). The receipt-gate template does not take the call from its dispatch input: whoever supplies the receipt could supply a matching call.
-- **Exact-call verification did not bind the server.** `verify --call` checked tool, operation and input but not the signed `action.resource`, so a receipt approved for one MCP server verified for the same call to another. The call file now requires `resource` (`PP_RESOURCE_MISMATCH`). Thanks @cybershang (#20). **Breaking** for existing `--call` files without `resource`.
-- **Timestamp, TTL and scope bounds.** The enforcement module refuses tokens and payloads whose issue time is in the future or not before their expiry, and applies `max_ttl_seconds` to the payload as well as the token, so a future `signed_at` cannot stretch an authorization past the policy TTL. `verify` now matches scope exactly: a receipt naming a `scope.ref` or commit the gate did not ask for is refused (**breaking** for gates that omit `--scope-ref` while their receipts carry one). Thanks @ket4min-susan (#21); its per-signer role mapping was replaced by the refusal above.
+- **Demo keys were refused only by the scope they signed.** `mcp-guard verify` refused a demo-key receipt only when it signed `scope: "demo"`. It now refuses any `mcpg-demo-` or `pp-demo-` key whatever scope it claims (`--allow-demo` still accepts them), and the cloud release path now refuses `mcpg-demo-` keys as well as `pp-demo-` ones. Thanks tmkmaj (#18).
+- **`--require-call`** makes `verify --call` mandatory, so a gate cannot silently skip exact-call binding. `--call` / `--require-call` on a legacy 0.2 receipt, which signs no input hash, is now refused instead of ignored. Thanks tmkmaj (#19). The receipt-gate template does not take the call from its dispatch input: whoever supplies the receipt could supply a matching call.
+- **Exact-call verification did not bind the server.** `verify --call` checked tool, operation and input but not the signed `action.resource`, so a receipt approved for one MCP server verified for the same call to another. The call file now requires `resource` (`PP_RESOURCE_MISMATCH`). Thanks Yingjie Shang (#20). **Breaking** for existing `--call` files without `resource`.
+- **Timestamp, TTL and scope bounds.** The enforcement module refuses tokens and payloads whose issue time is in the future or not before their expiry, and applies `max_ttl_seconds` to the payload as well as the token, so a future `signed_at` cannot stretch an authorization past the policy TTL. `verify` now matches scope exactly: a receipt naming a `scope.ref` or commit the gate did not ask for is refused (**breaking** for gates that omit `--scope-ref` while their receipts carry one). Thanks ket4min-susan (#21); its per-signer role mapping was replaced by the refusal above.
 
 ### Fail closed
 

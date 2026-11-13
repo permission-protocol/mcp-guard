@@ -20,10 +20,10 @@ Without either, `init --preset coding-agent` installs the hook only in a Claude 
 
 ### What happens next
 
-1. **Checks first, so a refusal changes nothing.** init refuses before logging in if `pp.config.yaml` exists and does not load, if `.claude/settings.json` is not valid JSON, if the hook launcher (below) cannot start the guard, or, when it will wrap an MCP server, if the command the client would run (`npx -y @permission-protocol/mcp-guard@<this version>`, or `--wrap-launcher <cmd>`) does not report this exact version.
-2. **Connect in the browser.** init prints a Permission Protocol link and a pairing code, and opens the link in your browser. Check that the page shows the same code and choose Connect (you need the owner or admin role in the workspace). In a terminal, init then asks you to confirm the workspace name. The install token goes to the OS keychain (or an owner-only file) and is never printed. If a token is already stored and there is no MCP server to wrap, init reuses it and skips the login.
+1. **Checks first, so a refusal changes nothing.** init refuses before logging in if `pp.config.yaml` exists and does not load, if `.claude/settings.json` is not valid JSON, if on Windows it finds no Git Bash, if the hook launcher (below) cannot start the guard, or, when it will wrap an MCP server, if the command the client would run (`npx -y @permission-protocol/mcp-guard@<this version>`, or `--wrap-launcher <cmd>`) does not report this exact version.
+2. **Connect in the browser.** init prints a Permission Protocol link and a pairing code, and opens the link in your browser. Check that the page shows the same code and choose Connect (you need the owner or admin role in the workspace). In a terminal, init then asks you to confirm the workspace name. The install token goes to the OS keychain, or to a file restricted to your user ([where](#where-the-token-and-keys-are-kept)), and is never printed. If a token is already stored and there is no MCP server to wrap, init reuses it and skips the login.
 3. **Local setup.** A signing key is created if there is none; the `coding-agent` policy is written to `pp.config.yaml` (an existing one that loads is kept byte for byte); the `PreToolUse` hook is added to `.claude/settings.json`. If Claude Code or Cursor has an MCP server configured that is not wrapped yet, init also wraps one (it asks which when there are several; the client config is copied aside first).
-4. **Hook self-test, local.** One allowed call (`git status`) and one held call (`terraform destroy -auto-approve`) are run through the installed hook. Nothing is sent and nothing runs. If a check fails, init exits 1 and the hook stays installed and blocks guarded calls until it works (init prints the undo command).
+4. **Hook self-test, local.** One allowed call (`git status`) and one held call (`terraform destroy -auto-approve`) are run through the installed hook. Nothing is sent and nothing runs. If a check fails, init exits 1 and says whether the test could not run (which says nothing about the hook) or the installed hook answered wrongly (it stays installed and fails closed, so guarded calls may be blocked until it works). Either way it prints the undo command, `<launcher> hook uninstall --project <dir>`.
 5. **First signature.** init holds a do-nothing call and prints a signing link. Sign it in Permission Protocol; init prints the signed receipt and the command that verifies it again. `--skip-self-test` skips this step.
 
 Restart Claude Code so it loads the hook. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session; add `pp-receipts.jsonl` (the receipt log, beside the policy) to `.gitignore`. Running init again sets up only what is missing; when the token, key, policy and hook entry are all in place (and there is no server to wrap) it says `Already set up` and exits 0.
@@ -49,7 +49,7 @@ Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret
 
 ### What a held call looks like
 
-A held call waits in the hook for up to 240 seconds (`--wait`) while the signer finds the request in Permission Protocol and chooses Sign or Reject. Claude Code does not show the signing link while the hook waits; the denial below carries it when the wait runs out.
+A held call waits in the hook for up to 240 seconds (`--wait`) while the signer finds the request in Permission Protocol and chooses Sign or Reject. The guard prints the signing link only after it answers, so if nobody signs in time the denial below carries the link.
 
 - **Signed in time:** the call runs. Claude sees `mcp-guard: released by receipt <id>, signed by <name> in Permission Protocol (rule "terraform-destroy" (terraform_destroy: destroy)).`
 - **Not signed in time:** the call is denied with the signing link: `mcp-guard: held by rule "terraform-destroy" (terraform_destroy: destroy) for a Permission Protocol signature; nobody signed within the hook's 240-second wait. Request <id> stays open for up to 600 seconds: sign it at <link>. After it is signed, run exactly the same call again; ...`. The retry resumes the same request.
@@ -65,10 +65,23 @@ The detectors are heuristics that stop mistakes. They are not a sandbox.
 - **Removing the hook.** An agent running as the same OS user can, by a route the detectors do not read (a script, for example), edit the settings file or the policy and switch the guard off. Run untrusted agents as a separate OS user that cannot write the guard's files.
 - **Tools the hook does not see.** Reads and searches are not sent to the guard. MCP tools (`mcp__...`) are not matched by the hook; wrap those servers with the proxy (below).
 - **Context that needs I/O**: the current git branch, the current kube context, what a variable or glob expands to, plan files and manifests.
-- **Windows** needs Git Bash for init's hook step and for the installed hook command.
+- **Windows** needs Git for Windows: Claude Code runs the hook through Git Bash, and so does init's check. init finds it without Git's `bin` on PATH (`CLAUDE_CODE_GIT_BASH_PATH`, PATH, the standard install folders, beside `git.exe`) and refuses the hook step if it cannot.
+- **Claude Code before 2.1.295** ignores the hook's `onFailure: "block"`. The installed command's own wrapper still blocks when the guard cannot run; the one case left is a hook that Claude Code kills at its own timeout, which on those versions lets the call through, and the guard's watchdog denies before that timeout. init prints a line if `claude --version` is older.
+- **The first guarded call may download the package** with the default `npx -y` launcher (see above).
 - Each guarded call starts a process through the launcher, which adds latency ([measured in docs/hooks.md](docs/hooks.md#limits)).
 
 The full lists: [docs/presets.md](docs/presets.md) and [docs/detectors.md](docs/detectors.md#known-limits).
+
+## What is sent to Permission Protocol for a held call
+
+Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, and a **preview of the arguments that the guard masks and caps before sending**. For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
+
+- Masked on this machine: values under credential-like keys, private key blocks, credentials in URLs, Bearer and Basic values, common token formats (GitHub, OpenAI, Anthropic, AWS key ids, Stripe, Slack, JWTs and others), `password=` / `token=` / `.env`-style assignments with secret-looking names, and long opaque strings. Pattern-based: a short secret with no telling name (`mysql -pS3cret`) is not recognised.
+- Short fields first, then capped at 2,048 bytes, so the cap cuts file content, not the path.
+- Permission Protocol masks and caps it again before storing it. The signature covers the hash of the exact arguments, never the preview.
+- To send the hash only, put `args_preview: false` under `cloud:`. The signer then sees the tool, server, agent and environment, not what the call does.
+
+Details: [docs/hooks.md](docs/hooks.md#what-the-hook-answers).
 
 ## Usage heartbeat
 
@@ -128,6 +141,7 @@ cloud:                       # held calls need a named person's signature in Per
   environment: production    # development | staging | production: a label for the signer
   approval_timeout_seconds: 600
   # heartbeat: false         # turn the usage heartbeat off
+  # args_preview: false      # held calls send the argument hash only, no masked preview
 targets:
   databases: [prod-db.internal]
 rules:
@@ -158,7 +172,7 @@ npx @permission-protocol/mcp-guard verify --receipt-file receipt.json --keys .pp
 
 | | macOS | Linux | Windows |
 |---|---|---|---|
-| Install token | Keychain | Secret Service (`secret-tool`), else a 0600 file | A file (below) |
+| Install token | Keychain | Secret Service (`secret-tool`), else a 0600 file `install-token` | The file `install-token` (below) |
 | Private signing key | 0600 file | 0600 file | A file (below) |
 
 - Files live under `~/.config/mcp-guard/` (`$XDG_CONFIG_HOME/mcp-guard/` if set; keys in `keys/`, or `$PP_KEYS_DIR`); on Windows that is `%USERPROFILE%\.config\mcp-guard\`. `PP_INSTALL_TOKEN` in the environment takes precedence over both stores.

@@ -1,6 +1,6 @@
 # Usage heartbeat
 
-When the policy has a `cloud:` section and an install token is present, MCP Guard sends Permission Protocol a small daily heartbeat: how many tool calls this install evaluated on one UTC day, and how many calls each built-in rule blocked or held. By default nothing you wrote leaves the machine: the body holds counts, the guard version, the mode, the day, a fixed client label, and counts per built-in rule id. Permission Protocol uses it to list a workspace's installs (Settings > Developer access) and to count weekly-active installs. It is **on by default** and has an opt-out.
+When the policy has a `cloud:` section and an install token is present, MCP Guard sends Permission Protocol a small daily heartbeat: how many tool calls this install evaluated on one UTC day, and how many calls each built-in rule blocked or held. The heartbeat carries nothing you wrote: the body holds counts, the guard version, the mode, the day, a fixed client label, and counts per built-in rule id. Permission Protocol uses it to list a workspace's installs (Settings > Developer access) and to count weekly-active installs. It is **on by default** and has an opt-out.
 
 A heartbeat is observational. It cannot allow, block, hold or delay any call: it is built and sent by a separate process after the decision, a failed or refused heartbeat changes nothing, and nothing in Permission Protocol reads it for authorization, policy or signing.
 
