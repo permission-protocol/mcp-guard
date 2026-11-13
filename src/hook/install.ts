@@ -45,6 +45,8 @@ export interface InstallOptions {
   matcher?: string;
   /** How Claude Code starts the guard. Default: the locally installed package via npx, no download. */
   launcher?: string;
+  /** Check and report what would change without writing (init's pre-flight). Throws SettingsError just as a real install would. */
+  dryRun?: boolean;
 }
 
 export interface HookHandler {
@@ -148,7 +150,7 @@ export function installHook(opts: InstallOptions): SettingsChange {
     if ((g.hooks as unknown[]).length === 0) groups.splice(i, 1);
   }
   groups.push({ matcher, hooks: [handler] });
-  write(path, settings);
+  if (!opts.dryRun) write(path, settings);
   return {
     path,
     changed: true,

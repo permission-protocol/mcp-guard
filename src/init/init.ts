@@ -1,17 +1,19 @@
 import { spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { parseConfig } from '../config.js';
+import { loadConfig, parseConfig, type Config } from '../config.js';
 import { awaitLogin, DeviceLoginError, startLogin } from '../cloud/device-login.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
-import { saveInstallToken } from '../cloud/token.js';
+import { loadInstallToken, saveInstallToken } from '../cloud/token.js';
 import { createKey, keysDir, loadSigningKey } from '../keystore.js';
 import type { KeySetEntry } from '../signing/keys.js';
 import { findServers, wrapServer, MCP_CLIENTS, type FoundServer, type McpClient } from './mcp-clients.js';
 import { SELF_TEST_SERVER_LABEL, SELF_TEST_TOOL } from './selftest-server.js';
 import { isPresetName, presetPolicyBody, PRESET_NAMES, type PresetName } from '../presets/coding-agent.js';
+import { DEFAULT_MATCHER, installHook, SettingsError, settingsPath, type SettingsChange } from '../hook/install.js';
+import { chooseLauncher, HOOK_AGENTS, HOOK_POLICY_FILE, isClaudeCodeProject, probeLauncher, runHookSelfTest, type HookAgent, type LauncherChoice } from './hook-setup.js';
 
 /**
  * `mcp-guard init`: from nothing to a first signed receipt.
@@ -24,6 +26,14 @@ import { isPresetName, presetPolicyBody, PRESET_NAMES, type PresetName } from '.
  *   6. wrap the chosen server in the client's config (the file is copied aside first)
  *   7. self-test: hold a do-nothing call, wait for a signature, verify the receipt
  *   8. print the receipt, how to verify it again, and the time it all took
+ *
+ * With `--preset coding-agent` in a Claude Code project (or with `--hook claude-code`)
+ * it also writes the preset to the project's pp.config.yaml, installs the Claude Code
+ * PreToolUse hook with `installHook`, and checks the installed hook locally (an allowed
+ * and a held synthetic call, nothing sent to Permission Protocol). An MCP server is then
+ * optional: with none to wrap, the hook alone is set up. Every check that can refuse
+ * (an existing different policy, a settings file that is not valid JSON, a launcher that
+ * does not start) runs before the login, so a refusal changes nothing.
  *
  * Nothing is wrapped before the login succeeds, and a failed self-test says so: the
  * setup is left in place (calls to the wrapped server's held tool stay blocked until a
@@ -51,6 +61,10 @@ interface InitFlags {
   server?: string;
   tool?: string;
   preset?: PresetName;
+  hook?: HookAgent;
+  noHook: boolean;
+  project?: string;
+  launcher?: string;
   mcpConfig?: string;
   agentId?: string;
   environment: 'development' | 'staging' | 'production';
@@ -73,7 +87,14 @@ Options:
   --server <name>                 the server to wrap (asked when there is more than one)
   --tool <name>                   the tool to hold for a signature (asked, or suggested)
   --preset <name>                 write a ready policy instead of one hold rule: coding-agent
-                                  (destructive commands held, secret reads observed; see docs/presets.md)
+                                  (destructive commands held, secret reads observed; see docs/presets.md).
+                                  In a Claude Code project (.claude/ or CLAUDE.md) it also installs the
+                                  Claude Code hook; an MCP server to wrap is then optional
+  --hook claude-code              install the hook even if no Claude Code project is detected (needs --preset)
+  --no-hook                       do not install the hook
+  --project <dir>                 the project for the hook and its pp.config.yaml (default: current directory)
+  --launcher <cmd>                how Claude Code starts mcp-guard (default: "npx --no-install mcp-guard" if the
+                                  package is installed in the project, else "npx -y @permission-protocol/mcp-guard@<this version>")
   --agent-id <id>                 how receipts name the agent (default: the client)
   --environment <label>           development | staging | production (default production)
   --label <name>                  how this machine is named on the connect page (default: host name)
@@ -87,7 +108,7 @@ Options:
 class InitError extends Error {}
 
 function parseFlags(argv: string[]): InitFlags {
-  const flags: InitFlags = { apiUrl: PRODUCTION_API_URL, trustKeys: [], environment: 'production', yes: false, noBrowser: false, skipSelfTest: false, help: false };
+  const flags: InitFlags = { apiUrl: PRODUCTION_API_URL, trustKeys: [], environment: 'production', noHook: false, yes: false, noBrowser: false, skipSelfTest: false, help: false };
   const value = (i: number, name: string): string => {
     if (argv[i + 1] === undefined || argv[i + 1].startsWith('--')) throw new InitError(`${name} needs a value`);
     return argv[i + 1];
@@ -108,6 +129,15 @@ function parseFlags(argv: string[]): InitFlags {
         flags.preset = preset;
         break;
       }
+      case '--hook': {
+        const hook = value(i++, arg);
+        if (!(HOOK_AGENTS as readonly string[]).includes(hook)) throw new InitError(`--hook must be one of: ${HOOK_AGENTS.join(', ')}`);
+        flags.hook = hook as HookAgent;
+        break;
+      }
+      case '--no-hook': flags.noHook = true; break;
+      case '--project': flags.project = value(i++, arg); break;
+      case '--launcher': flags.launcher = value(i++, arg); break;
       case '--mcp-config': flags.mcpConfig = value(i++, arg); break;
       case '--agent-id': flags.agentId = value(i++, arg); break;
       case '--label': flags.label = value(i++, arg); break;
@@ -134,6 +164,8 @@ function parseFlags(argv: string[]): InitFlags {
     }
   }
   if (flags.preset && flags.tool) throw new InitError('--preset and --tool cannot be used together: the preset names what it holds');
+  if (flags.hook && flags.noHook) throw new InitError('--hook and --no-hook cannot be used together');
+  if (flags.hook && !flags.preset) throw new InitError('--hook needs --preset coding-agent: the hook guards a coding agent\'s own tools with that preset');
   return flags;
 }
 
@@ -370,44 +402,108 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     if (flags.trustKeys.length > 0 && cloud.api_url === PRODUCTION_API_URL) throw new InitError('--trust-key cannot be used with the production API: its keys are pinned in this release');
     const apiUrl = cloud.api_url;
 
-    // 1. Which server.
-    const { servers, skipped } = findServers({ home: deps.home, cwd: deps.cwd, client: flags.client, file: flags.mcpConfig });
-    for (const file of skipped) io.err(`[mcp-guard] Skipped ${file.file}: ${file.reason}`);
-    const candidates = servers.filter((s) => !s.wrapped && (!flags.server || s.name === flags.server));
-    if (candidates.length === 0) {
-      const already = servers.filter((s) => s.wrapped && (!flags.server || s.name === flags.server));
-      if (already.length > 0) throw new InitError(`${already.map((s) => `"${s.name}"`).join(', ')} ${already.length === 1 ? 'is' : 'are'} already wrapped by mcp-guard. Nothing to do.`);
-      throw new InitError(
-        flags.server
-          ? `No MCP server named "${flags.server}" was found in a Claude Code or Cursor config.`
-          : 'No stdio MCP server was found in a Claude Code or Cursor config (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json). Add one to your client first, or pass --mcp-config <path>.',
-      );
-    }
-    const server: FoundServer = await choose(io, flags, 'Which MCP server should the guard wrap?', candidates, (s) => `${s.name}  (${s.client}, ${s.file})`, 0);
-    io.out(`Server: ${server.name} (${server.client}, ${server.file})`);
-
-    // 2. Device login.
-    const label = (flags.label ?? hostname()).replace(/[^A-Za-z0-9_.:@ -]/g, '-').slice(0, 64) || null;
-    const login = await startLogin(apiUrl, label, { fetchImpl: deps.fetchImpl });
-    io.out('');
-    io.out('Connect this guard to your Permission Protocol workspace:');
-    io.out(`  1. Open ${login.verificationUrlComplete}`);
-    io.out(`  2. Check that the page shows this code: ${login.userCode}`);
-    io.out('  3. Choose Connect. You need the owner or admin role.');
-    if (!flags.noBrowser) io.openBrowser(login.verificationUrlComplete);
-    io.out('Waiting for you to connect...');
-    const connected = await awaitLogin(apiUrl, login, { fetchImpl: deps.fetchImpl });
-    io.out(`Connected to workspace: ${connected.workspace.name}${connected.workspace.slug ? ` (${connected.workspace.slug})` : ''}`);
-    if (io.interactive && !flags.yes) {
-      const answer = (await io.ask('Is that the workspace you meant? [Y/n] ')).toLowerCase();
-      if (answer === 'n' || answer === 'no') {
-        throw new InitError(`Stopped. Nothing on this machine was changed. Revoke the token "MCP Guard${label ? ` (${label})` : ''}" in that workspace under Settings > Developer access.`);
+    // 0. The coding-agent hook: decided, and every refusal checked, before anything changes.
+    const projectDir = resolve(flags.project ?? deps.cwd ?? process.cwd());
+    const hookMode = Boolean(flags.preset && !flags.noHook && (flags.hook || isClaudeCodeProject(projectDir)));
+    const hookPolicyPath = join(projectDir, HOOK_POLICY_FILE);
+    let hookPolicy: string | null = null;
+    /** The project's own policy, kept as it is: null when init writes the preset. */
+    let keptPolicy: Config | null = null;
+    let keptIsPreset = false;
+    let hookAlreadyInstalled = false;
+    let launcher: LauncherChoice | null = null;
+    if (hookMode) {
+      if (!existsSync(projectDir)) throw new InitError(`--project ${projectDir} does not exist.`);
+      hookPolicy = policyText({ serverLabel: 'claude-code', tool: null, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys, preset: flags.preset });
+      parseConfig(hookPolicy);
+      if (existsSync(hookPolicyPath)) {
+        try {
+          keptPolicy = loadConfig(hookPolicyPath);
+        } catch (err: any) {
+          throw new InitError(`${hookPolicyPath} exists but does not load: ${err?.message ?? err}. init never overwrites a policy and stopped before changing anything: fix it (or move it aside to get the ${flags.preset} preset) and run init again, or pass --no-hook.`);
+        }
+        keptIsPreset = readFileSync(hookPolicyPath, 'utf-8') === hookPolicy;
+      }
+      try {
+        launcher = chooseLauncher(projectDir, flags.launcher, guardVersion());
+      } catch (err: any) {
+        throw new InitError(`${err.message}. init stopped before changing anything.`);
+      }
+      try {
+        hookAlreadyInstalled = !installHook({ projectDir, launcher: launcher.launcher, dryRun: true }).changed;
+      } catch (err) {
+        if (err instanceof SettingsError) throw new InitError(`${err.code}: ${err.message}. init stopped before changing anything; fix the file or pass --no-hook.`);
+        throw err;
+      }
+      const launchProblem = probeLauncher(projectDir, launcher.launcher);
+      if (launchProblem) {
+        throw new InitError(`${launchProblem}. The hook would block every guarded call, so init stopped before changing anything. Fix: check the network (npx fetches the package once), or install it in the project with npm install --save-dev @permission-protocol/mcp-guard, or pass --launcher <cmd>; then run init again. Or pass --no-hook.`);
       }
     }
 
-    // 3. Token.
-    const stored = saveInstallToken(connected.token);
-    io.out(stored.kind === 'keychain' ? 'Install token: stored in the OS keychain.' : `Install token: stored in ${stored.path} (owner-only).`);
+    // 1. Which server (optional when the hook is being set up).
+    const { servers, skipped } = findServers({ home: deps.home, cwd: deps.cwd, client: flags.client, file: flags.mcpConfig });
+    for (const file of skipped) io.err(`[mcp-guard] Skipped ${file.file}: ${file.reason}`);
+    const candidates = servers.filter((s) => !s.wrapped && (!flags.server || s.name === flags.server));
+    let server: FoundServer | null = null;
+    if (candidates.length === 0) {
+      const already = servers.filter((s) => s.wrapped && (!flags.server || s.name === flags.server));
+      if (!hookMode || flags.server) {
+        if (already.length > 0) throw new InitError(`${already.map((s) => `"${s.name}"`).join(', ')} ${already.length === 1 ? 'is' : 'are'} already wrapped by mcp-guard. Nothing to do.`);
+        if (flags.preset && !flags.server && !flags.noHook) {
+          throw new InitError(
+            `No Claude Code project was found in ${projectDir} (no .claude/ or CLAUDE.md) and no MCP server to wrap, so there is nothing to guard yet.\n` +
+            `  To guard Claude Code's own tools (shell, file edits) in this directory: run init again with --hook claude-code.\n` +
+            '  To guard an MCP server: add one to Claude Code or Cursor (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json), or pass --mcp-config <path>.',
+          );
+        }
+        throw new InitError(
+          flags.server
+            ? `No MCP server named "${flags.server}" was found in a Claude Code or Cursor config.`
+            : 'No stdio MCP server was found in a Claude Code or Cursor config (.mcp.json, ~/.claude.json, .cursor/mcp.json, ~/.cursor/mcp.json). Add one to your client first, or pass --mcp-config <path>.',
+        );
+      }
+      io.out(already.length > 0 ? 'MCP servers: every one found is already wrapped; setting up the Claude Code hook only.' : 'MCP servers: none found to wrap; setting up the Claude Code hook only.');
+    } else {
+      server = await choose(io, flags, 'Which MCP server should the guard wrap?', candidates, (s) => `${s.name}  (${s.client}, ${s.file})`, 0);
+      io.out(`Server: ${server.name} (${server.client}, ${server.file})`);
+    }
+
+    // 2-3. Device login and token. With only the hook to set up, a stored token is reused.
+    let changedSomething = false;
+    let haveToken = false;
+    if (hookMode && !server) {
+      try {
+        loadInstallToken();
+        haveToken = true;
+      } catch (err: any) {
+        if (err?.code !== 'INSTALL_TOKEN_MISSING') throw new InitError(`the stored install token cannot be used (${err?.code ?? 'INSTALL_TOKEN_ERROR'}): ${err?.message ?? err}`);
+      }
+    }
+    if (haveToken) {
+      io.out('Install token: already stored on this machine; not logging in again.');
+    } else {
+      const label = (flags.label ?? hostname()).replace(/[^A-Za-z0-9_.:@ -]/g, '-').slice(0, 64) || null;
+      const login = await startLogin(apiUrl, label, { fetchImpl: deps.fetchImpl });
+      io.out('');
+      io.out('Connect this guard to your Permission Protocol workspace:');
+      io.out(`  1. Open ${login.verificationUrlComplete}`);
+      io.out(`  2. Check that the page shows this code: ${login.userCode}`);
+      io.out('  3. Choose Connect. You need the owner or admin role.');
+      if (!flags.noBrowser) io.openBrowser(login.verificationUrlComplete);
+      io.out('Waiting for you to connect...');
+      const connected = await awaitLogin(apiUrl, login, { fetchImpl: deps.fetchImpl });
+      io.out(`Connected to workspace: ${connected.workspace.name}${connected.workspace.slug ? ` (${connected.workspace.slug})` : ''}`);
+      if (io.interactive && !flags.yes) {
+        const answer = (await io.ask('Is that the workspace you meant? [Y/n] ')).toLowerCase();
+        if (answer === 'n' || answer === 'no') {
+          throw new InitError(`Stopped. Nothing on this machine was changed. Revoke the token "MCP Guard${label ? ` (${label})` : ''}" in that workspace under Settings > Developer access.`);
+        }
+      }
+      const stored = saveInstallToken(connected.token);
+      changedSomething = true;
+      io.out(stored.kind === 'keychain' ? 'Install token: stored in the OS keychain.' : `Install token: stored in ${stored.path} (owner-only).`);
+    }
 
     // 4. Local signing key (allow and block decisions are signed on this machine).
     try {
@@ -415,6 +511,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     } catch (err: any) {
       if (err?.code !== 'SIGNING_KEY_MISSING') throw err;
       const key = createKey();
+      changedSomething = true;
       io.out(`Local signing key: created ${key.keyId} in ${keysDir()}.`);
     }
 
@@ -423,41 +520,124 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     if (flags.preset) {
       io.out(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads are recorded, not held. See docs/presets.md.`);
     } else if (!tool) {
-      const tools = (await (deps.discover ?? discoverTools)(server.command, server.args)).filter((name) => TOOL_NAME_PATTERN.test(name));
+      const tools = (await (deps.discover ?? discoverTools)(server!.command, server!.args)).filter((name) => TOOL_NAME_PATTERN.test(name));
       if (tools.length > 0) {
         const suggested = Math.max(0, tools.findIndex((name) => RISKY_TOOL.test(name)));
-        tool = await choose(io, flags, `Which tool of "${server.name}" should need a signature?`, tools, (name) => name, suggested);
+        tool = await choose(io, flags, `Which tool of "${server!.name}" should need a signature?`, tools, (name) => name, suggested);
       } else {
-        io.out(`Could not read the tool list of "${server.name}", so every call to it will need a signature. Edit the policy to narrow that.`);
+        io.out(`Could not read the tool list of "${server!.name}", so every call to it will need a signature. Edit the policy to narrow that.`);
       }
     } else if (!TOOL_NAME_PATTERN.test(tool)) {
       throw new InitError(`--tool "${tool}" has characters Permission Protocol does not accept in a tool name (letters, digits and _ . : / @ - only).`);
     }
     if (!flags.preset) io.out(tool ? `Hold rule: "${tool}" needs a signature. Every other tool of this server runs as before.` : 'Hold rule: every call needs a signature.');
 
-    // 6. Policy file.
-    const serverLabel = safeLabel(server.name);
-    const policyPath = join(dirname(keysDir()), 'policies', `${serverLabel.replace(/[/:@]/g, '-')}.yaml`);
-    const policy = policyText({ serverLabel, tool, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys, preset: flags.preset });
-    parseConfig(policy); // never write a policy the guard would refuse to load
-    mkdirSync(dirname(policyPath), { recursive: true });
-    if (existsSync(policyPath) && readFileSync(policyPath, 'utf-8') !== policy) {
-      const aside = `${policyPath}.backup-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
-      copyFileSync(policyPath, aside);
-      io.out(`Policy: the existing ${policyPath} was copied to ${aside}.`);
+    // 6. Policy file for the wrapped server.
+    let policyPath: string | null = null;
+    if (server) {
+      const serverLabel = safeLabel(server.name);
+      policyPath = join(dirname(keysDir()), 'policies', `${serverLabel.replace(/[/:@]/g, '-')}.yaml`);
+      const policy = policyText({ serverLabel, tool, environment: flags.environment, apiUrl, trustKeys: flags.trustKeys, preset: flags.preset });
+      parseConfig(policy); // never write a policy the guard would refuse to load
+      mkdirSync(dirname(policyPath), { recursive: true });
+      if (existsSync(policyPath) && readFileSync(policyPath, 'utf-8') !== policy) {
+        const aside = `${policyPath}.backup-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
+        copyFileSync(policyPath, aside);
+        io.out(`Policy: the existing ${policyPath} was copied to ${aside}.`);
+      }
+      writeFileSync(policyPath, policy);
+      io.out(`Policy: ${policyPath}`);
     }
-    writeFileSync(policyPath, policy);
-    io.out(`Policy: ${policyPath}`);
+
+    // 6b. The hook's policy and the hook itself.
+    let hookChange: SettingsChange | null = null;
+    if (hookMode) {
+      if (keptPolicy) {
+        io.out(keptIsPreset
+          ? `Hook policy: ${hookPolicyPath} (already the ${flags.preset} preset; kept unchanged)`
+          : `Hook policy: ${hookPolicyPath} (your own policy, kept byte for byte; the ${flags.preset} preset was not applied: its rules decide what the hook guards)`);
+        if (!keptPolicy.cloud) io.out('  It has no cloud: section, so a held call is denied instead of waiting for a Permission Protocol signature.');
+      } else {
+        // Written only if it is still absent: never overwrite a policy that appeared meanwhile.
+        try {
+          writeFileSync(hookPolicyPath, hookPolicy!, { flag: 'wx' });
+        } catch (err: any) {
+          if (err?.code === 'EEXIST') throw new InitError(`${hookPolicyPath} appeared while init ran; it was not overwritten and the hook was not installed.`);
+          throw err;
+        }
+        changedSomething = true;
+        io.out(`Hook policy: ${hookPolicyPath} (${flags.preset} preset; commit it with .claude/settings.json to guard the whole team)`);
+      }
+      io.out(`Launcher: ${launcher!.launcher} (${launcher!.why})`);
+      if (hookAlreadyInstalled) {
+        io.out(`Claude Code hook: already installed in ${settingsPath(projectDir)}; unchanged`);
+      } else {
+        try {
+          hookChange = installHook({ projectDir, launcher: launcher!.launcher });
+        } catch (err: any) {
+          io.err(`[mcp-guard] Claude Code hook: NOT installed: ${err?.code ? `${err.code}: ` : ''}${err?.message ?? err}`);
+          io.err(server ? '[mcp-guard] Nothing was wrapped. Fix the cause above and run init again.' : '[mcp-guard] Fix the cause above and run init again.');
+          return 1;
+        }
+        if (hookChange.changed) changedSomething = true;
+        io.out(`Claude Code hook: ${hookChange.changed ? 'installed' : 'already installed'} in ${hookChange.path} (PreToolUse, matcher "${DEFAULT_MATCHER}", onFailure block)`);
+        io.out(`  undo:   npx mcp-guard hook uninstall --project ${projectDir}`);
+      }
+    }
 
     // 7. Wrap the server.
-    const agentId = flags.agentId ?? server.client;
+    const agentId = flags.agentId ?? server?.client ?? 'claude-code';
     if (!TOOL_NAME_PATTERN.test(agentId)) throw new InitError('--agent-id may contain letters, digits and _ . : / @ - only.');
-    const wrapped = wrapServer(server, { policyPath, agentId, version: guardVersion(), now: new Date(now()) });
-    io.out(`Wrapped "${server.name}" in ${server.file}`);
-    io.out(`  before: ${[server.command, ...server.args].join(' ')}`);
-    io.out(`  now:    ${[wrapped.command, ...wrapped.args].join(' ')}`);
-    io.out(`  undo:   copy ${wrapped.backup} back over ${server.file}`);
-    io.out(`Restart ${server.client === 'cursor' ? 'Cursor' : 'Claude Code'} so it starts "${server.name}" through the guard.`);
+    if (server) {
+      const wrapped = wrapServer(server, { policyPath: policyPath!, agentId, version: guardVersion(), now: new Date(now()) });
+      io.out(`Wrapped "${server.name}" in ${server.file}`);
+      io.out(`  before: ${[server.command, ...server.args].join(' ')}`);
+      io.out(`  now:    ${[wrapped.command, ...wrapped.args].join(' ')}`);
+      io.out(`  undo:   copy ${wrapped.backup} back over ${server.file}`);
+    }
+    if (server) {
+      const client = server.client === 'cursor' ? 'Cursor' : 'Claude Code';
+      io.out(`Restart ${client} so it starts "${server.name}" through the guard${hookMode && hookChange ? (client === 'Claude Code' ? ' and loads the hook' : ', and Claude Code so it loads the hook') : ''}.`);
+    } else if (hookMode && hookChange) {
+      io.out('Restart Claude Code so it loads the hook.');
+    }
+
+    // 7b. The hook, checked locally: one allowed and one held synthetic call.
+    if (hookMode) {
+      io.out('');
+      io.out('Hook self-test (local; nothing is sent to Permission Protocol, nothing is run):');
+      const check = runHookSelfTest({
+        projectDir,
+        launcher: launcher!.launcher,
+        policy: keptPolicy ?? parseConfig(hookPolicy!),
+        localPolicy: presetPolicyBody(flags.preset!).trimEnd() + '\nserver_label: "claude-code"\n',
+        receiptsPath: join(dirname(keysDir()), 'self-test-receipts.jsonl'),
+      });
+      for (const c of check.checks) io.out(`  ${c.ok ? 'ok  ' : 'FAIL'} ${c.name}: Bash "${c.command}": ${c.detail}`);
+      if (!check.ok) {
+        io.err(`[mcp-guard] Hook self-test failed: ${check.reason}`);
+        io.err(`[mcp-guard] The hook is installed and fails closed: Claude Code's ${DEFAULT_MATCHER.split('|').join(', ')} calls in ${projectDir} are blocked until it works. Fix the cause above, or remove it with: npx mcp-guard hook uninstall --project ${projectDir}`);
+        return 1;
+      }
+    }
+
+    // What is guarded now.
+    io.out('');
+    io.out('Guarded now:');
+    if (hookMode) {
+      io.out(keptPolicy && !keptIsPreset
+        ? `  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against your policy ${hookPolicyPath}.`
+        : `  Claude Code in ${projectDir}: ${DEFAULT_MATCHER.split('|').join(', ')} calls are checked against ${hookPolicyPath}. Destructive ones wait for a signature in Permission Protocol; secret reads are recorded in ${join(projectDir, 'pp-receipts.jsonl')}.`);
+    }
+    if (server) io.out(`  MCP server "${server.name}": every call is checked against ${policyPath}.`);
+    if (flags.preset && !hookMode) io.out(`  Claude Code's own tools (shell, file edits) are not guarded: ${flags.noHook ? '--no-hook was passed' : `no Claude Code project was found in ${projectDir}`}. Add the hook with --hook claude-code.`);
+
+    // Hook only, and the token, key, policy and hook entry were all in place already.
+    if (hookMode && !server && !changedSomething) {
+      io.out('');
+      io.out(`Already set up: the install token, the signing key, ${hookPolicyPath} and the hook entry were all in place; nothing was changed.`);
+      return 0;
+    }
 
     // 8. Self-test.
     if (flags.skipSelfTest) {
@@ -482,7 +662,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
       io.err('[mcp-guard] The setup is in place and fails closed: the held tool stays blocked until a signature works. Fix the cause above, then call the tool from your client.');
       return 1;
     }
-    const verifyCommand = `npx ${'@permission-protocol/mcp-guard'} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath}"` : ''}`;
+    const verifyCommand = `npx ${'@permission-protocol/mcp-guard'} receipt verify ${test.receiptId} --receipts-path "${test.receiptsPath}"${apiUrl !== PRODUCTION_API_URL ? ` --config "${policyPath ?? hookPolicyPath}"` : ''}`;
     io.out('');
     io.out(`Signed receipt: ${test.receiptId}${test.signer ? `, signed by ${test.signer}` : ''}`);
     if (test.receiptUrl) io.out(`  View it:   ${test.receiptUrl}`);
