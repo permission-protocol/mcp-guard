@@ -486,7 +486,7 @@ export function nextTimeLines(input: NextTimeInput): string[] {
         : 'Next time Claude Code tries something destructive here (for example rm -rf outside the project, a force push, or terraform destroy)';
       lines.push(`${what}, the call is held: ${browser}, and the call runs only after a named person signs it in Permission Protocol.`);
       lines.push(`If nobody signs within ${h.waitSeconds} seconds, Claude is denied with the signing link, and the same call can be retried after someone signs.`);
-      if (h.preset && !h.ownPolicy) lines.push(`Secret reads are not held; they are recorded in ${h.receiptsPath}.`);
+      if (h.preset && !h.ownPolicy) lines.push(`Secret reads and plain pushes to main or master are not held; they are recorded in ${h.receiptsPath}.`);
     }
   }
   if (input.server) {
@@ -718,7 +718,7 @@ export async function runInit(argv: string[], io: InitIo, deps: InitDeps = {}): 
     // 5. Which tool to hold (a preset names its own rules).
     let tool = flags.tool ?? null;
     if (flags.preset) {
-      details.push(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads are recorded, not held. See docs/presets.md.`);
+      details.push(`Policy preset: ${flags.preset}. Destructive commands, SQL, infrastructure and cloud deletes, and changes to the guard itself need a signature; secret reads and plain pushes to main or master are recorded, not held. See docs/presets.md.`);
     } else if (!tool) {
       const tools = (await (deps.discover ?? discoverTools)(server!.command, server!.args)).filter((name) => TOOL_NAME_PATTERN.test(name));
       if (tools.length > 0) {

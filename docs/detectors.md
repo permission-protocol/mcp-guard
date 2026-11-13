@@ -28,7 +28,7 @@ rules:
 |-----|---------|
 | `tool: "*"` | Any tool. Allowed only with `match` or `detect`: a bare wildcard is rejected so a rule cannot catch every call by accident. |
 | `match` | Conditions on named top-level arguments. All must hold. Each condition has exactly one of `equals`, `contains`, `pattern` (a JavaScript regular expression, at most 512 characters, compiled at startup), plus optional `ignore_case: true`. |
-| `detect` | `{ detector, args }`. The rule matches when the detector fires on any listed argument that is present. At most 16 arguments. |
+| `detect` | `{ detector, args, kinds, except_kinds }`. The rule matches when the detector fires on any listed argument that is present. At most 16 arguments. `kinds` (count only these kinds) or `except_kinds` (count every kind but these), not both, narrow which definite findings count; only `shell_destructive` takes them, and only its kinds (listed below). Text the detector cannot read still matches, whatever the filter. In a command chain a finding that does not count is skipped and the next command is read, so `except_kinds: [git_push_protected]` still matches `git push origin main && rm -rf ~/x`. |
 | `mentions_target` | `{ args, in }`. The rule matches when a listed argument names a production target from the top-level `targets:` section. See [presets.md](presets.md#production-targets). |
 | `observe` | `true`: record what the rule would do, then decide as if it were absent. See [presets.md](presets.md#observe-true-on-any-rule). |
 
@@ -86,7 +86,7 @@ A definite finding in one argument wins over an unreadable one.
 
 ## What the approver and the logs see
 
-The `Decision` carries `effect: { detector, kind, target, parsed, reason }`. `kind` and `reason` come from fixed sets. `target` (a table, path, branch, bucket) comes from the agent's text: control and format characters (including bidi overrides) are removed and it is cut to 120 characters. It is for showing an approver and is **never** written to a receipt, the receipt log, stderr decision lines or a client error. Receipts still bind arguments only by `inputHash`. The decision reason names the rule id and the detector kind only, for example `Matched rule "shell" (shell_destructive: rm_recursive)`.
+The `Decision` carries `effect: { detector, kind, target, parsed, reason }`. `kind` and `reason` come from fixed sets. `target` (a table, path, branch, bucket) comes from the agent's text: control and format characters (including bidi overrides), Hangul fillers, blank Braille and variation selectors are removed, other space separators become a plain space, whitespace runs collapse, credentials are masked (`src/cloud/preview.ts`), and then it is cut to 120 characters. When one text has several `shell_destructive` findings, the widest is reported (the file system root, the whole home directory, a disk write or format); otherwise the first. Which finding is reported never changes whether the rule matches. It is for showing an approver and is **never** written to a receipt, the receipt log, stderr decision lines or a client error. Receipts still bind arguments only by `inputHash`. The decision reason names the rule id and the detector kind only, for example `Matched rule "shell" (shell_destructive: rm_recursive)`.
 
 ## Detectors
 
@@ -104,7 +104,7 @@ Not caught: `DELETE ... WHERE id > 0` and other conditions that happen to cover 
 
 Catches:
 - `rm` with `-r`/`-R`/`--recursive` (any order, clustered, after operands, with or without `-f`) on `/`, absolute paths, `~` / `$HOME`, `..`, the working tree itself (`.`, `*`, `.*`), `.git`, or relative paths after a `cd` that left the tree; `--no-preserve-root`. A named entry under `/tmp` or `/var/tmp` is allowed (`/tmp/*` is not).
-- `git push` with `--force`, `-f`, `--force-with-lease`, `--force-if-includes`, `+refspec`; to `main` / `master` (any refspec form); `--delete`, `:branch`, `--mirror`, `--all`.
+- `git push` with `--force`, `-f`, `--force-with-lease`, `--force-if-includes`, `+refspec` (`git_force_push`); `--delete`, `-d`, `--prune`, `:branch`, `:refs/tags/x` (`git_push_delete`); `--mirror` (`git_push_mirror`); `--all` / `--branches` (`git_push_all`, from 0.6.0; before, `git_push_protected`); a plain push to `main` / `master`, any refspec form (`git_push_protected`).
 - `dd of=...`, `mkfs*`, `mke2fs`, `mkswap`, `wipefs`, `shred`, redirects into block devices.
 - `find ... -delete`, `find ... -exec rm|shred|unlink`.
 - `rm` fed by `xargs` (any flags): a definite match when the list comes from a `find` rooted outside the tree; allowed when it comes straight from a filtered `find` rooted inside the tree (`find . -name '*.o' | xargs rm`); otherwise (`cat list | xargs rm`, `xargs rm < list`, unfiltered `find . | xargs rm`, `find / | grep x | xargs rm`) it fails safe.
@@ -113,6 +113,8 @@ Catches:
 - Overwrite redirects (`>`, `>|`, `&>`, not `>>`) and `tee` without `-a` onto absolute paths or `~` / `$HOME` paths. `/dev/*`, `/tmp/<name>` and `/var/tmp/<name>` are allowed.
 - `chmod`/`chown`/`chgrp -R` on `/`, top-level system paths (depth 2 or less), `~` (depth 1 or less), `..`.
 - Destructive SQL through `psql -c`, `mysql -e`, `sqlite3 db "..."`, `clickhouse-client -q`, heredocs and here-strings; SQL piped into a client fails safe.
+
+Kinds (for `detect.kinds` / `detect.except_kinds`): `rm_recursive`, `rm_xargs`, `truncate_file`, `move_to_device`, `disk_write`, `overwrite_redirect`, `find_delete`, `git_force_push`, `git_push_delete`, `git_push_mirror`, `git_push_all`, `git_push_protected`, `recursive_permissions`, `disk_format`, `shred`, and the `sql_destructive` kinds for SQL sent through a client (`drop_database`, `drop_schema`, `drop_table`, `drop_object`, `truncate`, `delete_without_where`, `update_without_where`, `alter_drop`, `merge_delete`, `copy_program`).
 
 Not caught: plain `git push` / `git push origin HEAD` while on `main` (the current branch is not known without I/O); overwrite redirects onto relative paths (`> ../x`) or a fully dynamic target (`> "$OUT"`); `>>` appends; `mv` or `cp` of data over another file (`mv a /etc/passwd`); `truncate` inside the tree; `git reset --hard`, `git clean -fdx`, `git branch -D`; non-recursive `rm` of single files; Windows commands (`del /s`, `Remove-Item -Recurse`); destructive scripts run from files (`./cleanup.sh`, `make clean`, `npm run reset`); `docker`/`kubectl exec` into containers; `find . -name '*.pyc' -delete` is caught (a false positive by design).
 

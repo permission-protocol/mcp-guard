@@ -5,6 +5,7 @@ import { canonicalJsonText } from '../signing/canonical.js';
 import { rawPublicKey, type KeySet } from '../signing/keys.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import type { CloudReceiptArtifact } from '../cloud/verify.js';
+import { maskText } from '../cloud/preview.js';
 
 /**
  * Test stand-ins for Permission Protocol: a signing key, receipts in the shapes the app
@@ -117,6 +118,52 @@ export function mintCloudReceipt(issuer: TestIssuer, o: MintOptions): CloudRecei
 // A fake Permission Protocol API
 // ---------------------------------------------------------------------------
 
+/**
+ * The create body Permission Protocol accepts from 0.6.0, validated as strictly as the app
+ * does: an unknown key, a wrong type or a value outside these shapes is refused with 400,
+ * so a drift in what the guard sends fails a test.
+ */
+export const CREATE_REQUIRED_KEYS = ['agentId', 'argsHash', 'env', 'server', 'timeoutSec', 'tool'] as const;
+export const CREATE_OPTIONAL_KEYS = ['argsPreview', 'effect', 'project', 'ruleId'] as const;
+
+/** The exact create-body key sets 0.6.0 sends for a call held by a detector rule, sorted. */
+export const BODY_KEYS_FULL = ['agentId', 'argsHash', 'argsPreview', 'effect', 'env', 'project', 'ruleId', 'server', 'timeoutSec', 'tool'];
+/** The same with `cloud.args_preview: false`: no preview, no project (and no effect.target). */
+export const BODY_KEYS_NO_PREVIEW = ['agentId', 'argsHash', 'effect', 'env', 'ruleId', 'server', 'timeoutSec', 'tool'];
+
+/** What the app refuses in `effect.target`: control and format characters, line and paragraph separators, spaces other than U+0020, Hangul fillers, blank Braille, variation selectors. */
+const REFUSED_TARGET_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u115F\u1160\u3164\uFFA0\u2800\uFE00-\uFE0F\u{E0100}-\u{E01EF}]|(?! )\p{Zs}/u;
+
+export function createBodyProblem(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return 'body is not an object';
+  const b = body as Record<string, unknown>;
+  const allowed = new Set<string>([...CREATE_REQUIRED_KEYS, ...CREATE_OPTIONAL_KEYS]);
+  for (const k of Object.keys(b)) if (!allowed.has(k)) return `Unrecognized key: ${k}`;
+  for (const k of CREATE_REQUIRED_KEYS) if (!(k in b)) return `Missing key: ${k}`;
+  for (const k of ['agentId', 'argsHash', 'env', 'server', 'tool'] as const) if (typeof b[k] !== 'string' || !b[k]) return `${k} must be a non-empty string`;
+  if (!Number.isInteger(b.timeoutSec) || (b.timeoutSec as number) <= 0) return 'timeoutSec must be a positive integer';
+  if ('argsPreview' in b && (typeof b.argsPreview !== 'string' || Buffer.byteLength(b.argsPreview, 'utf8') > 2048)) return 'argsPreview must be a string of at most 2048 bytes';
+  if ('ruleId' in b && (typeof b.ruleId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(b.ruleId))) return 'ruleId is malformed';
+  if ('ruleId' in b && maskText(b.ruleId as string) !== b.ruleId) return 'ruleId looks like a credential';
+  if ('project' in b) {
+    const p = b.project;
+    if (typeof p !== 'string' || !/^[A-Za-z0-9_.@ -]{1,64}$/.test(p) || p.trim() !== p) return 'project is malformed';
+    if (maskText(p) !== p) return 'project looks like a credential';
+  }
+  if ('effect' in b) {
+    const e = b.effect;
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) return 'effect must be an object';
+    const effect = e as Record<string, unknown>;
+    for (const k of Object.keys(effect)) if (!['detector', 'kind', 'target', 'parsed'].includes(k)) return `Unrecognized key: effect.${k}`;
+    if (typeof effect.detector !== 'string' || !/^[a-z0-9_]{1,40}$/.test(effect.detector)) return 'effect.detector is malformed';
+    if (typeof effect.kind !== 'string' || !/^[a-z0-9_]{1,40}$/.test(effect.kind)) return 'effect.kind is malformed';
+    if (typeof effect.parsed !== 'boolean') return 'effect.parsed must be a boolean';
+    if ('target' in effect && (typeof effect.target !== 'string' || !effect.target || Array.from(effect.target).length > 120)) return 'effect.target must be 1 to 120 characters';
+    if ('target' in effect && REFUSED_TARGET_CHAR.test(effect.target as string)) return 'effect.target has a refused character';
+  }
+  return null;
+}
+
 export type FakeDecision = 'approve' | 'reject' | 'frozen' | 'never' | 'tampered' | 'wrong-fingerprint' | 'unsigned-approve';
 
 export interface FakePp {
@@ -227,6 +274,8 @@ export async function startFakePp(token: string): Promise<FakePp> {
     if (req.headers.authorization !== `Bearer ${token}`) return send(401, { error: { code: 'UNAUTHORIZED', message: 'bad token' } });
 
     if (req.method === 'POST' && path === '/api/mcp/approval-requests') {
+      const problem = createBodyProblem(body);
+      if (problem) return send(400, { error: { code: 'VALIDATION_ERROR', message: problem } });
       const fingerprint = sha256(canonicalJsonText({ argsHash: body.argsHash, server: body.server, tool: body.tool }));
       const r: FakeRequest = { id: `mcpreq_${String(++n).padStart(32, '0')}`, fingerprint, decision: state.decision, readsLeft: state.decideAfterReads, redeemed: false, receiptId: `rcpt_fake_${n}` };
       requests.set(r.id, r);

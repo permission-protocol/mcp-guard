@@ -73,14 +73,14 @@ The hook sees Claude Code's `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookE
 
 | Rule | Holds |
 |------|-------|
-| `destructive-shell` | `rm -rf` outside the working tree, force pushes and pushes to `main`, disk writes, destructive SQL through `psql -c` and similar |
+| `destructive-shell` | `rm -rf` outside the working tree, force pushes, pushes that delete a branch or tag, `--mirror` and `--all` pushes, disk writes, destructive SQL through `psql -c` and similar |
 | `destructive-sql` | `DROP`, `TRUNCATE`, `DELETE` / `UPDATE` without `WHERE`, in the SQL argument of an MCP database tool (`sql`, `query`, ...) |
 | `terraform-destroy` | `terraform destroy`, `apply -destroy`, `apply -auto-approve` without a saved plan |
 | `cloud-delete` | Cloud and Kubernetes deletes of databases, volumes, buckets, snapshots, clusters, namespaces |
 | `production-target` | Any call naming a production target you list under `targets:` (empty by default, so it matches nothing until you add names) |
 | `guard-tamper*` | Changes to the guard itself: its policy, receipt log, keys, install token, the hook entry and Claude Code settings files, killing it |
 
-Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
+Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. From 0.6.0 a plain push to `main` or `master` (`git push origin main`) is recorded too (`git-push-protected`), not held; to hold it again, delete `except_kinds: [git_push_protected]` and the comma before it from the `destructive-shell` rule. A policy written by an earlier version is never rewritten by an upgrade, so it keeps holding plain pushes until you edit it or write it again. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
 
 ## What it does not catch
 
@@ -168,12 +168,19 @@ The hook still works: its wrapper blocks a guard that fails to run, and the guar
 
 ## What is sent to Permission Protocol for a held call
 
-Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, and a **preview of the arguments that the guard masks and caps before sending**. Nothing else: not the rule id, not what a detector found. For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
+Only for a held call that waits for a signature (allowed and blocked calls send nothing): the tool name, the server label (`claude-code` for the hook), the agent id, the environment label, the SHA-256 hash of the arguments, a **preview of the arguments that the guard masks and caps before sending**, and why the call was held. For a `Bash` call the preview is the command; for `Write` or `Edit`, the file path and as much file content as fits.
+
+Why it was held (from 0.6.0), shown to the signer on the signing page and in the phone notification:
+
+- `ruleId`: the id of the rule that held the call, for example `destructive-shell`. Left out if it looks like a credential.
+- `effect`: what the rule's detector found: the detector and kind (for example `shell_destructive` and `rm_recursive`), whether the detector could read the command, and the target it names (for example `~/build`): invisible and unusual space characters removed, masked like the preview, cut to 120 characters. With several findings in one command, the widest is shown (the root or the home folder over a narrower path). Rules without a detector send no `effect`.
+- `project`: the name of the project folder, never its path, so a signer can tell which of many agents is asking. For the hook it is the folder that holds the policy file (the project root, as init sets it up); for a wrapped MCP server it is the folder the server was started in. Characters other than letters, digits, `_ . @ -` and spaces become `-`, and it is cut to 64 characters. Not sent for the home folder or the file system root, or when it looks like a credential.
 
 - Masked on this machine: values under credential-like keys, private key blocks, credentials in URLs, Bearer and Basic values, common token formats (GitHub, OpenAI, Anthropic, AWS key ids, Stripe, Slack, JWTs and others), `password=` / `token=` / `.env`-style assignments with secret-looking names, and long opaque strings. Pattern-based: a short secret with no telling name (`mysql -pS3cret`) is not recognised.
 - Short fields first, then capped at 2,048 bytes, so the cap cuts file content, not the path.
 - Permission Protocol masks and caps it again before storing it. The signature covers the hash of the exact arguments, never the preview.
-- To send the hash only, put `args_preview: false` under `cloud:`. The signer then sees the tool, server, agent and environment, not what the call does.
+- None of these fields is part of the hash or of what is signed.
+- To keep the arguments, the target and the project name on this machine, put `args_preview: false` under `cloud:`. The guard then sends no preview, no `effect.target` and no `project`; it still sends the rule id, the detector, the kind and whether the command could be read. The signer sees the tool, server, agent, environment and rule, not what the call does.
 
 Details: [docs/hooks.md](docs/hooks.md#what-the-hook-answers).
 
@@ -235,7 +242,7 @@ cloud:                       # held calls need a named person's signature in Per
   environment: production    # development | staging | production: a label for the signer
   approval_timeout_seconds: 600
   # heartbeat: false         # turn the usage heartbeat off
-  # args_preview: false      # held calls send the argument hash only, no masked preview
+  # args_preview: false      # held calls send no masked preview, detector target or project name
   # open_browser: false      # a held call does not open the signing page in this machine's browser
 targets:
   databases: [prod-db.internal]

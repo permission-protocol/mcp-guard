@@ -10,7 +10,7 @@ A heartbeat is observational. It cannot allow, block, hold or delay any call: it
 
 ```json
 {
-  "guardVersion": "0.5.2",
+  "guardVersion": "0.6.0",
   "clientLabel": "claude-code",
   "mode": "enforce",
   "day": "2026-11-12",

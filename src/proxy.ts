@@ -139,6 +139,8 @@ export function deriveScope(toolName: string, toolArgs: Record<string, unknown> 
 export interface ProxyOptions {
   approvalPort?: number;
   operator?: string;
+  /** The project a held call names (only its folder name is sent). Default: the working directory. */
+  projectDir?: string;
 }
 
 /** What local-only mode prints wherever it holds a call: no person signed through Permission Protocol. */
@@ -165,6 +167,10 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     }
   }
   const replayCache = new ReplayCache();
+  // The proxy's project is its working directory, where it also writes its receipt log:
+  // MCP clients start a project's servers there. The policy's directory is not used,
+  // because init writes proxy policies to ~/.config/mcp-guard/policies/.
+  const projectDir = opts.projectDir ?? process.cwd();
   const approvalEnabled = opts.approvalPort !== undefined;
 
   // Cloud approvals: a held call is released only by a receipt a named human signed
@@ -446,6 +452,9 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
         tool: label,
         args: forwardArgs,
         sendPreview: cloud!.args_preview !== false,
+        ruleId: decision.rule_id,
+        effect: decision.effect,
+        projectDir,
         agentId,
         environment: cloud!.environment,
         timeoutSeconds: cloud!.approval_timeout_seconds,

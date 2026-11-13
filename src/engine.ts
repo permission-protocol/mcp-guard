@@ -2,13 +2,14 @@ import { ANY_TOOL, TOOLS_CALL, type Config, type MatchCondition, type Rule, type
 import { classify, extractMeta } from './classify.js';
 import { detectValue, sanitizeTarget, type DetectorName, type DetectorResult } from './detect/index.js';
 import { matchTargets } from './detect/targets.js';
+import { maskText } from './cloud/preview.js';
 
 // Permission Deck Slice 1: which human lane an attention-requiring action lands in.
 export type Lane = 'decide' | 'unblock' | 'verify';
 
 /**
  * What a detector found in the call's arguments. `kind` comes from a fixed set. `target`
- * is from the agent's arguments: sanitized and bounded, for showing an approver. It is
+ * is from the agent's arguments: sanitized, masked and bounded, for showing an approver. It is
  * never written to a receipt, the receipt log or a decision line.
  */
 export interface DetectedEffect {
@@ -81,8 +82,9 @@ function conditionsHold(rule: Rule, args: Record<string, unknown> | undefined, c
   }
   let effect: DetectedEffect | undefined;
   if (rule.detect) {
-    const detector = rule.detect.detector;
-    const r = firstFinding(rule.detect.args, (name) => detectValue(detector, args?.[name]));
+    const { detector, kinds, except_kinds: except } = rule.detect;
+    const filter = kinds || except ? { ...(kinds ? { only: kinds } : {}), ...(except ? { except } : {}) } : undefined;
+    const r = firstFinding(rule.detect.args, (name) => detectValue(detector, args?.[name], filter));
     if (!r) return { ok: false };
     effect = effectOf(detector, r);
   }
@@ -111,7 +113,8 @@ function firstFinding(names: string[], run: (name: string) => DetectorResult | n
 }
 
 function effectOf(detector: DetectedEffect['detector'], r: DetectorResult): DetectedEffect {
-  const target = sanitizeTarget(r.target);
+  // Masked before the 120-character cut, so a secret straddling the cut is not left half readable.
+  const target = sanitizeTarget(r.target, maskText);
   return {
     detector,
     kind: r.kind,

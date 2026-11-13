@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fingerprintOfCall } from '../cloud/fingerprint.js';
+import { basename, join } from 'node:path';
+import { argsHashOf, fingerprintOfCall } from '../cloud/fingerprint.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import { verifyCloudReceipt } from '../cloud/verify.js';
-import { startFakePp, type FakePp } from './cloud-helpers.js';
+import { BODY_KEYS_FULL, BODY_KEYS_NO_PREVIEW, startFakePp, type FakePp } from './cloud-helpers.js';
 import { HOOK_STATUS_MESSAGE, LAUNCH_FAILED_REASON, LAUNCHER_NOT_FOUND_REASON } from '../hook/install.js';
 import { codingAgentPolicyBody } from '../presets/coding-agent.js';
 
@@ -243,8 +243,13 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
 
     const create = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests').at(-1)!;
     assert.deepEqual({ tool: create.body.tool, server: create.body.server, agentId: create.body.agentId, timeoutSec: create.body.timeoutSec }, { tool: 'Bash', server: 'claude-code', agentId: 'claude-code', timeoutSec: 60 });
-    // Exactly the 0.5.0 body: no new field can reach Permission Protocol by accident.
-    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
+    // Exactly the 0.6.0 body: no other field can reach Permission Protocol by accident.
+    assert.deepEqual(Object.keys(create.body).sort(), BODY_KEYS_FULL);
+    // Why it was held, for the signer; the project is the policy file's folder name, never a path.
+    assert.equal(create.body.ruleId, 'destructive-shell');
+    assert.deepEqual(create.body.effect, { detector: 'shell_destructive', kind: 'rm_recursive', target: '~/build', parsed: true });
+    assert.equal(create.body.project, basename(dir));
+    assert.equal(create.body.argsHash, argsHashOf({ command: 'rm -rf ~/build' }), 'the hash covers the command only');
 
     const line = logLines(dir).find((l) => l.cloud)!.cloud;
     assert.equal(line.decision, 'released');
@@ -252,6 +257,16 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
     assert.equal(line.ruleId, 'destructive-shell');
     const again = verifyCloudReceipt(line.artifact, { keySet: fake.issuer.keySet, trust: pinsFor(fake.issuer.keySet), fingerprint: line.fingerprint, requestId: line.requestId, expect: 'APPROVED' });
     assert.equal(again.ok, true);
+  });
+
+  it('with cloud.args_preview: false the body has no preview, no target and no project', async () => {
+    const dir = workspace(cloudPolicy(fake) + '  args_preview: false\n');
+    fake.decision = 'reject';
+    assertDenied(await runHook(dir, bash('rm -rf ~/quiet')), /denied in Permission Protocol/);
+    const create = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests').at(-1)!;
+    assert.deepEqual(Object.keys(create.body).sort(), BODY_KEYS_NO_PREVIEW);
+    assert.deepEqual(create.body.effect, { detector: 'shell_destructive', kind: 'rm_recursive', parsed: true });
+    assert.doesNotMatch(JSON.stringify(create.body), /quiet|mcp-guard-hook-/);
   });
 
   it('a rejection is denied', async () => {

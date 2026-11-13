@@ -37,8 +37,8 @@ describe('hook --config: absolute paths for the target platform', () => {
 
   it('the command uses an absolute Windows path as given, never joined to the project directory', () => {
     const tempPolicy = 'C:\\Users\\rodri\\AppData\\Local\\Temp\\mcp-guard-hook-self-test-M5Yy2Y\\pp.config.yaml';
-    const abs = hookHandler({ projectDir: 'C:\\Users\\rodri\\proj', launcher: 'npx -y @permission-protocol/mcp-guard@0.5.2', configPath: tempPolicy, waitSeconds: 0, platform: 'win32' }).command;
-    assert.ok(abs.startsWith(`npx -y @permission-protocol/mcp-guard@0.5.2 hook --config '${tempPolicy}' --wait 0;`), abs);
+    const abs = hookHandler({ projectDir: 'C:\\Users\\rodri\\proj', launcher: 'npx -y @permission-protocol/mcp-guard@0.6.0', configPath: tempPolicy, waitSeconds: 0, platform: 'win32' }).command;
+    assert.ok(abs.startsWith(`npx -y @permission-protocol/mcp-guard@0.6.0 hook --config '${tempPolicy}' --wait 0;`), abs);
     assert.equal(abs.includes('CLAUDE_PROJECT_DIR'), false);
     const unc = hookHandler({ projectDir: 'C:\\p', launcher: 'npx mcp-guard', configPath: '\\\\fs01\\team\\pp.config.yaml', platform: 'win32' }).command;
     assert.ok(unc.includes(`--config '\\\\fs01\\team\\pp.config.yaml'`), unc);
@@ -181,7 +181,7 @@ describe('Claude Code older than 2.1.295, and the undo hint', () => {
   });
 
   it('the undo command uses the launcher the hook was installed with', () => {
-    assert.equal(undoHook('npx -y @permission-protocol/mcp-guard@0.5.2', 'C:\\Users\\rodri\\proj'), 'npx -y @permission-protocol/mcp-guard@0.5.2 hook uninstall --project C:\\Users\\rodri\\proj');
+    assert.equal(undoHook('npx -y @permission-protocol/mcp-guard@0.6.0', 'C:\\Users\\rodri\\proj'), 'npx -y @permission-protocol/mcp-guard@0.6.0 hook uninstall --project C:\\Users\\rodri\\proj');
     assert.equal(undoHook('npx --no-install mcp-guard', '/home/a/my proj'), 'npx --no-install mcp-guard hook uninstall --project "/home/a/my proj"');
   });
 });

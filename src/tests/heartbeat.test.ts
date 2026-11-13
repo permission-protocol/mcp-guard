@@ -279,7 +279,7 @@ describe('heartbeat: body', () => {
     assert.deepEqual([...shippedRuleIds()].sort(), [...fromPresets].sort());
     // A change to the preset's ids must be a deliberate change to what can be sent.
     assert.deepEqual([...shippedRuleIds()].sort(), [
-      'cloud-delete', 'destructive-shell', 'destructive-sql', 'guard-tamper', 'guard-tamper-apply-patch', 'guard-tamper-delete_file',
+      'cloud-delete', 'destructive-shell', 'destructive-sql', 'git-push-protected', 'guard-tamper', 'guard-tamper-apply-patch', 'guard-tamper-delete_file',
       'guard-tamper-edit', 'guard-tamper-edit_block', 'guard-tamper-edit_file', 'guard-tamper-move_file', 'guard-tamper-multiedit',
       'guard-tamper-notebookedit', 'guard-tamper-write', 'guard-tamper-write_file', 'production-target', 'secret-read', 'terraform-destroy',
     ]);

@@ -11,6 +11,12 @@
  */
 import { found, MAX_DETECT_INPUT, NOT_MATCHED, unparseable, type DetectorResult, type UnparseableReason } from './types.js';
 
+/** Every kind a definite sql_destructive finding can have. */
+export const SQL_DESTRUCTIVE_KINDS = [
+  'drop_database', 'drop_schema', 'drop_table', 'drop_object', 'truncate', 'delete_without_where', 'update_without_where',
+  'alter_drop', 'merge_delete', 'copy_program',
+] as const;
+
 type TokType = 'word' | 'ident' | 'str' | 'num' | 'punct' | 'param';
 interface Tok { t: TokType; v: string }
 

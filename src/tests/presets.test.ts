@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig, type Config } from '../config.js';
 import { evaluate } from '../engine.js';
-import { DETECTORS } from '../detect/index.js';
+import { DETECTORS, FILTERABLE_KINDS } from '../detect/index.js';
 import { PRODUCTION_API_URL } from '../cloud/pinned-keys.js';
 import { policyText } from '../init/init.js';
 import { codingAgentPolicyBody } from '../presets/coding-agent.js';
@@ -41,15 +41,15 @@ describe('coding-agent preset', () => {
     }
   });
 
-  it('has no allow rule, and only secret-read is observe-only', () => {
+  it('has no allow rule, and only secret-read and git-push-protected are observe-only', () => {
     const c = preset();
     assert.equal(c.rules.some((r) => r.action === 'allow'), false);
-    assert.deepEqual(c.rules.filter((r) => r.observe).map((r) => r.id), ['secret-read']);
-    // The guard rules come first, then destruction, then production, then secrets.
+    assert.deepEqual(c.rules.filter((r) => r.observe).map((r) => r.id), ['secret-read', 'git-push-protected']);
+    // The guard rules come first, then destruction, then production, then the observed rules.
     const ids = c.rules.map((r) => r.id);
     assert.ok(ids.indexOf('guard-tamper') < ids.indexOf('destructive-sql'));
     assert.ok(ids.indexOf('cloud-delete') < ids.indexOf('production-target'));
-    assert.equal(ids[ids.length - 1], 'secret-read');
+    assert.deepEqual(ids.slice(-2), ['secret-read', 'git-push-protected']);
   });
 
   it('scans the argument names coding agents use', () => {
@@ -64,7 +64,7 @@ describe('coding-agent preset', () => {
     ['run_sql', { query: 'DROP TABLE customers' }, 'destructive-sql', 'drop_table'],
     ['postgres', { sql: 'DELETE FROM orders' }, 'destructive-sql', 'delete_without_where'],
     ['Bash', { command: 'rm -rf ~/' }, 'destructive-shell', 'rm_recursive'],
-    ['run_terminal_cmd', { command: 'git push --force origin main' }, 'destructive-shell', 'git_push_force'],
+    ['run_terminal_cmd', { command: 'git push --force origin main' }, 'destructive-shell', 'git_force_push'],
     ['shell', { command: ['bash', '-lc', 'psql -c "DROP DATABASE app"'] }, 'destructive-shell', 'drop_database'],
     ['exec', { cmd: 'terraform destroy -auto-approve' }, 'terraform-destroy', 'destroy'],
     ['exec', { script: 'aws rds delete-db-instance --db-instance-identifier app' }, 'cloud-delete', 'aws_delete'],
@@ -119,6 +119,162 @@ describe('coding-agent preset', () => {
   it('enforces secret reads once observe is removed', () => {
     const c = parseConfig(codingAgentPolicyBody().replace(', observe: true', ''));
     assert.equal(evaluate('Bash', { command: 'cat .env' }, c).decision, 'held_for_approval');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D10: plain pushes to a protected branch are recorded, not held
+// ---------------------------------------------------------------------------
+
+describe('coding-agent preset: plain pushes to main or master are recorded, not held (D10)', () => {
+  const recorded = [
+    'git push origin main',
+    'git push origin master',
+    'git push origin HEAD:main',
+    'git push origin HEAD:refs/heads/master',
+    'git push -u origin main',
+    'git -C repo push origin main',
+  ];
+  for (const command of recorded) {
+    it(`records and lets through: ${command}`, () => {
+      const d = evaluate('Bash', { command }, preset());
+      assert.equal(d.decision, 'allowed', d.reason);
+      assert.equal(d.rule_id, null);
+      assert.equal(d.observed?.rule_id, 'git-push-protected');
+      assert.equal(d.observed?.would, 'held_for_approval');
+      assert.deepEqual([d.observed?.effect?.detector, d.observed?.effect?.kind, d.observed?.effect?.parsed], ['shell_destructive', 'git_push_protected', true]);
+    });
+  }
+
+  const held: Array<[string, string]> = [
+    ['git push -f origin main', 'git_force_push'],
+    ['git push --force origin main', 'git_force_push'],
+    ['git push --force-with-lease origin main', 'git_force_push'],
+    ['git push --force-if-includes origin main', 'git_force_push'],
+    ['git push origin +main', 'git_force_push'],
+    ['git push origin +HEAD:master', 'git_force_push'],
+    ['git push -f origin feature/x', 'git_force_push'],
+    ['git push --delete origin main', 'git_push_delete'],
+    ['git push origin --delete feature/x', 'git_push_delete'],
+    ['git push origin -d main', 'git_push_delete'],
+    ['git push origin :main', 'git_push_delete'],
+    ['git push origin :refs/tags/v1.0', 'git_push_delete'],
+    ['git push --delete origin v1.0', 'git_push_delete'],
+    ['git push --prune origin', 'git_push_delete'],
+    ['git push --mirror', 'git_push_mirror'],
+    ['git push --mirror origin', 'git_push_mirror'],
+    ['git push --all origin', 'git_push_all'],
+    ['git push origin main && rm -rf ~/x', 'rm_recursive'],
+    ['git push origin main; git push -f origin dev', 'git_force_push'],
+    ['git push origin main > /etc/hosts', 'overwrite_redirect'],
+  ];
+  for (const [command, kind] of held) {
+    it(`still holds: ${command}`, () => {
+      const d = evaluate('Bash', { command }, preset());
+      assert.equal(d.decision, 'held_for_approval', d.reason);
+      assert.equal(d.rule_id, 'destructive-shell');
+      assert.equal(d.effect?.kind, kind);
+      assert.equal(d.effect?.parsed, true);
+    });
+  }
+
+  it('still holds a push it cannot read', () => {
+    for (const command of ['git push origin $BRANCH', 'git push origin main && eval "$X"', 'git $SUB origin main']) {
+      const d = evaluate('Bash', { command }, preset());
+      assert.equal(d.decision, 'held_for_approval', command);
+      assert.equal(d.effect?.parsed, false, command);
+    }
+  });
+
+  it('still holds a push to a branch listed in targets.git_branches', () => {
+    const c = withTargets('  databases: []\n  cloud_accounts: []\n  kube_contexts: []\n  git_branches: [main]');
+    const d = evaluate('Bash', { command: 'git push origin main' }, c);
+    assert.equal(d.decision, 'held_for_approval');
+    assert.equal(d.rule_id, 'production-target');
+  });
+
+  it('deleting `, except_kinds: [git_push_protected]` turns the hold back on', () => {
+    const body = codingAgentPolicyBody();
+    assert.equal(body.split(', except_kinds: [git_push_protected]').length, 2, 'exactly one place to change');
+    const c = parseConfig(body.replace(', except_kinds: [git_push_protected]', ''));
+    const d = evaluate('Bash', { command: 'git push origin main' }, c);
+    assert.equal(d.decision, 'held_for_approval');
+    assert.equal(d.rule_id, 'destructive-shell');
+    assert.equal(d.effect?.kind, 'git_push_protected');
+  });
+
+  it('a policy written by 0.5.x (no kind filter, no git-push-protected rule) loads and still holds a plain push to main', () => {
+    const old = codingAgentPolicyBody()
+      .replace(', except_kinds: [git_push_protected]', '')
+      .replace(/\n {2}# Plain pushes to main or master: recorded[\s\S]*$/, '\n');
+    const c = parseConfig(old);
+    assert.equal(c.rules.some((r) => r.id === 'git-push-protected'), false);
+    assert.equal(evaluate('Bash', { command: 'git push origin main' }, c).decision, 'held_for_approval');
+  });
+
+  it('the policy keys: kinds and except_kinds are checked at load', () => {
+    const rule = (detect: string) => `default_action: allow\nrules:\n  - { id: r, tool: "*", detect: ${detect}, action: require_approval }\n`;
+    assert.deepEqual(parseConfig(rule('{ detector: shell_destructive, args: [command], kinds: [git_push_protected] }')).rules[0].detect!.kinds, ['git_push_protected']);
+    assert.deepEqual(parseConfig(rule('{ detector: shell_destructive, args: [command], except_kinds: [git_push_protected, shred] }')).rules[0].detect!.except_kinds, ['git_push_protected', 'shred']);
+    assert.throws(() => parseConfig(rule('{ detector: shell_destructive, args: [command], kinds: [git_push_protected], except_kinds: [shred] }')), /not both/);
+    assert.throws(() => parseConfig(rule('{ detector: shell_destructive, args: [command], except_kinds: [] }')), /non-empty list/);
+    assert.throws(() => parseConfig(rule('{ detector: shell_destructive, args: [command], except_kinds: [git_push] }')), /"git_push" is not a shell_destructive kind/);
+    assert.throws(() => parseConfig(rule('{ detector: shell_destructive, args: [command], except_kinds: [shred, shred] }')), /twice/);
+    assert.throws(() => parseConfig(rule('{ detector: secret_read, args: [command], except_kinds: [env_dump] }')), /cannot be narrowed by kind/);
+    assert.throws(() => parseConfig(rule('{ detector: shell_destructive, args: [command], except_kinds: git_push_protected }')), /non-empty list/);
+  });
+
+  it('every kind shell_destructive reports can be named in a filter', () => {
+    const known = new Set(FILTERABLE_KINDS.shell_destructive);
+    for (const command of ['rm -rf /', 'find / | xargs rm', 'truncate -s 0 /etc/x', 'mv a /dev/null', 'dd of=/dev/sda', 'echo x > /etc/x', 'find / -delete',
+      'git push -f', 'git push origin :x', 'git push --mirror', 'git push --all origin', 'git push origin main', 'chmod -R 777 /', 'mkfs /dev/sdb', 'shred x',
+      'psql -c "DROP TABLE t"', 'psql -c "TRUNCATE t"', 'psql -c "DELETE FROM t"', 'psql -c "UPDATE t SET a=1"', 'psql -c "ALTER TABLE t DROP COLUMN a"',
+      'psql -c "DROP DATABASE d"', 'psql -c "DROP SCHEMA s"', 'psql -c "DROP VIEW v"', "psql -c \"COPY t TO PROGRAM 'x'\"", 'psql -c "MERGE INTO t USING s ON true WHEN MATCHED THEN DELETE"']) {
+      const r = DETECTORS.shell_destructive(command);
+      assert.equal(r.matched && r.parsed, true, command);
+      assert.ok(known.has(r.kind), `${command}: ${r.kind}`);
+    }
+  });
+});
+
+describe('coding-agent preset through the hook: a recorded push runs, a force push is held, report shows both', () => {
+  let dir: string;
+  const env = (): NodeJS.ProcessEnv => ({ ...process.env, PP_KEYS_DIR: join(dir, 'keys'), PP_SHARED_RECEIPTS_PATH: join(dir, 'receipts.jsonl'), MCP_GUARD_HEARTBEAT: 'off' });
+  const hook = (command: string) => spawnSync('node', [CLI, 'hook', '--config', join(dir, 'pp.config.yaml')], {
+    env: env(), cwd: dir, encoding: 'utf8',
+    input: JSON.stringify({ session_id: 's', cwd: dir, permission_mode: 'default', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, tool_use_id: 't' }),
+  });
+
+  before(() => {
+    dir = temp('preset-push');
+    writeFileSync(join(dir, 'pp.config.yaml'), codingAgentPolicyBody());
+    assert.equal(spawnSync('node', [CLI, 'keys', 'init'], { env: env() }).status, 0);
+  });
+
+  it('plain pushes to main and master run (no decision) and are recorded as observed', () => {
+    for (const command of ['git push origin main', 'git push origin master']) {
+      const r = hook(command);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, '', 'no decision: the call runs');
+      assert.match(r.stderr, /OBSERVE: Matched rule "git-push-protected" \(shell_destructive: git_push_protected\) would hold "Bash"; not enforced/);
+    }
+    const observed = readFileSync(join(dir, 'receipts.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.observed);
+    assert.deepEqual(observed.map((o) => [o.observed.ruleId, o.observed.kind]), [['git-push-protected', 'git_push_protected'], ['git-push-protected', 'git_push_protected']]);
+    assert.doesNotMatch(readFileSync(join(dir, 'receipts.jsonl'), 'utf-8'), /origin|master/);
+  });
+
+  it('force pushes and deletes are held (denied here: this policy has no cloud: section)', () => {
+    for (const command of ['git push -f origin main', 'git push --force origin main', 'git push --force-with-lease origin main', 'git push origin +main', 'git push origin --delete main', 'git push origin :main', 'git push --mirror', 'git push origin :refs/tags/v1']) {
+      const r = hook(command);
+      assert.equal(r.status, 2, command);
+      assert.match(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason, /held by rule "destructive-shell" \(shell_destructive: git_(force_push|push_delete|push_mirror)\)/, command);
+    }
+  });
+
+  it('mcp-guard report lists the recorded pushes', () => {
+    const r = spawnSync('node', [CLI, 'report', '--config', join(dir, 'pp.config.yaml')], { env: env(), encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /Observe-only matches[^\n]*\n {2}git-push-protected {2}2$/m);
   });
 });
 
@@ -272,7 +428,7 @@ describe('detector guard_tamper', () => {
     ['rm $HOME/.config/mcp-guard/install-token', 'edit_keys'],
     ['find ~/.config/mcp-guard -delete', 'edit_keys'],
     ['mcp-guard keys revoke mcpg-1', 'guard_cli'],
-    ['npx -y @permission-protocol/mcp-guard@0.5.2 keys rotate', 'guard_cli'],
+    ['npx -y @permission-protocol/mcp-guard@0.6.0 keys rotate', 'guard_cli'],
     ['cp /tmp/plain.json .mcp.json', 'edit_client_config'],
     ['mv .mcp.json .mcp.json.off', 'edit_client_config'],
     ['cp ~/Downloads/.mcp.json ./', 'edit_client_config'],

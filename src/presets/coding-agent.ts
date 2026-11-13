@@ -4,6 +4,9 @@
  *
  * Every rule is `require_approval` or observe-only, so no rule can let a call through
  * that a later rule would have held: the order only decides which rule id a hold names.
+ * `destructive-shell` leaves plain pushes to main/master out (`except_kinds`), and the
+ * observe-only `git-push-protected` records them (D10: the preset holds irreversible
+ * destruction; a plain push can be reverted).
  */
 
 export const PRESET_NAMES = ['coding-agent'] as const;
@@ -39,8 +42,8 @@ export function codingAgentPolicyBody(): string {
   const shell = list(SHELL_ARGS);
   const lines = [
     '# Preset: coding-agent (mcp-guard init --preset coding-agent). See docs/presets.md.',
-    '# Destructive commands wait for a named human. Secret reads are only recorded (observe: true)',
-    '# until you remove that line. Rules are tried in order; the first match wins.',
+    '# Destructive commands wait for a named human. Secret reads and plain pushes to main or master',
+    '# are only recorded (observe: true). Rules are tried in order; the first match wins.',
     'default_action: allow',
     'mode: enforce',
     '',
@@ -50,7 +53,7 @@ export function codingAgentPolicyBody(): string {
     '  databases: []        # e.g. [prod-db.internal, app_production]',
     '  cloud_accounts: []   # e.g. [acme-prod, "123456789012"]',
     '  kube_contexts: []    # e.g. [prod-eu-1, production]',
-    '  git_branches: []     # e.g. [release]  (pushes to main/master are already held)',
+    '  git_branches: []     # e.g. [release]  (force pushes and branch deletes are held on any branch)',
     '',
     'rules:',
     '  # Self-protection: the agent may read the guard\'s files, not change them or stop the guard.',
@@ -63,7 +66,9 @@ export function codingAgentPolicyBody(): string {
     '',
     '  # Data destruction: enforced from day one.',
     `  - { id: destructive-sql, tool: "*", detect: { detector: sql_destructive, args: ${list(SQL_ARGS)} }, action: require_approval }`,
-    `  - { id: destructive-shell, tool: "*", detect: { detector: shell_destructive, args: ${shell} }, action: require_approval }`,
+    '  # A plain push to main or master is recorded by git-push-protected below, not held. To hold it',
+    '  # again, delete except_kinds: [git_push_protected] and the comma before it from this rule.',
+    `  - { id: destructive-shell, tool: "*", detect: { detector: shell_destructive, args: ${shell}, except_kinds: [git_push_protected] }, action: require_approval }`,
     `  - { id: terraform-destroy, tool: "*", detect: { detector: terraform_destroy, args: ${shell} }, action: require_approval }`,
     `  - { id: cloud-delete, tool: "*", detect: { detector: cloud_delete, args: ${shell} }, action: require_approval }`,
     '',
@@ -72,6 +77,10 @@ export function codingAgentPolicyBody(): string {
     '',
     '  # Secret reads: recorded as "would hold", not enforced. Delete `observe: true` to enforce.',
     `  - { id: secret-read, tool: "*", detect: { detector: secret_read, args: ${list([...SHELL_ARGS, 'path', 'file_path', 'target_file'])} }, action: require_approval, observe: true }`,
+    '',
+    '  # Plain pushes to main or master: recorded as "would hold", not enforced. Force pushes and pushes',
+    '  # that delete a branch or tag stay held by destructive-shell.',
+    `  - { id: git-push-protected, tool: "*", detect: { detector: shell_destructive, args: ${shell}, kinds: [git_push_protected] }, action: require_approval, observe: true }`,
   ];
   return lines.join('\n') + '\n';
 }

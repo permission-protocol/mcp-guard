@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { PRODUCTION_API_URL } from './cloud/pinned-keys.js';
 import type { KeySetEntry } from './signing/keys.js';
-import { DETECTOR_NAMES, isDetectorName, type DetectorName } from './detect/index.js';
+import { DETECTOR_NAMES, FILTERABLE_KINDS, isDetectorName, type DetectorName } from './detect/index.js';
 
 export type Action = 'allow' | 'block' | 'require_approval';
 
@@ -21,6 +21,10 @@ export interface MatchCondition {
 export interface DetectSpec {
   detector: DetectorName;
   args: string[];
+  /** Count only definite findings of these kinds. Unreadable text still matches. */
+  kinds?: string[];
+  /** Do not count definite findings of these kinds. Unreadable text still matches. */
+  except_kinds?: string[];
 }
 
 /** What counts as production, named in the policy's `targets:` section. Fixed set. */
@@ -45,7 +49,7 @@ export const ANY_TOOL = '*';
 export const MAX_PATTERN_LENGTH = 512;
 const MAX_DETECT_ARGS = 16;
 const MATCH_KEYS = new Set(['equals', 'contains', 'pattern', 'ignore_case']);
-const DETECT_KEYS = new Set(['detector', 'args']);
+const DETECT_KEYS = new Set(['detector', 'args', 'kinds', 'except_kinds']);
 
 // Permission Deck Slice 1: reversibility is the primary risk axis.
 export type Reversibility = 'reversible' | 'irreversible';
@@ -420,7 +424,21 @@ function parseDetect(value: unknown, i: number): DetectSpec {
   if (d.args.length > MAX_DETECT_ARGS) throw new Error(`Rule ${i} detect.args lists more than ${MAX_DETECT_ARGS} arguments`);
   const args = d.args.map((a) => argName(a, `Rule ${i} detect.args`));
   if (new Set(args).size !== args.length) throw new Error(`Rule ${i} detect.args lists an argument twice`);
-  return { detector: d.detector, args };
+  const out: DetectSpec = { detector: d.detector, args };
+  if (d.kinds !== undefined && d.except_kinds !== undefined) throw new Error(`Rule ${i} detect: use "kinds" or "except_kinds", not both`);
+  for (const key of ['kinds', 'except_kinds'] as const) {
+    if (d[key] === undefined) continue;
+    const known = FILTERABLE_KINDS[d.detector];
+    if (!known) throw new Error(`Rule ${i} detect.${key}: detector "${d.detector}" cannot be narrowed by kind (only ${Object.keys(FILTERABLE_KINDS).join(', ')})`);
+    const list = d[key];
+    if (!Array.isArray(list) || list.length === 0) throw new Error(`Rule ${i} detect.${key} must be a non-empty list of kinds`);
+    for (const k of list) {
+      if (typeof k !== 'string' || !known.includes(k)) throw new Error(`Rule ${i} detect.${key}: "${String(k)}" is not a ${d.detector} kind. Must be one of: ${known.join(', ')}`);
+    }
+    if (new Set(list).size !== list.length) throw new Error(`Rule ${i} detect.${key} lists a kind twice`);
+    out[key] = [...list] as string[];
+  }
+  return out;
 }
 
 /** The origin of an API URL: https anywhere, http only on loopback. No path, query or credentials. */

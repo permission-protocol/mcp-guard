@@ -48,6 +48,15 @@ export interface DetectorResult {
   reason?: UnparseableReason;
 }
 
+/**
+ * Which definite findings a rule counts (`detect.kinds` / `detect.except_kinds`). It never
+ * applies to text the detector could not read: that matches either way.
+ */
+export interface KindFilter {
+  only?: readonly string[];
+  except?: readonly string[];
+}
+
 export const NOT_MATCHED: DetectorResult = Object.freeze({ matched: false, kind: 'none', parsed: true }) as DetectorResult;
 
 export function found(kind: string, target?: string): DetectorResult {

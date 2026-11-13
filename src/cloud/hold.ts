@@ -2,13 +2,14 @@ import type { KeySet, TrustPins } from '../signing/keys.js';
 import type { ReplayCache } from '../verify-core.js';
 import { CloudApiError, type CloudClient } from './client.js';
 import { argsHashOf, callFingerprint } from './fingerprint.js';
-import { argsPreviewOf } from './preview.js';
+import { argsPreviewOf, requestContextOf, type EffectInput } from './preview.js';
 import { verifyCloudReceipt, type CloudReceiptArtifact, type VerifiedCloudReceipt } from './verify.js';
 
 /**
  * One held call, decided by a named human through Permission Protocol.
  *
- *   hash the call locally -> open an approval request -> poll with backoff ->
+ *   hash the call locally -> open an approval request (hash, masked preview, and why
+ *   it was held: rule id, detector finding, project name) -> poll with backoff ->
  *   verify the signed receipt offline against the pinned key -> redeem it once ->
  *   released.
  *
@@ -46,8 +47,17 @@ export interface CloudHoldInput {
    * `sendPreview` is false) a preview masked and capped by cloud/preview.ts.
    */
   args: unknown;
-  /** `false` (policy `cloud.args_preview: false`): send the hash only, no preview. Default true. */
+  /**
+   * `false` (policy `cloud.args_preview: false`): nothing readable leaves the machine: no
+   * preview, no `effect.target`, no `project`. Default true.
+   */
   sendPreview?: boolean;
+  /** The matched rule's id, sent as `ruleId` when it is a plain identifier. Not hashed. */
+  ruleId?: string | null;
+  /** What the rule's detector found, sent as `effect` (cloud/preview.ts requestContextOf). Not hashed. */
+  effect?: EffectInput;
+  /** The directory the guard treats as the project; only its sanitized name is sent, as `project`. */
+  projectDir?: string | null;
   agentId: string;
   environment: string;
   timeoutSeconds: number;
@@ -89,6 +99,9 @@ export async function decideInCloud(input: CloudHoldInput): Promise<CloudOutcome
       argsHash,
       // Masked and capped here, before upload (cloud/preview.ts). Never part of the fingerprint.
       ...(input.sendPreview === false ? {} : { argsPreview: argsPreviewOf(input.args) }),
+      // Why it was held, for the signer: rule id, detector finding, project name. Never hashed,
+      // never part of the fingerprint. A create refused for any reason blocks; no retry without them.
+      ...requestContextOf({ ruleId: input.ruleId, effect: input.effect, projectDir: input.projectDir }, input.sendPreview !== false),
       agentId: input.agentId,
       env: input.environment,
       timeoutSec: input.timeoutSeconds,

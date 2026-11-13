@@ -1,6 +1,6 @@
 /**
- * shell_destructive: recursive rm outside the working tree, force pushes and pushes to
- * main/master, raw disk writes (dd, mkfs, shred, wipefs, redirects to block devices),
+ * shell_destructive: recursive rm outside the working tree, force pushes, pushes that
+ * delete, mirror or push every branch, plain pushes to main/master, raw disk writes (dd, mkfs, shred, wipefs, redirects to block devices),
  * find -delete, recursive chmod/chown on broad paths, and destructive SQL sent through
  * psql / mysql / sqlite3.
  *
@@ -8,10 +8,34 @@
  */
 import { overShell } from './combine.js';
 import { classifyPath, hasFlag, hasShort, operands, positionals, DYN, type Cmd, type Word } from './shell.js';
-import { sqlDestructive } from './sql.js';
-import { found, NOT_MATCHED, unparseable, type DetectorResult } from './types.js';
+import { SQL_DESTRUCTIVE_KINDS, sqlDestructive } from './sql.js';
+import { found, NOT_MATCHED, unparseable, type DetectorResult, type KindFilter } from './types.js';
+
+/**
+ * Every kind a definite shell_destructive finding can have: its own, and the SQL kinds of
+ * destructive SQL sent through a client (`psql -c`). A rule can narrow the detector to
+ * some of them (`detect.kinds`) or leave some out (`detect.except_kinds`).
+ */
+export const SHELL_DESTRUCTIVE_KINDS = [
+  'rm_recursive', 'rm_xargs', 'truncate_file', 'move_to_device', 'disk_write', 'overwrite_redirect', 'find_delete',
+  'git_force_push', 'git_push_delete', 'git_push_mirror', 'git_push_all', 'git_push_protected',
+  'recursive_permissions', 'disk_format', 'shred',
+  ...SQL_DESTRUCTIVE_KINDS,
+] as const;
 
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
+
+/**
+ * Findings that reach the whole file system, a whole disk or the whole home directory.
+ * When one text has several findings, one of these is shown (overShell `rank`). Display only.
+ */
+const WIDE = new WeakSet<DetectorResult>();
+const wide = (r: DetectorResult): DetectorResult => { WIDE.add(r); return r; };
+const isWidePath = (w: Word, cwdUnknown: boolean): boolean => {
+  const { cls, depth } = classifyPath(w, cwdUnknown);
+  return cls === 'root' || (cls === 'home' && depth === 0);
+};
+const rankOf = (r: DetectorResult): number => (WIDE.has(r) || r.kind === 'disk_write' || r.kind === 'disk_format' ? 1 : 0);
 const DISK_DEVICE = /^\/dev\/(sd|hd|vd|xvd|nvme|disk|rdisk|mmcblk|md|dm-|mapper\/|loop)/;
 
 function rm(cmd: Cmd): DetectorResult | null {
@@ -34,18 +58,21 @@ function rm(cmd: Cmd): DetectorResult | null {
     }
     targets.push(w);
   }
-  if (noPreserveRoot) return found('rm_recursive', '/');
+  if (noPreserveRoot) return wide(found('rm_recursive', '/'));
   if (cmd.viaXargs) return xargsTargets(cmd);
   if (!recursive && !maybeRecursive) return null;
   let uncertain: DetectorResult | null = null;
+  let first: DetectorResult | null = null;
   for (const t of targets) {
     const { cls } = classifyPath(t, cmd.cwdUnknown);
     if (cls === 'inside' || cls === 'temp') continue;
     if (cls === 'dynamic') { uncertain ??= unparseable('dynamic_argument', 'rm_recursive'); continue; }
     if (!recursive) { uncertain ??= unparseable('dynamic_argument', 'rm_recursive'); continue; }
-    return found('rm_recursive', t.text);
+    // Show the root or the home directory over a narrower path named before it.
+    if (isWidePath(t, cmd.cwdUnknown)) return wide(found('rm_recursive', t.text));
+    first ??= found('rm_recursive', t.text);
   }
-  return uncertain;
+  return first ?? uncertain;
 }
 
 /** Roots of a find command: operands before the first expression. */
@@ -201,7 +228,9 @@ function git(cmd: Cmd): DetectorResult | null {
     if (s.dynamic) return unparseable('dynamic_argument', 'git_push');
     if (PROTECTED_BRANCHES.has(target(s.text))) return found('git_push_protected', target(s.text));
   }
-  if (all) return found('git_push_protected', remote);
+  // Every branch at once (main among them): its own kind, so a policy can treat a plain
+  // push to one protected branch differently without letting this through.
+  if (all) return found('git_push_all', remote);
   if (refs[0]?.dynamic) return unparseable('dynamic_argument', 'git_push');
   return null;
 }
@@ -287,6 +316,21 @@ function check(cmd: Cmd): DetectorResult | null {
   return sqlClient(cmd);
 }
 
-export function shellDestructive(text: string): DetectorResult {
-  return overShell(text, check);
+/**
+ * `filter` narrows the definite findings that count, per command: a command whose finding
+ * is filtered out counts as not matched and reading goes on to the next command, so
+ * `git push origin main && rm -rf ~/x` still matches with `git_push_protected` excluded.
+ * check() returns one finding per command, and a git command's only other finding is a
+ * redirect, which is checked first, so filtering one kind never hides another. Text the
+ * detector cannot read still matches (fail safe), whatever the filter.
+ */
+export function shellDestructive(text: string, filter?: KindFilter): DetectorResult {
+  if (!filter) return overShell(text, check, rankOf);
+  return overShell(text, (cmd) => {
+    const r = check(cmd);
+    if (!r || !r.matched || !r.parsed) return r;
+    if (filter.only && !filter.only.includes(r.kind)) return null;
+    if (filter.except && filter.except.includes(r.kind)) return null;
+    return r;
+  }, rankOf);
 }
