@@ -4,7 +4,7 @@ import { TOOLS_CALL, type Config, type Rule } from './config.js';
 import { evaluate, type Decision } from './engine.js';
 import { Issuer, ruleReason, hashablePayloadInputHash, type IssuedReceipt, type ScopeBinding } from './issuer.js';
 import { SigningError } from './keystore.js';
-import { emitReceipt, emitHold, emitCloudDecision } from './receipt-log.js';
+import { emitReceipt, emitHold, emitCloudDecision, emitObserved } from './receipt-log.js';
 import { signHeld, forwardReleased, releaseOnCountdown } from './release.js';
 import { ReplayCache } from './verify-core.js';
 import { createCloudClient, type CloudClient } from './cloud/client.js';
@@ -282,6 +282,19 @@ export function startProxy(config: Config, agentId: string, serverCommand: strin
     // This is what the approver sees and what the receipt hashes.
     const forwardArgs = serverInput(forward, tool !== null);
     const label = tool ?? msg.method;
+
+    // An observe-only rule matched: record what it would have done. The decision above
+    // was made as if that rule were absent.
+    if (decision.observed) {
+      const o = decision.observed;
+      process.stderr.write(`[mcp-guard] OBSERVE: ${o.reason} would ${o.would === 'blocked' ? 'block' : 'hold'} "${label}"; not enforced (observe: true)\n`);
+      emitObserved({
+        ruleId: o.rule_id, would: o.would,
+        detector: o.effect?.detector ?? null, kind: o.effect?.kind ?? null, parsed: o.effect?.parsed ?? null, reason: o.effect?.reason ?? null,
+        method: msg.method, tool, agentId,
+        inputHash: hashablePayloadInputHash(tool ?? msg.method, msg.method, forwardArgs), at: new Date().toISOString(),
+      });
+    }
 
     const hold = (holdId: string | null): void => emitHold({
       id: holdId, method: msg.method, tool, agentId, ruleId: decision.rule_id,

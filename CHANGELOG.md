@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased: coding-agent preset
+
+### Added
+
+- `mcp-guard init --preset coding-agent`: a ready policy for coding agents. Destructive SQL, shell, Terraform and cloud deletes are held from day one; secret reads are observed. `--preset` and `--tool` cannot be combined. Without `--preset`, `init` writes the same policy as before. See [docs/presets.md](docs/presets.md).
+- `observe: true` on a `block` or `require_approval` rule: when it matches, stderr and an unsigned `{"observed": ...}` line in the receipts file record what it would have done (rule id, detector, kind, input hash; never arguments), and evaluation continues as if the rule were absent. Refused on `allow` rules.
+- `targets:` (`databases`, `cloud_accounts`, `kube_contexts`, `git_branches`: lists of literal names) and the `mentions_target: { args, in }` rule condition: hold a call whose arguments name a production target. Whole-word, case-insensitive; unreadable arguments (objects, over 64 KB) hold. Malformed names, unknown kinds, and `mentions_target` without `targets:` or on an `allow` rule are startup errors.
+- `guard_tamper` detector: modifying, moving or deleting the guard's policy files, receipt logs, key store or install token, or the MCP client configuration that routes a server through it; killing the guard; `mcp-guard keys init|rotate|revoke` and `mcp-guard init`. Reading those files does not match.
+
+### Unchanged
+
+- Rules without `observe` or `mentions_target` behave exactly as before.
+
 ## 0.4.0: signed approvals by a named human
 
 A held call can now be released by a receipt that a signed-in person signed in Permission Protocol, verified offline by the guard. Before this release every approval was local: decided on the guard's machine, with the approver's name taken from `--operator`.

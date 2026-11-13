@@ -52,6 +52,29 @@ export function emitHold(hold: { id: string | null; method: string; tool: string
 }
 
 /**
+ * An `observe: true` rule matched: what it would have done, recorded unsigned as an
+ * `{ "observed": ... }` line (it is not a decision). Rule id, detector name, kind and
+ * reason from fixed sets, and the input hash. Never the arguments or the detector target.
+ */
+export interface ObservedLine {
+  ruleId: string;
+  would: 'blocked' | 'held_for_approval';
+  detector: string | null;
+  kind: string | null;
+  parsed: boolean | null;
+  reason: string | null;
+  method: string;
+  tool: string | null;
+  agentId: string;
+  inputHash: string;
+  at: string;
+}
+
+export function emitObserved(line: ObservedLine, path: string = defaultReceiptsPath()): void {
+  append(JSON.stringify({ observed: line }), path);
+}
+
+/**
  * One cloud decision on a held call, appended as a `{ "cloud": ... }` line: what was
  * decided, the Permission Protocol receipt id and URL, who signed, and the signed
  * artifact itself so the line verifies offline later. Never the arguments.

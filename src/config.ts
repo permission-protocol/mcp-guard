@@ -23,6 +23,23 @@ export interface DetectSpec {
   args: string[];
 }
 
+/** What counts as production, named in the policy's `targets:` section. Fixed set. */
+export const TARGET_KINDS = ['databases', 'cloud_accounts', 'kube_contexts', 'git_branches'] as const;
+export type TargetKind = (typeof TARGET_KINDS)[number];
+export type Targets = Record<TargetKind, string[]>;
+export const MAX_TARGETS_PER_KIND = 64;
+export const MAX_TARGET_NAME_LENGTH = 128;
+/** Literal names only: no patterns. Letters, digits and . _ - : / @, starting with a letter or digit. */
+const TARGET_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
+const MENTIONS_KEYS = new Set(['in', 'args']);
+
+/** Hold a call whose listed arguments name one of the policy's production targets. */
+export interface MentionsTargetSpec {
+  /** Target kinds to look for; all kinds when the policy omitted `in`. */
+  in: TargetKind[];
+  args: string[];
+}
+
 /** Matches any tool, for rules narrowed by `match` or `detect`. */
 export const ANY_TOOL = '*';
 export const MAX_PATTERN_LENGTH = 512;
@@ -43,7 +60,14 @@ export interface Rule {
   match?: Record<string, MatchCondition>;
   /** Narrow the rule to calls a detector flags. */
   detect?: DetectSpec;
+  /** Narrow the rule to calls whose arguments name a production target. */
+  mentions_target?: MentionsTargetSpec;
   action: Action;
+  /**
+   * Observe this rule only: when it matches, the match is recorded as what the rule would
+   * have done, and evaluation goes on to the next rule as if this one were absent.
+   */
+  observe?: boolean;
   // --- Permission Deck classifier axes (all optional) ---
   reversibility?: Reversibility;  // reversible -> countdown auto-release; irreversible -> hard stop
   countdown_seconds?: number;     // reversible holds auto-release after this many seconds
@@ -74,6 +98,8 @@ export interface Config {
   policy_sha256: string;
   /** Present: held calls are decided by a named human through Permission Protocol. Absent: local-only. */
   cloud?: CloudConfig;
+  /** Present when the policy has a `targets:` section. Names are lower-cased. */
+  targets?: Targets;
 }
 
 export type CloudEnvironment = 'development' | 'staging' | 'production';
@@ -113,10 +139,10 @@ const VALID_MODES: Mode[] = ['enforce', 'observe'];
 const VALID_REVERSIBILITY: Reversibility[] = ['reversible', 'irreversible'];
 const VALID_SIGNING: SigningMode[] = ['required', 'off'];
 const TOP_LEVEL_KEYS = new Set([
-  'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing', 'cloud',
+  'default_action', 'mode', 'rules', 'approval_ttl_seconds', 'receipt_ttl_seconds', 'scoped_receipt_ttl_seconds', 'server_label', 'signing', 'cloud', 'targets',
 ]);
 const RULE_KEYS = new Set([
-  'id', 'method', 'tool', 'match', 'detect', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
+  'id', 'method', 'tool', 'match', 'detect', 'mentions_target', 'observe', 'action', 'reversibility', 'countdown_seconds', 'cap_usd', 'amount_arg', 'verify_threshold', 'receipt_ttl_seconds',
 ]);
 
 export function loadConfig(configPath: string): Config {
@@ -167,6 +193,8 @@ export function parseConfig(raw: string): Config {
     throw new Error('Config must include a "rules" array');
   }
 
+  const targets = parsed.targets === undefined ? undefined : parseTargets(parsed.targets);
+
   const seenIds = new Set<string>();
   const seenTargets = new Set<string>();
   const rules: Rule[] = parsed.rules.map((r: any, i: number) => {
@@ -191,27 +219,37 @@ export function parseConfig(raw: string): Config {
       throw new Error(`Rule ${i} has invalid action: "${r.action}"`);
     }
 
-    const conditional = r.match !== undefined || r.detect !== undefined;
+    const conditional = r.match !== undefined || r.detect !== undefined || r.mentions_target !== undefined;
     if (conditional && method !== TOOLS_CALL) {
-      throw new Error(`Rule ${i}: "match" and "detect" apply only to ${TOOLS_CALL} rules`);
+      throw new Error(`Rule ${i}: "match", "detect" and "mentions_target" apply only to ${TOOLS_CALL} rules`);
     }
     if (r.tool === ANY_TOOL && !conditional) {
-      throw new Error(`Rule ${i}: tool "*" requires "match" or "detect" (a bare wildcard would match every call)`);
+      throw new Error(`Rule ${i}: tool "*" requires "match" or "detect" (or "mentions_target"; a bare wildcard would match every call)`);
     }
     const match = r.match === undefined ? undefined : parseMatch(r.match, i);
     const detect = r.detect === undefined ? undefined : parseDetect(r.detect, i);
     if (detect && r.action === 'allow') {
       throw new Error(`Rule ${i}: "detect" finds dangerous calls; it cannot be used with action "allow"`);
     }
+    let mentionsTarget: MentionsTargetSpec | undefined;
+    if (r.mentions_target !== undefined) {
+      if (!targets) throw new Error(`Rule ${i}: "mentions_target" needs a top-level "targets:" section naming what counts as production`);
+      if (r.action === 'allow') throw new Error(`Rule ${i}: "mentions_target" finds production calls; it cannot be used with action "allow"`);
+      mentionsTarget = parseMentionsTarget(r.mentions_target, i);
+    }
+    if (r.observe !== undefined && typeof r.observe !== 'boolean') throw new Error(`Rule ${i}: observe must be true or false`);
+    const observe = r.observe === true;
+    if (observe && r.action === 'allow') throw new Error(`Rule ${i}: observe applies to block and require_approval rules (an allow rule has nothing to observe)`);
 
     // First match wins. An unconditional rule for a target matches every call to it, so
     // a second unconditional rule, or any later conditional rule, for that target is dead.
     const target = `${method}\u0000${r.tool ?? ''}`;
     if (seenTargets.has(target)) {
-      if (!conditional) throw new Error(`Rule ${i} duplicates another rule for ${r.tool ? `tool "${r.tool}"` : `method "${method}"`}`);
+      if (!conditional && !observe) throw new Error(`Rule ${i} duplicates another rule for ${r.tool ? `tool "${r.tool}"` : `method "${method}"`}`);
       throw new Error(`Rule ${i} ("${r.id}") can never match: an earlier rule without match/detect already matches every call to tool "${r.tool}"`);
     }
-    if (!conditional) seenTargets.add(target);
+    // An observed rule never ends evaluation, so it cannot shadow a later rule.
+    if (!conditional && !observe) seenTargets.add(target);
     if (r.reversibility !== undefined && !VALID_REVERSIBILITY.includes(r.reversibility)) {
       throw new Error(`Rule ${i} has invalid reversibility: "${r.reversibility}". Must be one of: ${VALID_REVERSIBILITY.join(', ')}`);
     }
@@ -243,7 +281,9 @@ export function parseConfig(raw: string): Config {
       ...(r.tool !== undefined ? { tool: r.tool } : {}),
       ...(match ? { match } : {}),
       ...(detect ? { detect } : {}),
+      ...(mentionsTarget ? { mentions_target: mentionsTarget } : {}),
       action: r.action as Action,
+      ...(observe ? { observe: true } : {}),
       ...(r.reversibility !== undefined ? { reversibility: r.reversibility as Reversibility } : {}),
       ...(r.countdown_seconds !== undefined ? { countdown_seconds: r.countdown_seconds } : {}),
       ...(r.cap_usd !== undefined ? { cap_usd: r.cap_usd, amount_arg: r.amount_arg } : {}),
@@ -263,7 +303,60 @@ export function parseConfig(raw: string): Config {
     signing,
     policy_sha256: createHash('sha256').update(raw).digest('hex'),
     ...(parsed.cloud !== undefined ? { cloud: parseCloud(parsed.cloud) } : {}),
+    ...(targets ? { targets } : {}),
   };
+}
+
+/**
+ * `targets:` maps each kind to a list of literal names. A kind may be absent or empty
+ * (it then names nothing); anything else malformed is an error.
+ */
+function parseTargets(value: unknown): Targets {
+  if (value === null) value = {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid targets: must map ${TARGET_KINDS.join(', ')} to lists of names`);
+  const out = Object.fromEntries(TARGET_KINDS.map((k) => [k, [] as string[]])) as Targets;
+  for (const [key, list] of Object.entries(value as Record<string, unknown>)) {
+    if (!(TARGET_KINDS as readonly string[]).includes(key)) throw new Error(`Unknown targets key: "${key}". Must be one of: ${TARGET_KINDS.join(', ')}`);
+    if (list === null) continue;
+    if (!Array.isArray(list)) throw new Error(`Invalid targets.${key}: must be a list of names`);
+    if (list.length > MAX_TARGETS_PER_KIND) throw new Error(`Invalid targets.${key}: at most ${MAX_TARGETS_PER_KIND} names`);
+    const seen = new Set<string>();
+    for (const name of list) {
+      // A bare 012345678901 is a YAML number and loses its leading zero: names must be strings.
+      if (typeof name !== 'string') throw new Error(`Invalid targets.${key}: every name must be a quoted string (quote account ids: "012345678901")`);
+      const text = name;
+      if (text.length < 2 || text.length > MAX_TARGET_NAME_LENGTH || !TARGET_NAME_PATTERN.test(text)) {
+        throw new Error(`Invalid targets.${key} name "${text.slice(0, 40)}": 2-${MAX_TARGET_NAME_LENGTH} characters of letters, digits and . _ - : / @, starting with a letter or digit (literal names, not patterns)`);
+      }
+      const lower = text.toLowerCase();
+      if (seen.has(lower)) throw new Error(`Invalid targets.${key}: "${text}" is listed twice`);
+      seen.add(lower);
+      out[key as TargetKind].push(lower);
+    }
+  }
+  return out;
+}
+
+function parseMentionsTarget(value: unknown, i: number): MentionsTargetSpec {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Rule ${i}: "mentions_target" must be an object with args (and optionally in)`);
+  const m = value as Record<string, unknown>;
+  for (const key of Object.keys(m)) {
+    if (!MENTIONS_KEYS.has(key)) throw new Error(`Rule ${i} mentions_target has unknown key: "${key}"`);
+  }
+  let kinds: TargetKind[] = [...TARGET_KINDS];
+  if (m.in !== undefined) {
+    if (!Array.isArray(m.in) || m.in.length === 0) throw new Error(`Rule ${i} mentions_target.in must be a non-empty list of: ${TARGET_KINDS.join(', ')}`);
+    for (const k of m.in) {
+      if (!(TARGET_KINDS as readonly unknown[]).includes(k)) throw new Error(`Rule ${i} mentions_target.in "${String(k)}" is unknown. Must be one of: ${TARGET_KINDS.join(', ')}`);
+    }
+    if (new Set(m.in).size !== m.in.length) throw new Error(`Rule ${i} mentions_target.in lists a kind twice`);
+    kinds = m.in as TargetKind[];
+  }
+  if (!Array.isArray(m.args) || m.args.length === 0) throw new Error(`Rule ${i} mentions_target.args must be a non-empty list of argument names`);
+  if (m.args.length > MAX_DETECT_ARGS) throw new Error(`Rule ${i} mentions_target.args lists more than ${MAX_DETECT_ARGS} arguments`);
+  const args = m.args.map((a) => argName(a, `Rule ${i} mentions_target.args`));
+  if (new Set(args).size !== args.length) throw new Error(`Rule ${i} mentions_target.args lists an argument twice`);
+  return { in: kinds, args };
 }
 
 function argName(v: unknown, where: string): string {
