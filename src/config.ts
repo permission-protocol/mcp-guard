@@ -121,6 +121,8 @@ export interface CloudConfig {
   heartbeat?: boolean;
   /** `false`: a held call sends the argument hash only, no masked preview. Absent: preview on. */
   args_preview?: boolean;
+  /** `false`: a held call never opens the signing page in this machine's browser. Absent: on (cloud/open-browser.ts). */
+  open_browser?: boolean;
 }
 
 export const DEFAULT_APPROVAL_TTL_SECONDS = 900;
@@ -135,7 +137,7 @@ export const DEFAULT_CLOUD_APPROVAL_TIMEOUT_SECONDS = 600;
 export const MIN_CLOUD_APPROVAL_TIMEOUT_SECONDS = 30;
 export const MAX_CLOUD_APPROVAL_TIMEOUT_SECONDS = 3600;
 const CLOUD_ENVIRONMENTS: CloudEnvironment[] = ['development', 'staging', 'production'];
-const CLOUD_KEYS = new Set(['api_url', 'environment', 'approval_timeout_seconds', 'trust_keys', 'heartbeat', 'args_preview']);
+const CLOUD_KEYS = new Set(['api_url', 'environment', 'approval_timeout_seconds', 'trust_keys', 'heartbeat', 'args_preview', 'open_browser']);
 const TRUST_KEY_KEYS = new Set(['key_id', 'alg', 'public_key_b64']);
 
 const VALID_ACTIONS: Action[] = ['allow', 'block', 'require_approval'];
@@ -458,7 +460,12 @@ function parseCloud(value: unknown): CloudConfig {
 
   if (cloud.heartbeat !== undefined && typeof cloud.heartbeat !== 'boolean') throw new Error('Invalid cloud.heartbeat: must be true or false');
   if (cloud.args_preview !== undefined && typeof cloud.args_preview !== 'boolean') throw new Error('Invalid cloud.args_preview: must be true or false');
-  const optional = { ...(cloud.heartbeat === false ? { heartbeat: false } : {}), ...(cloud.args_preview === false ? { args_preview: false } : {}) };
+  if (cloud.open_browser !== undefined && typeof cloud.open_browser !== 'boolean') throw new Error('Invalid cloud.open_browser: must be true or false');
+  const optional = {
+    ...(cloud.heartbeat === false ? { heartbeat: false } : {}),
+    ...(cloud.args_preview === false ? { args_preview: false } : {}),
+    ...(cloud.open_browser === false ? { open_browser: false } : {}),
+  };
 
   const production = apiUrl === PRODUCTION_API_URL;
   if (cloud.trust_keys === undefined) {

@@ -8,7 +8,7 @@ import { fingerprintOfCall } from '../cloud/fingerprint.js';
 import { pinsFor } from '../cloud/pinned-keys.js';
 import { verifyCloudReceipt } from '../cloud/verify.js';
 import { startFakePp, type FakePp } from './cloud-helpers.js';
-import { LAUNCH_FAILED_REASON } from '../hook/install.js';
+import { HOOK_STATUS_MESSAGE, LAUNCH_FAILED_REASON, LAUNCHER_NOT_FOUND_REASON } from '../hook/install.js';
 import { codingAgentPolicyBody } from '../presets/coding-agent.js';
 
 /**
@@ -235,10 +235,16 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'allow');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /released by receipt rcpt_fake_\d+, signed by Maria Signer/);
+    // On an allow the reason reaches only the debug log: Claude gets additionalContext, the person systemMessage.
+    // The fake's receipt link is http, not an https page of the configured API, so the verified receipt id is named.
+    assert.match(r.json.hookSpecificOutput.additionalContext, /^Approved by Maria Signer through Permission Protocol\. Receipt: rcpt_fake_\d+$/);
+    assert.match(r.json.systemMessage, /^mcp-guard: Approved by Maria Signer through Permission Protocol\./);
     assert.equal(fake.redeemed.length, redeemedBefore + 1);
 
     const create = fake.calls.filter((c) => c.method === 'POST' && c.path === '/api/mcp/approval-requests').at(-1)!;
     assert.deepEqual({ tool: create.body.tool, server: create.body.server, agentId: create.body.agentId, timeoutSec: create.body.timeoutSec }, { tool: 'Bash', server: 'claude-code', agentId: 'claude-code', timeoutSec: 60 });
+    // Exactly the 0.5.0 body: no new field can reach Permission Protocol by accident.
+    assert.deepEqual(Object.keys(create.body).sort(), ['agentId', 'argsHash', 'argsPreview', 'env', 'server', 'timeoutSec', 'tool']);
 
     const line = logLines(dir).find((l) => l.cloud)!.cloud;
     assert.equal(line.decision, 'released');
@@ -271,6 +277,8 @@ describe('mcp-guard hook: held calls and Permission Protocol', () => {
     const first = await runHook(dir, bash('rm -rf ~/resume'), ['--wait', '1']);
     assertDenied(first, /nobody signed within the hook's 1-second wait\. Request mcpreq_\d+ stays open .*sign it at http:\/\/127\.0\.0\.1:\d+\/sign\/mcpreq_\d+.*run exactly the same call again/);
     assert.equal(logLines(dir).at(-1).cloud.decision, 'expired');
+    // The person sees the link too, and that the same call can be retried after a signature.
+    assert.match(first.json.systemMessage, /still waiting for a signature\. After someone signs, the same call can be retried\. Signing link: http:\/\/127\.0\.0\.1:\d+\/sign\/mcpreq_\d+$/);
 
     // Same call; the model rewrote its description, which is not part of what is signed.
     const retry = await runHook(dir, event('Bash', { command: 'rm -rf ~/resume', description: 'another description' }), ['--wait', '5']);
@@ -338,11 +346,11 @@ describe('mcp-guard hook install / uninstall', () => {
           matcher: 'Bash|PowerShell|Write|Edit|NotebookEdit',
           hooks: [{
             type: 'command',
-            command: 'npx --no-install mcp-guard hook --config "${CLAUDE_PROJECT_DIR}"/pp.config.yaml --wait 240; c=$?; case $c in 0|2) exit $c;; esac; '
-              + `echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`,
+            command: 'npx --no-install mcp-guard hook --config "${CLAUDE_PROJECT_DIR}"/pp.config.yaml --wait 240; c=$?; case $c in 0|2) exit $c;; '
+              + `127) echo '${LAUNCHER_NOT_FOUND_REASON}' >&2; exit 2;; esac; echo '${LAUNCH_FAILED_REASON}' >&2; exit 2`,
             timeout: 300,
             onFailure: 'block',
-            statusMessage: 'mcp-guard: checking policy (a held call waits for a Permission Protocol signature)',
+            statusMessage: 'mcp-guard: checking this call. A held call waits here until a named person signs it.',
           }],
         }],
       },
@@ -425,15 +433,25 @@ describe('installed hook command: fail closed on any exit but 0 and 2', () => {
     return path;
   };
 
-  it('launcher not found exits 2 with the fixed reason', () => {
-    const r = run('/nonexistent/dir/mcp-guard');
+  it('launcher not found (exit 127) exits 2 with its own fixed reason: not on the PATH Claude Code gave the hook, how to remove it', () => {
+    for (const launcher of ['/nonexistent/dir/mcp-guard', 'mcp-guard-launcher-that-is-not-on-path']) {
+      const r = run(launcher);
+      assert.equal(r.status, 2, launcher);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(LAUNCHER_NOT_FOUND_REASON), r.stderr);
+      assert.equal(r.stderr.includes(LAUNCH_FAILED_REASON), false, 'not the reinstall advice, which does not fix a PATH');
+    }
+    const r = run(fake(), { FAKE_CODE: '127', FAKE_STDOUT: '' });
     assert.equal(r.status, 2);
-    assert.equal(r.stdout, '');
-    assert.match(r.stderr, new RegExp(LAUNCH_FAILED_REASON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.ok(r.stderr.includes(LAUNCHER_NOT_FOUND_REASON));
+    assert.match(LAUNCHER_NOT_FOUND_REASON, /PATH Claude Code gave this hook/);
+    assert.match(LAUNCHER_NOT_FOUND_REASON, /hooks\.PreToolUse in \.claude\/settings\.json/);
+    assert.equal(LAUNCHER_NOT_FOUND_REASON.includes("'"), false, 'safe inside single quotes');
+    assert.ok(HOOK_STATUS_MESSAGE.length <= 90);
   });
 
   it('launcher exiting 1 (or any other code) exits 2', () => {
-    for (const code of ['1', '3', '127', '137']) {
+    for (const code of ['1', '3', '126', '137']) {
       const r = run(fake(), { FAKE_CODE: code, FAKE_STDOUT: '' });
       assert.equal(r.status, 2, `exit ${code}`);
       assert.ok(r.stderr.includes(LAUNCH_FAILED_REASON));

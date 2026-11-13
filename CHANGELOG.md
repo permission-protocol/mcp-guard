@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.1: a held call is hard to miss
+
+In a real test on Windows, a held `rm -rf` waited 240 seconds and timed out because the person never saw the signing link while the hook was waiting. This release opens the signing page, says in the session what is waiting, and tells Claude who approved. The approval request body is exactly 0.5.0's.
+
+### Added
+
+- **A held call opens the signing page in your browser** while the guard keeps waiting (hook and proxy). Only an `https:` link on the origin of the configured `cloud.api_url`, with no user name or password, is opened; any other link is not opened and the hold goes on as before. The opener gets the link as one argument with no shell: `/usr/bin/open` on macOS, `rundll32 url.dll,FileProtocolHandler` on Windows (no `cmd.exe`), `xdg-open` elsewhere; detached, no stdio, errors ignored. It opens at most once per approval request, and never for a request resumed from an earlier hook run. Opening the browser never changes the decision or delays the poll. **Off** when `CI` is set, in an SSH session (`SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY`), on Linux without `DISPLAY` or `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off` (or `0`, `false`, `no`), with the new policy key `cloud.open_browser: false`, and in init's own self-tests.
+- **Claude is told who approved a held call.** After a verified, redeemed receipt releases a call, the hook answers with `additionalContext` (which Claude Code gives to Claude) and `systemMessage` (which it shows to the person): `Approved by <signer> through Permission Protocol. Receipt: <link>`. The signer comes from the verified receipt only. The link is used only if it is an `https:` page of the configured API; otherwise the verified receipt id is named. On an `allow`, Claude Code writes `permissionDecisionReason` to its debug log only, so before this release Claude saw nothing.
+
+### Changed
+
+- The hook's `statusMessage`, which Claude Code shows beside its spinner while the hook runs: `mcp-guard: checking this call. A held call waits here until a named person signs it.` It is shown on every checked call, so it is short. Run `init` or `hook install` again to update an installed hook. Claude Code reads hook output only when the hook ends, so the signing link itself cannot be shown while the hook waits.
+- When the hook's wait runs out, the denial also carries a `systemMessage` for the person with the signing link and the fact that the same call can be retried after someone signs. The reason Claude gets is unchanged: it already named the link and said to run the same call again.
+- **Shorter `init` output.** During the run it prints only what needs you (the login, the self-test link) and one line per self-test. Then, in this order: what is guarded and where the policy is; what happens the next time an agent tries something destructive; `mcp-guard report` and the receipt verify command; how to undo each change; the setup details (token, key, policy, launcher, wrapped command). A failing step still prints its full detail, and every failure after a change prints how to undo it.
+- **A launcher that is not found gets its own message.** When the shell cannot find the hook's launcher (exit 127), for example because Claude Code was started from the macOS Dock or an IDE with a PATH that lacks `npx`, the installed command now says so, blocks the call (exit 2 as before), and says to start Claude Code from a terminal where `npx` works or to delete the mcp-guard entry under `hooks.PreToolUse` in `.claude/settings.json`. Before, it advised `npm install`, which does not fix a PATH. Run `init` or `hook install` again to update an installed hook.
+- **Detached children start outside the project.** The heartbeat sender (hook and proxy), the browser opener and init's self-test guard now start in the guard's config directory (`~/.config/mcp-guard`, or the parent of `PP_KEYS_DIR`), else the home directory, with the guard's path variables made absolute. On Windows a process whose working directory is the project kept that folder from being deleted. The wrapped MCP server still starts where the client starts the guard.
+- init's own browser opener uses the same no-shell opener. On Windows it ran `cmd /c start "" <url>` before, which `cmd.exe` parses.
+- The receipt-gate template pins the verifier to 0.5.1.
+
 ## 0.5.0: a guard for coding agents
 
 The first release on npm since 0.3.1. 0.4.0 was never published, so everything in the 0.4.0 section below ships for the first time in 0.5.0.

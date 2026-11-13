@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { resolve } from 'node:path';
 import type { Config } from '../config.js';
+import { childEnv, neutralCwd } from '../child-cwd.js';
 import { CLI, heartbeatDisabledReason } from './launch.js';
 import { MIN_INTERVAL_MS } from './send.js';
 
@@ -38,7 +39,7 @@ export function startProxyHeartbeat(config: Config, receiptsPath: string, deps: 
       if (running) return;
       try {
         running = true;
-        const child = (deps.spawn ?? spawn)(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, env });
+        const child = (deps.spawn ?? spawn)(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, cwd: neutralCwd(), env: childEnv(env) });
         let err = '';
         const deadline = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, CHILD_DEADLINE_MS);
         deadline.unref?.();

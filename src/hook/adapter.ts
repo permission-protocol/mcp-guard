@@ -20,7 +20,17 @@ export interface HookCall {
  *   pass   the policy allowed it: no opinion, the agent's own permission flow still runs
  *   deny   refused; `reason` names rule ids, detector kinds and codes, never argument text
  */
-export type HookVerdict = { kind: 'allow'; reason: string } | { kind: 'pass' } | { kind: 'deny'; reason: string };
+export type HookVerdict =
+  | {
+      kind: 'allow';
+      reason: string;
+      /** For the agent: Claude Code adds it to Claude's context (`additionalContext`). On an allow, `reason` reaches only the debug log. */
+      context?: string;
+      /** For the person: shown in the session (`systemMessage`). */
+      notice?: string;
+    }
+  | { kind: 'pass' }
+  | { kind: 'deny'; reason: string; notice?: string };
 
 export interface HookAnswer {
   stdout: string;
@@ -99,12 +109,16 @@ export const claudeCodeAdapter: HookAdapter = {
 
   answer(verdict: HookVerdict): HookAnswer {
     if (verdict.kind === 'pass') return { stdout: '', stderr: '', exitCode: 0 };
+    // `permissionDecisionReason` reaches Claude on a deny and only the debug log on an
+    // allow; `additionalContext` reaches Claude; `systemMessage` is shown to the person.
     const out = {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: verdict.kind,
         permissionDecisionReason: verdict.reason,
+        ...(verdict.kind === 'allow' && verdict.context ? { additionalContext: verdict.context } : {}),
       },
+      ...(verdict.notice ? { systemMessage: verdict.notice } : {}),
     };
     const stdout = JSON.stringify(out) + '\n';
     if (verdict.kind === 'allow') return { stdout, stderr: '', exitCode: 0 };

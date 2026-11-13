@@ -212,8 +212,9 @@ const firstLine = (text: string | null | undefined): string => ((text ?? '').tri
 export function runHookSelfTest(input: { projectDir: string; launcher?: string; policy: Config; localPolicy: string; receiptsPath: string; env?: NodeJS.ProcessEnv; shell?: string; platform?: NodeJS.Platform }): HookSelfTestResult {
   const checks: HookCheck[] = [];
   // The self-test says nothing is sent to Permission Protocol: that includes the usage
-  // heartbeat, which a hook run could otherwise start when a send is due.
-  const env: NodeJS.ProcessEnv = { ...(input.env ?? process.env), CLAUDE_PROJECT_DIR: input.projectDir, PP_SHARED_RECEIPTS_PATH: input.receiptsPath, MCP_GUARD_HEARTBEAT: 'off' };
+  // heartbeat, which a hook run could otherwise start when a send is due. Its held call
+  // never reaches the cloud, and the browser is off all the same.
+  const env: NodeJS.ProcessEnv = { ...(input.env ?? process.env), CLAUDE_PROJECT_DIR: input.projectDir, PP_SHARED_RECEIPTS_PATH: input.receiptsPath, MCP_GUARD_HEARTBEAT: 'off', MCP_GUARD_OPEN_BROWSER: 'off' };
   const fail = (reason: string, failure: 'could_not_run' | 'hook_failed' = 'hook_failed'): HookSelfTestResult => ({ ok: false, checks, reason, failure });
   const shell = input.shell ?? 'sh';
 
