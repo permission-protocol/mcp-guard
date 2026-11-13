@@ -7,7 +7,7 @@ Claude Code is supported. The adapter interface (`src/hook/adapter.ts`) is built
 The one-command path, in the project:
 
 ```bash
-npx @permission-protocol/mcp-guard init --preset coding-agent   # policy, hook, local hook check, first signed receipt
+npx -y @permission-protocol/mcp-guard init --preset coding-agent --hook claude-code   # policy, hook, local hook check, first signed receipt
 ```
 
 By hand, with a policy you write:
@@ -21,19 +21,22 @@ npx mcp-guard hook uninstall          # removes only the mcp-guard entry
 
 ## Set up with `init --preset coding-agent`
 
-`init --preset coding-agent` installs the hook when the project directory (the current directory, or `--project <dir>`) is a Claude Code project, meaning it has a `.claude/` directory or a `CLAUDE.md`. `--hook claude-code` installs it in any directory; `--no-hook` skips it. `--hook` needs `--preset coding-agent`. Without `--preset`, init does exactly what it did before and never touches `.claude/`.
+`init --preset coding-agent` installs the hook when the project directory (the current directory, or `--project <dir>`) is a Claude Code project, meaning it has a `.claude/` directory or a `CLAUDE.md`. `--hook claude-code` installs it in any directory; `--no-hook` skips it. `--hook` needs `--preset coding-agent`. Without `--preset`, init does exactly what it did before and never touches `.claude/`. `init --help` lists every option.
+
+In order, init: checks everything that can refuse (below); connects in the browser; creates a signing key if there is none, writes the policy and installs the hook; runs the local hook self-test; and holds a do-nothing call for your first signature.
 
 Before the device login, so that a refusal changes nothing, init checks:
 
 - `<project>/pp.config.yaml`: if absent, init writes the preset. If present and it loads under the strict loader, it is **kept byte for byte**, whether it is the preset, an edited preset or your own policy (init says which), and the hook reads it. If present and it does not load, init refuses with the loader's message: it never overwrites a policy.
 - `<project>/.claude/settings.json`: the same checks as `hook install` (valid JSON, documented `hooks` shape), run as a dry run. A file that fails them is refused and left untouched (`SETTINGS_INVALID_JSON`, `SETTINGS_UNEXPECTED_SHAPE`).
 - The launcher, chosen in this order and printed with the reason: `--launcher <cmd>` if given; `npx --no-install mcp-guard` if `@permission-protocol/mcp-guard` is installed in the project or a directory above it; otherwise `npx -y @permission-protocol/mcp-guard@<version>`, the exact version of the running package (never a range or `latest`). `<launcher> hook --help` must then run from the project directory under `sh`. If it does not (offline, a version not on the registry, a bad `--launcher`), the installed hook would block every guarded call, so init stops before changing anything.
-- An MCP server to wrap is optional with the hook. With none (or every one already wrapped), init sets up the hook alone.
+- On Windows, Git Bash (below).
+- An MCP server to wrap is optional with the hook. With none (or every one already wrapped), init sets up the hook alone. If Claude Code or Cursor has an MCP server configured that is not wrapped yet, init also wraps one (it asks which when there are several; the client config is copied aside first). The client will then start the guard with `npx -y @permission-protocol/mcp-guard@<this version>`, or `--wrap-launcher <cmd>`, and init checks that this command reports this exact version.
 - With no MCP server and no Claude Code project, `init --preset coding-agent` installs nothing unasked: it exits 1 and says to pass `--hook claude-code` to guard Claude Code's own tools in that directory, or to add an MCP server.
 
 Each item is decided on its own. With the hook only (no server to wrap), a stored install token is reused instead of logging in again; a missing token means a login. A missing signing key is created; a policy and a hook entry already in place are left as they are. A teammate who has the committed `pp.config.yaml` and `.claude/settings.json` but no token is logged in and gets a key, and neither file changes. When all four were in place, init runs the hook self-test, says `Already set up` and exits 0. (When an MCP server is wrapped, init logs in as before.)
 
-**The `npx -y` launcher.** The first guarded call in a session may download the package (a few seconds); later calls use npx's cache. The version is pinned in the committed `.claude/settings.json` and changes only when someone re-runs init or `hook install`. If npx cannot start the package (offline with an empty cache, the registry unreachable), the fail-closed wrapper below blocks the call; its fixed reason suggests installing the package as a dev dependency, which also removes the download.
+**The `npx -y` launcher.** The first guarded call in a session may download the package (a few seconds); later calls use npx's cache. The version is pinned in the committed `.claude/settings.json` and changes only when someone re-runs init or `hook install`. If npx cannot start the package (offline with an empty cache, the registry unreachable), the fail-closed wrapper below blocks the call; its fixed reason suggests installing the package as a dev dependency, which also removes the download. Installing it in the project (`npm install --save-dev @permission-protocol/mcp-guard`) before running init avoids the download from the start.
 
 **Windows.** The installed command is shell form, which Claude Code runs through Git Bash on Windows, so init runs its launcher check and self-test through Git Bash too. It does not need Git's `bin` on PATH; it looks, in this order, at:
 
@@ -46,6 +49,8 @@ If none is found, init refuses the hook step before changing anything and lists 
 
 Policy paths in the hook command: a relative `--config` is joined to `"${CLAUDE_PROJECT_DIR}"`; an absolute one is used as given, including a drive-letter (`C:\...`, `C:/...`) or UNC (`\\server\share\...`) path on Windows. A drive-relative path (`C:pp.yaml`) is refused.
 
+**The login.** init prints a Permission Protocol link and a pairing code, and opens the link in your browser when it runs in a terminal (`--no-browser` only prints it). Check that the page shows the same code and choose Connect (you need the owner or admin role in the workspace). In a terminal, init then asks you to confirm the workspace name. The install token goes to the OS keychain, or to a file restricted to your user ([where](../README.md#where-the-token-and-keys-are-kept)), and is never printed. If the code expires first, init stops with `The login expired before it was completed. Run the command again.`
+
 Then, after the login: it writes `pp.config.yaml` (the preset plus the `cloud:` section; created only if still absent), installs the hook with the same code as `hook install` (idempotent: a second run never adds a second entry), wraps the MCP server if there is one, and runs the **hook self-test**:
 
 | Check | Event | Command run | Expected |
@@ -55,7 +60,11 @@ Then, after the login: it writes `pp.config.yaml` (the preset plus the `cloud:` 
 
 Nothing is sent to Permission Protocol and nothing runs: the hook only decides, an allowed call touches no network, and with no `cloud:` section a hold is denied locally instead of opening a signing request. The self-test's receipts go to `~/.config/mcp-guard/self-test-receipts.jsonl`, not the project's log. If a check fails, init exits 1 and says which of two things happened: **the self-test could not run** (no shell, or its temporary policy could not be written or read), which says nothing about the installed hook; or **the installed hook did not answer as expected**, in which case it stays installed and fails closed, so guarded calls may be blocked until it works. Both print the undo command, using the launcher the hook was installed with (`<launcher> hook uninstall --project <dir>`), so it works without a local install. `--skip-self-test` skips only the signed-receipt self-test that follows, not the hook check.
 
-The hook's receipts log is `pp-receipts.jsonl` beside `pp.config.yaml`, in the project root: add it to `.gitignore` if you commit the project's guard files.
+**First signature.** init then holds a do-nothing call through the real approval path, prints a signing link and opens it in your browser. Sign it in Permission Protocol; init prints the signed receipt and the command that verifies it again. `--skip-self-test` skips this step, and it is not run when everything was already set up.
+
+**What init prints at the end**, in this order: what is guarded and where the policy is; what happens the next time an agent tries something destructive; the restart line; `mcp-guard report` and the receipt verify command; how to undo each change (`To undo:`); and the setup details (`Set up:`).
+
+Restart Claude Code so it loads the hook. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session. The hook's receipts log is `pp-receipts.jsonl` beside `pp.config.yaml`, in the project root: add it to `.gitignore`.
 
 ## The Claude Code hook contract (verified)
 
@@ -143,9 +152,15 @@ cloud:
 The signing link is printed to stderr while the hook waits, but Claude Code does not show a running hook's stderr. So, while it waits:
 
 - **The signing page opens in the browser** (`src/cloud/open-browser.ts`), the same in the proxy. Only an `https:` URL with no user name or password, on the origin of `cloud.api_url`, is opened; any other link is not opened and the hold goes on unchanged. The opener gets the URL as one argument with no shell: `/usr/bin/open` on macOS, `%SystemRoot%\System32\rundll32.exe url.dll,FileProtocolHandler <url>` on Windows, `xdg-open` elsewhere; detached, no stdio, started in the guard's config directory, errors ignored. At most once per request id; never for a resumed request. It cannot change the decision, delay the poll or throw. Off when `CI` is set, when `SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY` is set, on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off` (or `0`, `false`, `no`), with `cloud.open_browser: false`, and in init's self-tests.
-- **The hook's `statusMessage`** says that a held call waits for a named person's signature. It is the spinner text on every checked call, so it is short.
+- **The hook's `statusMessage`**, `mcp-guard: checking this call. A held call waits here until a named person signs it.`, is shown beside Claude Code's spinner. It is the spinner text on every checked call, held or not, so it is short.
 
-When the wait runs out, the denial gives Claude the link and says to run the same call again, and its `systemMessage` shows the person the link and that the same call can be retried after someone signs.
+When the wait runs out, the denial gives Claude the link and says to run the same call again, for example:
+
+```
+mcp-guard: held by rule "terraform-destroy" (terraform_destroy: destroy) for a Permission Protocol signature; nobody signed within the hook's 240-second wait. Request <id> stays open for up to 600 seconds: sign it at <link>. After it is signed, run exactly the same call again; the guard resumes that request instead of opening a new one.
+```
+
+Its `systemMessage` shows the person the link and that the same call can be retried after someone signs. The retry resumes the same request and does not open a second tab. A retry with changed arguments does not match the signed receipt and is denied.
 
 ## Fail closed when the guard cannot run
 

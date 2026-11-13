@@ -1,38 +1,71 @@
 # MCP Guard
 
-MCP Guard is a free guard for coding agents: it checks each shell command and file edit before it runs, stops the destructive ones, and sends them to a named person who signs in Permission Protocol; only a verified, signed receipt releases the call. Claude Code is supported first.
+MCP Guard is a free guard for coding agents. It checks each shell command and file edit that Claude Code is about to run: destructive ones wait until a named person signs them in Permission Protocol, and only a verified, signed receipt lets them run. Everything else runs as before.
 
 ## Install for Claude Code
 
-In your Claude Code project (a directory with `.claude/` or `CLAUDE.md`):
+In your project folder, run:
 
 ```bash
-npx @permission-protocol/mcp-guard init --preset coding-agent
+npx -y @permission-protocol/mcp-guard init --preset coding-agent --hook claude-code
 ```
 
-In any other directory, add `--hook claude-code` to install the hook there anyway:
+This works in any folder. In a folder that already has `.claude/` or `CLAUDE.md`, you can leave out `--hook claude-code`.
+
+### What you need
+
+- A free Permission Protocol account with the owner or admin role in a workspace. Sign up at https://app.permissionprotocol.com/guard. If you have no passkey yet, your first signature sets one up.
+- Node.js with `npx`.
+- On Windows, Git for Windows: Claude Code runs the hook through Git Bash.
+
+### What the command does
+
+1. It prints a pairing code and opens a Permission Protocol page in your browser. Check that the page shows the same code and choose Connect.
+2. It writes the `coding-agent` policy to `pp.config.yaml` and adds the hook to `.claude/settings.json`.
+3. It runs a local self-test of the hook. Nothing is sent and nothing runs.
+4. It holds one do-nothing test call and opens its signing page. Sign it to get your first receipt.
+5. It tells you to restart Claude Code, which then loads the hook.
+
+It also stores an install token (in the OS keychain, or in a file restricted to your user) and creates a local signing key under `~/.config/mcp-guard/`. An existing `pp.config.yaml` that loads is kept as it is. If Claude Code or Cursor already has an MCP server configured that is not wrapped yet, init also wraps one, and copies that config file aside first. The checks that can refuse run before the login, so a refusal changes nothing. Every step in detail: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
+
+### What a held call looks like
+
+- The signing page opens in your browser. It does not open over SSH, in CI, on Linux without a display, or when you switch it off ([details](#no-browser-opened)). Waiting calls are also listed at https://app.permissionprotocol.com/guard.
+- A named person chooses Sign or Reject. A rejected call is denied.
+- After a signature, the receipt is verified offline against keys pinned in the package and redeemed once, and the call runs. Claude is told `Approved by <name> through Permission Protocol. Receipt: <link>`, and you see the same line.
+- If nobody signs within 240 seconds, the call is denied with the signing link. Sign it, then retry the same call.
+
+### See what it did
+
+In the project folder:
 
 ```bash
-npx @permission-protocol/mcp-guard init --preset coding-agent --hook claude-code
+npx -y @permission-protocol/mcp-guard report
 ```
 
-Without either, `init --preset coding-agent` installs the hook only in a Claude Code project; outside one, with no MCP server to wrap, it exits 1 and tells you to pass `--hook claude-code`. `--no-hook` skips the hook. `init --help` lists every option.
+It reads the local log only and sends nothing ([details](#what-it-decided-mcp-guard-report)).
 
-### What happens next
+### Remove it
 
-1. **Checks first, so a refusal changes nothing.** init refuses before logging in if `pp.config.yaml` exists and does not load, if `.claude/settings.json` is not valid JSON, if on Windows it finds no Git Bash, if the hook launcher (below) cannot start the guard, or, when it will wrap an MCP server, if the command the client would run (`npx -y @permission-protocol/mcp-guard@<this version>`, or `--wrap-launcher <cmd>`) does not report this exact version.
-2. **Connect in the browser.** init prints a Permission Protocol link and a pairing code, and opens the link in your browser. Check that the page shows the same code and choose Connect (you need the owner or admin role in the workspace). In a terminal, init then asks you to confirm the workspace name. The install token goes to the OS keychain, or to a file restricted to your user ([where](#where-the-token-and-keys-are-kept)), and is never printed. If a token is already stored and there is no MCP server to wrap, init reuses it and skips the login.
-3. **Local setup.** A signing key is created if there is none; the `coding-agent` policy is written to `pp.config.yaml` (an existing one that loads is kept byte for byte); the `PreToolUse` hook is added to `.claude/settings.json`. If Claude Code or Cursor has an MCP server configured that is not wrapped yet, init also wraps one (it asks which when there are several; the client config is copied aside first).
-4. **Hook self-test, local.** One allowed call (`git status`) and one held call (`terraform destroy -auto-approve`) are run through the installed hook. Nothing is sent and nothing runs. If a check fails, init exits 1 and says whether the test could not run (which says nothing about the hook) or the installed hook answered wrongly (it stays installed and fails closed, so guarded calls may be blocked until it works). Either way it prints the undo command, `<launcher> hook uninstall --project <dir>`.
-5. **First signature.** init holds a do-nothing call, prints a signing link and opens it in your browser. Sign it in Permission Protocol; init prints the signed receipt and the command that verifies it again. `--skip-self-test` skips this step.
+In the project folder:
 
-init then prints, in this order: what is guarded and where the policy is; what happens the next time an agent tries something destructive; `mcp-guard report` and the receipt verify command; how to undo each change; and the setup details.
+```bash
+npx -y @permission-protocol/mcp-guard hook uninstall
+```
 
-Restart Claude Code so it loads the hook. Commit `pp.config.yaml` and `.claude/settings.json` to guard every teammate's session; add `pp-receipts.jsonl` (the receipt log, beside the policy) to `.gitignore`. Running init again sets up only what is missing; when the token, key, policy and hook entry are all in place (and there is no server to wrap) it says `Already set up` and exits 0.
+This removes only the mcp-guard entry from `.claude/settings.json`. At the end of its run, init prints the exact command for your setup under `To undo:`. What else init changed:
 
-**The launcher.** The hook starts the guard with `npx --no-install mcp-guard` when the package is installed in the project, otherwise with `npx -y @permission-protocol/mcp-guard@<exact version>`, pinned in `.claude/settings.json`. With the `npx -y` launcher the first guarded call in a session may download the package. Installing it in the project (`npm install --save-dev @permission-protocol/mcp-guard`) before running init avoids the download.
+- `pp.config.yaml` (unless one was already there) and, once calls are checked, the log `pp-receipts.jsonl` beside it. Delete them if you no longer want them.
+- The install token and the signing key stay on this machine for other projects ([where](#where-the-token-and-keys-are-kept)). To disconnect the machine, revoke its token in your workspace under Settings > Developer access.
+- If init wrapped an MCP server, `To undo:` names the backup to copy back over that config file.
 
-Details: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
+### More
+
+- [What is guarded](#what-is-guarded)
+- [What it does not catch](#what-it-does-not-catch)
+- What leaves this machine: [for a held call](#what-is-sent-to-permission-protocol-for-a-held-call), and the [daily usage heartbeat](#usage-heartbeat), which is on by default
+- [MCP servers: the proxy](#mcp-servers-the-proxy)
+- [Troubleshooting](#troubleshooting)
 
 ## What is guarded
 
@@ -49,21 +82,6 @@ The hook sees Claude Code's `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookE
 
 Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
 
-### What a held call looks like
-
-A held call waits in the hook for up to 240 seconds (`--wait`). While it waits:
-
-- **The signing page opens in your browser**, once per request, where a named person chooses Sign or Reject. Only an `https:` page on the origin of the policy's `cloud.api_url` is opened, with no shell. It is not opened when `CI` is set, in an SSH session, on Linux without a display, with `MCP_GUARD_OPEN_BROWSER=off`, or with `open_browser: false` under `cloud:`.
-- **Claude Code shows the hook's status message** beside its spinner: `mcp-guard: checking this call. A held call waits here until a named person signs it.` It is shown on every checked call, held or not. Claude Code reads a hook's output only when it ends, so the link itself is not shown during the wait.
-
-Then:
-
-- **Signed in time:** the call runs. Claude is told, and you see, `Approved by <name> through Permission Protocol. Receipt: <link>`. The name comes from the verified receipt.
-- **Not signed in time:** the call is denied. Claude gets the signing link: `mcp-guard: held by rule "terraform-destroy" (terraform_destroy: destroy) for a Permission Protocol signature; nobody signed within the hook's 240-second wait. Request <id> stays open for up to 600 seconds: sign it at <link>. After it is signed, run exactly the same call again; ...`. You see the link too, with the fact that the same call can be retried after someone signs. The retry resumes the same request and does not open a second tab.
-- **Rejected, expired, or anything that fails verification:** denied. Changed arguments do not match the signed receipt and are denied.
-
-The receipt is verified offline against Permission Protocol keys pinned in the package, and redeemed once, before the call is released.
-
 ## What it does not catch
 
 The detectors are heuristics that stop mistakes. They are not a sandbox.
@@ -72,13 +90,81 @@ The detectors are heuristics that stop mistakes. They are not a sandbox.
 - **Removing the hook.** An agent running as the same OS user can, by a route the detectors do not read (a script, for example), edit the settings file or the policy and switch the guard off. Run untrusted agents as a separate OS user that cannot write the guard's files.
 - **Tools the hook does not see.** Reads and searches are not sent to the guard. MCP tools (`mcp__...`) are not matched by the hook; wrap those servers with the proxy (below).
 - **Context that needs I/O**: the current git branch, the current kube context, what a variable or glob expands to, plan files and manifests.
-- **Windows** needs Git for Windows: Claude Code runs the hook through Git Bash, and so does init's check. init finds it without Git's `bin` on PATH (`CLAUDE_CODE_GIT_BASH_PATH`, PATH, the standard install folders, beside `git.exe`) and refuses the hook step if it cannot.
-- **Claude Code before 2.1.295** ignores the hook's `onFailure: "block"`. The installed command's own wrapper still blocks when the guard cannot run; the one case left is a hook that Claude Code kills at its own timeout, which on those versions lets the call through, and the guard's watchdog denies before that timeout. init prints a line if `claude --version` is older.
-- **The launcher must be on the PATH Claude Code runs hooks with.** If Claude Code was started from the macOS Dock or an IDE with a PATH that lacks `npx`, the hook command is not found (exit 127) and every checked call is blocked with a fixed message: start Claude Code from a terminal where `npx` works, or remove the hook (`hook uninstall` from such a terminal, or delete the mcp-guard entry under `hooks.PreToolUse` in `.claude/settings.json`).
-- **The first guarded call may download the package** with the default `npx -y` launcher (see above).
+- **Claude Code before 2.1.295** ignores the hook's `onFailure: "block"`. The installed command's own wrapper still blocks when the guard cannot run; the one case left is a hook that Claude Code kills at its own timeout, which on those versions lets the call through, and the guard's watchdog denies before that timeout ([troubleshooting](#claude-code-older-than-21295)).
+- **The first guarded call may download the package** with the default `npx -y` launcher ([how the launcher is chosen](docs/hooks.md#set-up-with-init---preset-coding-agent)).
 - Each guarded call starts a process through the launcher, which adds latency ([measured in docs/hooks.md](docs/hooks.md#limits)).
 
 The full lists: [docs/presets.md](docs/presets.md) and [docs/detectors.md](docs/detectors.md#known-limits).
+
+## Troubleshooting
+
+### Every guarded call is blocked: "the hook launcher was not found"
+
+```
+mcp-guard: the hook launcher was not found on the PATH Claude Code gave this hook (exit 127); call blocked. Start Claude Code from a terminal where npx works. To remove the hook, run the hook uninstall command init printed from that terminal, or delete the mcp-guard entry under hooks.PreToolUse in .claude/settings.json.
+```
+
+Claude Code was started with a `PATH` that has no `npx`, for example from the macOS Dock, Spotlight or an IDE. Quit it and start it from a terminal where `npx` works. To remove the hook instead, run `hook uninstall` from such a terminal ([Remove it](#remove-it)), or delete the mcp-guard entry under `hooks.PreToolUse` in `.claude/settings.json` (uninstall itself needs the launcher).
+
+### Every guarded call is blocked: "the guard did not run"
+
+```
+mcp-guard: the guard did not run (missing package, crash or bad exit); call blocked. Fix: npm install --save-dev @permission-protocol/mcp-guard
+```
+
+The launcher ran but the guard did not: for example, `npx` could not fetch the package (offline with an empty npx cache, or the registry unreachable), or the guard crashed. Install it in the project with `npm install --save-dev @permission-protocol/mcp-guard`, then run init again: the hook then starts the guard with `npx --no-install mcp-guard`, which never downloads.
+
+### init stops: the launcher did not start mcp-guard
+
+```
+[mcp-guard] "<launcher>" did not start mcp-guard from <project> (exit <n>). The hook would block every guarded call, so init stopped before changing anything. ...
+```
+
+Nothing was changed. Check the network (npx fetches the package once), or install the package in the project as above, then run init again.
+
+### Windows: "Git Bash was not found"
+
+```
+[mcp-guard] Git Bash was not found (looked at: ...). The Claude Code hook runs through Git Bash on Windows: install Git for Windows (https://git-scm.com/downloads/win), or set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe, then run init again. Or pass --no-hook. ...
+```
+
+Nothing was changed. Install Git for Windows, or set `CLAUDE_CODE_GIT_BASH_PATH`, and run the command again. Where init looks: [docs/hooks.md](docs/hooks.md#set-up-with-init---preset-coding-agent).
+
+### "The login expired before it was completed"
+
+```
+[mcp-guard] The login expired before it was completed. Run the command again.
+```
+
+The pairing code lasts 10 minutes. Run the install command again to get a new one.
+
+### Nobody signed in time
+
+Claude is told:
+
+```
+mcp-guard: held by rule "<rule>" (...) for a Permission Protocol signature; nobody signed within the hook's 240-second wait. Request <id> stays open for up to 600 seconds: sign it at <link>. After it is signed, run exactly the same call again; the guard resumes that request instead of opening a new one.
+```
+
+You see `mcp-guard: a held "<tool>" call is still waiting for a signature. After someone signs, the same call can be retried. Signing link: <link>`. Sign it, then have Claude run exactly the same call again. After the request expires (600 seconds with the default policy), the same call opens a new request.
+
+### No browser opened
+
+The signing page is not opened when `CI` is set, in an SSH session, on Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY`, with `MCP_GUARD_OPEN_BROWSER=off`, or with `open_browser: false` under `cloud:`. Find the waiting call at https://app.permissionprotocol.com/guard and sign it there. Claude Code shows nothing from the hook until it ends, so otherwise the link arrives with the denial after 240 seconds.
+
+### No email arrives when a call is held
+
+Hold emails are sent by Permission Protocol, not by the guard. None arrives when your Permission Protocol account has no email address, or when hold emails are turned off. Check Settings > Notifications at https://app.permissionprotocol.com/c/settings#hold-emails.
+
+### Claude Code older than 2.1.295
+
+init prints:
+
+```
+Note: Claude Code <version> is older than 2.1.295 and ignores the hook's onFailure: "block" setting. ...
+```
+
+The hook still works: its wrapper blocks a guard that fails to run, and the guard denies a held call before Claude Code's own timeout. Update Claude Code to close the one remaining case, a hook that Claude Code kills at its timeout ([details](docs/hooks.md#limits)).
 
 ## What is sent to Permission Protocol for a held call
 
