@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import { ADAPTERS } from '../hook/adapter.js';
-import { PAST_DAYS, RULE_ID_PATTERN, addDays, emptyCounts, utcDay, type ClientLabel, type CountName, type Counts } from './contract.js';
+import { PAST_DAYS, addDays, isSendableRuleId, emptyCounts, utcDay, type ClientLabel, type CountName, type Counts } from './contract.js';
 
 /**
  * Daily counts from the local receipt log (receipt-log.ts), the guard's source of truth.
@@ -11,12 +11,15 @@ import { PAST_DAYS, RULE_ID_PATTERN, addDays, emptyCounts, utcDay, type ClientLa
  *   {record} receipt, reason OPERATOR_DENIED                              -> denied
  *   {record} receipt, reason APPROVAL_EXPIRED                             -> expired
  *   {record} any other receipt, status APPROVED                           -> allowed
- *   {record} any other receipt, status DENIED                             -> blocked (+ rule)
+ *   {record} any other receipt, status DENIED                             -> blocked (+ rule*)
  *   {hold}                                                                -> held (+ rule)
  *   {cloud} released / denied / expired                                   -> approved / denied / expired
  *   {cloud} any decision, unless it closes an open proxy {hold} line      -> held (+ rule)
  *   {cloud} blocked                                                       -> no outcome
  *   {observed}, unparseable lines, lines older than the window            -> nothing
+ *
+ *   (+ rule*): the rule's id is kept only if it is shipped with the guard (a built-in
+ *   preset rule); any other id is not stored, so it is neither in the state file nor sent.
  *
  * The proxy writes a {hold} line and then a {cloud} line for one cloud-held call when it
  * runs without the local approval UI; elsewhere a cloud-held call has only its {cloud}
@@ -30,7 +33,7 @@ import { PAST_DAYS, RULE_ID_PATTERN, addDays, emptyCounts, utcDay, type ClientLa
 
 export interface DayTotals {
   counts: Counts;
-  /** Times each rule blocked or held a call. Only ids that match the contract's pattern. */
+  /** Times each rule blocked or held a call. Only rule ids shipped with the guard; others are counted in the totals only. */
   rules: Record<string, number>;
 }
 
@@ -137,7 +140,7 @@ function dayOf(log: LogState, at: number): DayTotals {
 
 function bump(totals: DayTotals, count: CountName, ruleId: string | null): void {
   totals.counts[count] += 1;
-  if ((count === 'blocked' || count === 'held') && ruleId && RULE_ID_PATTERN.test(ruleId)) {
+  if ((count === 'blocked' || count === 'held') && ruleId && isSendableRuleId(ruleId)) {
     if (ruleId in totals.rules || Object.keys(totals.rules).length < MAX_RULES_PER_DAY) totals.rules[ruleId] = (totals.rules[ruleId] ?? 0) + 1;
   }
 }

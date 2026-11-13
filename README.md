@@ -360,7 +360,7 @@ Create the token in Permission Protocol under Settings > Developer access, with 
 
 ### Usage heartbeat
 
-With a `cloud:` section and an install token, the guard sends Permission Protocol one small heartbeat per UTC day (at most one attempt every 10 minutes): its version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode, the day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and up to 20 rule ids with how many calls each blocked or held. It never sends arguments, commands, paths, file contents, tool, server or target names, hostnames or usernames. Rule ids are written by you and are sent, so rename a rule whose id names something private. It is sent by a separate process after the decision and cannot allow, block or delay a call.
+With a `cloud:` section and an install token, the guard sends Permission Protocol one small heartbeat per UTC day (at most one attempt every 10 minutes). By default nothing you wrote leaves the machine: it carries the guard version, a fixed client label (`claude-code`, `mcp-proxy` or `mcp-guard`), the mode, the day, the six counts `allowed`, `blocked`, `held`, `approved`, `denied`, `expired`, and counts per built-in rule id (the `coding-agent` preset's rules). Your own rule ids, arguments, commands, paths, file contents, tool, server or target names, hostnames and usernames are never sent. It is sent by a separate process after the decision and cannot allow, block or delay a call.
 
 ```bash
 npx mcp-guard heartbeat --show     # print exactly what would be sent today; sends nothing

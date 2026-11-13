@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseConfig } from '../config.js';
+import { PRESET_NAMES, presetPolicyBody } from '../presets/coding-agent.js';
 
 /**
  * The usage heartbeat body (Permission Protocol's MCP Guard heartbeat contract v1):
  * counts and rule ids for one UTC day, nothing else. The body is built from an
  * allowlist of fields and checked against the contract's patterns before it is sent.
- * A rule id that does not match is dropped, never rewritten. See docs/heartbeat.md.
+ * Nothing a person wrote is sent: `topRules` carries only rule ids shipped with the
+ * guard (the built-in presets); any other id is dropped, never rewritten. See
+ * docs/heartbeat.md.
  */
 
 export const COUNT_NAMES = ['allowed', 'blocked', 'held', 'approved', 'denied', 'expired'] as const;
@@ -21,6 +25,33 @@ export const MAX_TOP_RULES = 20;
 export const MAX_BODY_BYTES = 8 * 1024;
 /** The contract accepts a day from 7 days before today (UTC) to 1 day after. */
 export const PAST_DAYS = 7;
+
+let shipped: ReadonlySet<string> | null = null;
+/**
+ * The rule ids shipped with the guard: the rules of the built-in presets, read from the
+ * presets themselves through the strict loader. Only these ids are ever sent; a rule id a
+ * person wrote never leaves the machine. If a preset ever failed to load, the set is
+ * empty and no rule id is sent.
+ */
+export function shippedRuleIds(): ReadonlySet<string> {
+  if (shipped === null) {
+    const ids = new Set<string>();
+    for (const name of PRESET_NAMES) {
+      try {
+        for (const rule of parseConfig(presetPolicyBody(name)).rules) if (RULE_ID_PATTERN.test(rule.id)) ids.add(rule.id);
+      } catch {
+        // Fail safe: send no rule ids.
+      }
+    }
+    shipped = ids;
+  }
+  return shipped;
+}
+
+/** A rule id that may be sent: it matches the contract and is shipped with the guard. */
+export function isSendableRuleId(id: string): boolean {
+  return RULE_ID_PATTERN.test(id) && shippedRuleIds().has(id);
+}
 
 /** The only client labels the guard sends: the kind of client, never a host, user or path. */
 export const CLIENT_LABELS = ['mcp-proxy', 'claude-code', 'mcp-guard'] as const;
@@ -78,14 +109,14 @@ export interface BodyInput {
 
 /**
  * Build a body from an allowlist: only the contract's fields are copied, counts are
- * clamped to the contract's range, and rule ids that do not match its pattern are
- * dropped. The top 20 rules by count go in `topRules`.
+ * clamped to the contract's range, and every rule id that is not shipped with the guard
+ * (or does not match the contract's pattern) is dropped. The top 20 go in `topRules`.
  */
 export function buildBody(input: BodyInput): HeartbeatBody {
   const counts = emptyCounts();
   for (const name of COUNT_NAMES) counts[name] = clamp(input.counts[name]);
   const rules = Object.entries(input.rules ?? {})
-    .filter(([id, n]) => RULE_ID_PATTERN.test(id) && clamp(n) > 0)
+    .filter(([id, n]) => isSendableRuleId(id) && clamp(n) > 0)
     .map(([ruleId, n]) => ({ ruleId, count: clamp(n) }))
     .sort((a, b) => b.count - a.count || (a.ruleId < b.ruleId ? -1 : 1))
     .slice(0, MAX_TOP_RULES);
@@ -106,7 +137,8 @@ const isCount = (n: unknown): boolean => typeof n === 'number' && Number.isInteg
 
 /**
  * Check a body against the contract before it is sent: exact field set, patterns,
- * the day window and the size cap. A body that fails is not sent.
+ * rule ids shipped with the guard only, the day window and the size cap. A body that
+ * fails is not sent.
  */
 export function validateBody(body: unknown, nowMs: number = Date.now()): Validated {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, reason: 'not an object' };
@@ -130,7 +162,7 @@ export function validateBody(body: unknown, nowMs: number = Date.now()): Validat
       if (!r || typeof r !== 'object' || Array.isArray(r)) return { ok: false, reason: 'topRules' };
       const rule = r as Record<string, unknown>;
       if (!Object.keys(rule).every((k) => RULE_KEYS.has(k))) return { ok: false, reason: 'topRules' };
-      if (typeof rule.ruleId !== 'string' || !RULE_ID_PATTERN.test(rule.ruleId) || seen.has(rule.ruleId) || !isCount(rule.count)) return { ok: false, reason: 'topRules' };
+      if (typeof rule.ruleId !== 'string' || !isSendableRuleId(rule.ruleId) || seen.has(rule.ruleId) || !isCount(rule.count)) return { ok: false, reason: 'topRules' };
       seen.add(rule.ruleId);
     }
   }

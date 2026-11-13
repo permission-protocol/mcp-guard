@@ -11,7 +11,8 @@ import { Issuer, type ReasonCode, type ReceiptStatus, type Decider } from '../is
 import { emitCloudDecision, emitHold, emitObserved, emitReceipt, type CloudDecisionLine } from '../receipt-log.js';
 import { parseConfig } from '../config.js';
 import { eventOf, scanLog } from '../heartbeat/aggregate.js';
-import { buildBody, validateBody, utcDay, addDays, guardVersion, COUNT_NAMES } from '../heartbeat/contract.js';
+import { buildBody, validateBody, utcDay, addDays, guardVersion, shippedRuleIds, COUNT_NAMES } from '../heartbeat/contract.js';
+import { PRESET_NAMES, presetPolicyBody } from '../presets/coding-agent.js';
 import { runHeartbeat, postHeartbeat, MIN_INTERVAL_MS, REFUSED_BACKOFF_MS } from '../heartbeat/send.js';
 import { loadState, acquireLock } from '../heartbeat/state.js';
 import { heartbeatAfterHook } from '../heartbeat/hook.js';
@@ -55,7 +56,7 @@ function cloud(log: string, decision: CloudDecisionLine['decision'], at: number,
 function fullLog(log: string): void {
   receipt(log, 'APPROVED', ['DEFAULT_ACTION'], null, NOON);                                      // allowed
   receipt(log, 'APPROVED', ['RULE_MATCHED:read-ok'], 'read-ok', NOON + 1);                       // allowed
-  receipt(log, 'DENIED', ['RULE_MATCHED:block-rm-rf'], 'block-rm-rf', NOON + 2);                 // blocked
+  receipt(log, 'DENIED', ['RULE_MATCHED:destructive-sql'], 'destructive-sql', NOON + 2);         // blocked, a shipped rule id
   receipt(log, 'DENIED', ['DEFAULT_ACTION'], null, NOON + 3);                                    // blocked, no rule
   hold(log, NOON + 4, 'hold-prod-db', 'agent-1', 'pa_1');                                         // held (local queue)
   receipt(log, 'APPROVED', ['RULE_MATCHED:hold-prod-db', 'OPERATOR_APPROVED'], 'hold-prod-db', NOON + 5, { kind: 'operator', operator: 'op' }); // approved
@@ -72,7 +73,8 @@ function fullLog(log: string): void {
   appendFileSync(log, 'not json\n{"unknown":{}}\n');                                                // nothing
 }
 const FULL = { allowed: 2, blocked: 2, held: 6, approved: 3, denied: 2, expired: 2 };
-const FULL_RULES = { 'block-rm-rf': 1, 'hold-prod-db': 5, 'destructive-shell': 1 };
+// `hold-prod-db` and `read-ok` are custom rule ids: counted in the totals, never stored or sent.
+const FULL_RULES = { 'destructive-sql': 1, 'destructive-shell': 1 };
 
 interface Hit { path: string; auth: string | undefined; body: any; raw: string }
 interface Stand { url: string; hits: Hit[]; mode: { status: number; hang?: boolean; retryAfter?: string }; close(): Promise<void>; connections: number }
@@ -193,7 +195,7 @@ describe('heartbeat: idempotent, bounded recounting', () => {
     const s = await scanLog(undefined, log, 'mcp-proxy', { now: NOON });
 
     truncateSync(log, 0);
-    receipt(log, 'DENIED', ['RULE_MATCHED:block-rm-rf'], 'block-rm-rf', NOON);
+    receipt(log, 'DENIED', ['RULE_MATCHED:destructive-sql'], 'destructive-sql', NOON);
     const truncated = await scanLog(s, log, 'mcp-proxy', { now: NOON });
     assert.deepEqual(truncated.days[utcDay(NOON)].counts, { allowed: 0, blocked: 1, held: 0, approved: 0, denied: 0, expired: 0 });
 
@@ -219,28 +221,31 @@ describe('heartbeat: idempotent, bounded recounting', () => {
 });
 
 describe('heartbeat: body', () => {
-  it('builds from an allowlist and drops rule ids that do not match the contract', () => {
+  it('builds from an allowlist; topRules carries only rule ids shipped with the guard', () => {
     const body = buildBody({
       guardVersion: '0.4.0', clientLabel: 'claude-code', mode: 'enforce', day: utcDay(NOON),
       counts: { allowed: 3, blocked: 2.7, held: -1, extra: 9 } as any,
-      rules: { 'block-rm-rf': 2, 'bad id': 5, 'user@laptop': 4, '/home/user/.ssh': 3, ['x'.repeat(129)]: 7, "q'uote": 1, 'ok.rule:1': 1 },
+      rules: { 'destructive-shell': 2, 'block-rm-rf': 9, 'acme-customer-prod': 8, 'bad id': 5, 'user@laptop': 4, '/home/user/.ssh': 3, ['x'.repeat(129)]: 7, "q'uote": 1, 'cloud-delete': 1 },
     });
     assert.deepEqual(body, {
       guardVersion: '0.4.0', clientLabel: 'claude-code', mode: 'enforce', day: utcDay(NOON),
       counts: { allowed: 3, blocked: 2, held: 0, approved: 0, denied: 0, expired: 0 },
-      topRules: [{ ruleId: 'block-rm-rf', count: 2 }, { ruleId: 'ok.rule:1', count: 1 }],
+      topRules: [{ ruleId: 'destructive-shell', count: 2 }, { ruleId: 'cloud-delete', count: 1 }],
     });
     assert.ok(validateBody(body, NOON).ok);
     const label = buildBody({ guardVersion: '1', clientLabel: 'my-macbook.local', mode: 'enforce', day: utcDay(NOON), counts: {} });
     assert.equal('clientLabel' in label, false, 'only fixed client-kind labels');
   });
 
-  it('keeps the top 20 rules and stays under 8 KB', () => {
-    const rules = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`r${i}-${'y'.repeat(100)}`, i + 1]));
+  it('accepts every shipped rule id, refuses custom ones, and stays under 8 KB', () => {
+    const ids = [...shippedRuleIds()];
+    const custom = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`custom-${i}-${'y'.repeat(100)}`, 1000 + i]));
+    const rules = { ...custom, ...Object.fromEntries(ids.map((id, i) => [id, i + 1])) };
     const body = buildBody({ guardVersion: '0.4.0', mode: 'observe', day: utcDay(NOON), counts: { allowed: 2_000_000 }, rules });
-    assert.equal(body.topRules!.length, 20);
-    assert.equal(body.topRules![0].count, 60);
+    assert.deepEqual(body.topRules!.map((r) => r.ruleId).sort(), ids.slice(0, 20).sort());
+    assert.ok(body.topRules!.every((r) => !r.ruleId.startsWith('custom-')));
     assert.equal(body.counts.allowed, 1_000_000);
+    for (const id of ids) assert.ok(validateBody({ ...body, topRules: [{ ruleId: id, count: 1 }] }, NOON).ok, id);
     const v = validateBody(body, NOON);
     assert.ok(v.ok && Buffer.byteLength(v.json) <= 8192);
   });
@@ -259,12 +264,41 @@ describe('heartbeat: body', () => {
       { ...good, counts: { ...good.counts, held: undefined } },
       { ...good, counts: { ...good.counts, path: 1 } },
       { ...good, topRules: [{ ruleId: 'bad id', count: 1 }] },
-      { ...good, topRules: [{ ruleId: 'a', count: 1 }, { ruleId: 'a', count: 2 }] },
-      { ...good, topRules: [{ ruleId: 'a', count: 1, note: 'x' }] },
+      { ...good, topRules: [{ ruleId: 'block-rm-rf', count: 1 }] },
+      { ...good, topRules: [{ ruleId: 'destructive-sql', count: 1 }, { ruleId: 'destructive-sql', count: 2 }] },
+      { ...good, topRules: [{ ruleId: 'destructive-sql', count: 1, note: 'x' }] },
     ];
     for (const b of bad) assert.equal(validateBody(b, NOON).ok, false, JSON.stringify(b));
     assert.equal(validateBody(good, NOON).ok, true);
     assert.match(guardVersion(), /^\d+\.\d+\.\d+/);
+  });
+
+  it('the shipped rule ids are exactly the built-in presets\' rule ids (fails if they drift)', () => {
+    const fromPresets = new Set(PRESET_NAMES.flatMap((n) => parseConfig(presetPolicyBody(n)).rules.map((r) => r.id)));
+    assert.ok(fromPresets.size > 0);
+    assert.deepEqual([...shippedRuleIds()].sort(), [...fromPresets].sort());
+    // A change to the preset's ids must be a deliberate change to what can be sent.
+    assert.deepEqual([...shippedRuleIds()].sort(), [
+      'cloud-delete', 'destructive-shell', 'destructive-sql', 'guard-tamper', 'guard-tamper-apply-patch', 'guard-tamper-delete_file',
+      'guard-tamper-edit', 'guard-tamper-edit_block', 'guard-tamper-edit_file', 'guard-tamper-move_file', 'guard-tamper-multiedit',
+      'guard-tamper-notebookedit', 'guard-tamper-write', 'guard-tamper-write_file', 'production-target', 'secret-read', 'terraform-destroy',
+    ]);
+  });
+
+  it('a custom rule id that matches the pattern is counted in the totals but never in topRules', async () => {
+    const dir = tmp();
+    const log = join(dir, 'r.jsonl');
+    receipt(log, 'DENIED', ['RULE_MATCHED:acme-customer-prod'], 'acme-customer-prod', NOON);
+    hold(log, NOON + 1, 'acme-customer-prod', 'claude-code');
+    receipt(log, 'DENIED', ['RULE_MATCHED:destructive-shell'], 'destructive-shell', NOON + 2);
+    const { fetchImpl, bodies } = fetchCounting();
+    await runHeartbeat({ apiUrl: 'https://pp.test', mode: 'enforce', client: 'claude-code', receiptsPath: log, statePath: join(dir, 's.json'), token: TOKEN, fetchImpl, now: () => NOON });
+    const body = JSON.parse(bodies[0]);
+    assert.equal(body.counts.blocked, 2);
+    assert.equal(body.counts.held, 1);
+    assert.deepEqual(body.topRules, [{ ruleId: 'destructive-shell', count: 1 }]);
+    assert.ok(!bodies[0].includes('acme'));
+    assert.ok(!readFileSync(join(dir, 's.json'), 'utf8').includes('acme'), 'not kept in the local state either');
   });
 });
 
@@ -613,11 +647,12 @@ describe('heartbeat: privacy', () => {
     await runHeartbeat({ apiUrl: 'https://pp.test', mode: 'enforce', client: 'claude-code', receiptsPath: log, statePath: join(dir, 's.json'), token: TOKEN, fetchImpl, now: () => NOON });
     assert.equal(bodies.length, 1);
     const body = JSON.parse(bodies[0]);
-    // The sentinel is a valid rule id, so it is the one field it can reach: a rule id the policy author wrote.
-    assert.deepEqual(body.topRules, [{ ruleId: SENTINEL, count: 1 }]);
-    const withoutRules = JSON.stringify({ ...body, topRules: undefined });
-    assert.ok(!withoutRules.includes(SENTINEL));
+    // The sentinel matches the rule-id pattern, but it is a custom id: counted, never sent.
+    assert.equal(body.counts.held, 2);
+    assert.equal('topRules' in body, false);
+    assert.ok(!bodies[0].includes(SENTINEL));
     assert.ok(!bodies[0].includes('/etc/passwd'));
+    assert.ok(!readFileSync(join(dir, 's.json'), 'utf8').includes(SENTINEL), 'nor kept in the state file');
     assert.deepEqual(Object.keys(body.counts), [...COUNT_NAMES]);
     assert.ok(!readFileSync(join(dir, 's.json'), 'utf8').includes('/etc/passwd'));
   });

@@ -1,6 +1,6 @@
 # Usage heartbeat
 
-When the policy has a `cloud:` section and an install token is present, MCP Guard sends Permission Protocol a small daily heartbeat: how many tool calls this install evaluated on one UTC day, and the ids of the rules that blocked or held the most calls. Permission Protocol uses it to list a workspace's installs (Settings > Developer access) and to count weekly-active installs. It is **on by default** and has an opt-out.
+When the policy has a `cloud:` section and an install token is present, MCP Guard sends Permission Protocol a small daily heartbeat: how many tool calls this install evaluated on one UTC day, and how many calls each built-in rule blocked or held. By default nothing you wrote leaves the machine: the body holds counts, the guard version, the mode, the day, a fixed client label, and counts per built-in rule id. Permission Protocol uses it to list a workspace's installs (Settings > Developer access) and to count weekly-active installs. It is **on by default** and has an opt-out.
 
 A heartbeat is observational. It cannot allow, block, hold or delay any call: it is built and sent by a separate process after the decision, a failed or refused heartbeat changes nothing, and nothing in Permission Protocol reads it for authorization, policy or signing.
 
@@ -15,7 +15,7 @@ A heartbeat is observational. It cannot allow, block, hold or delay any call: it
   "mode": "enforce",
   "day": "2026-11-12",
   "counts": { "allowed": 120, "blocked": 4, "held": 3, "approved": 2, "denied": 1, "expired": 0 },
-  "topRules": [{ "ruleId": "no-secrets", "count": 4 }, { "ruleId": "destructive-shell", "count": 3 }]
+  "topRules": [{ "ruleId": "destructive-shell", "count": 3 }, { "ruleId": "guard-tamper", "count": 1 }]
 }
 ```
 
@@ -26,13 +26,13 @@ A heartbeat is observational. It cannot allow, block, hold or delay any call: it
 | `mode` | `enforce` or `observe`, from the policy (or `--mode`) of the process that sends |
 | `day` | The UTC day the counts are for |
 | `counts` | That day's totals so far (not deltas), see [How the counts are made](#how-the-counts-are-made) |
-| `topRules` | Up to 20 rule ids with how many calls each blocked or held that day. Omitted when there are none |
+| `topRules` | Up to 20 **built-in** rule ids (the rules of the `coding-agent` preset, such as `destructive-shell` or `guard-tamper`) with how many calls each blocked or held that day. Omitted when there are none |
 
-**Never sent:** tool arguments or any part of them, commands, file paths, file contents, tool names, server names, target names (databases, accounts, branches), agent ids, hostnames, usernames, receipt contents, or the install token anywhere but the `Authorization` header.
+**Never sent:** anything written by the policy author, including the ids of your own rules; tool arguments or any part of them, commands, file paths, file contents, tool names, server names, target names (databases, accounts, branches), agent ids, hostnames, usernames, receipt contents, or the install token anywhere but the `Authorization` header.
 
-This is enforced in code (`src/heartbeat/contract.ts`): the body is built from an allowlist of these fields, the client label is one of the fixed values above, and before sending the body is checked against Permission Protocol's contract (exact field set, `ruleId` `^[A-Za-z0-9_.:-]{1,128}$`, `clientLabel` `^[A-Za-z0-9_.:-]{1,64}$`, the day window, counts 0 to 1,000,000, 8 KB). A rule id that does not match the pattern is **dropped**, never rewritten. A body that fails the check is not sent.
+This is enforced in code (`src/heartbeat/contract.ts`): the body is built from an allowlist of these fields, the client label is one of the fixed values above, and `topRules` admits only rule ids shipped with the guard (read at runtime from the built-in presets, `src/presets/`). Before sending, the body is checked against Permission Protocol's contract (exact field set, `ruleId` `^[A-Za-z0-9_.:-]{1,128}$` and shipped, `clientLabel` `^[A-Za-z0-9_.:-]{1,64}$`, the day window, counts 0 to 1,000,000, 8 KB). A body that fails the check is not sent.
 
-**Rule ids are written by the policy author.** They are the one free-text field that can leave the machine. If a rule id names something you do not want to share (a customer, a database, a person), rename the rule or turn the heartbeat off. Rule ids with `/`, `@`, whitespace or quotes are never sent.
+**Your own rule ids are never sent.** A call your own rule blocked or held is counted in the six totals; its rule id is dropped, not renamed or grouped, and is not kept in the state file either. Only the ids of the built-in preset rules appear in `topRules`, also when a policy (for example one written by `mcp-guard init --preset coding-agent`) uses them. There is no setting to send custom rule ids.
 
 ## See it before it is sent
 
@@ -82,8 +82,8 @@ From the local receipt log, the guard's record of every decision (`src/receipt-l
 | `{"record": ...}` receipt with reason `OPERATOR_DENIED` | `denied` |
 | `{"record": ...}` receipt with reason `APPROVAL_EXPIRED` | `expired` |
 | any other `{"record": ...}` receipt, status `APPROVED` (a policy allow) | `allowed` |
-| any other `{"record": ...}` receipt, status `DENIED` (a policy block) | `blocked`, and its rule in `topRules` |
-| `{"hold": ...}` | `held`, and its rule in `topRules` |
+| any other `{"record": ...}` receipt, status `DENIED` (a policy block) | `blocked`, and its rule in `topRules` if the rule is built in |
+| `{"hold": ...}` | `held`, and its rule in `topRules` if the rule is built in |
 | `{"cloud": ...}` with decision `released` / `denied` / `expired` | `approved` / `denied` / `expired` |
 | `{"cloud": ...}`, any decision | also `held` (and its rule), unless it closes an open proxy `{"hold": ...}` line (below) |
 | `{"cloud": ...}` with decision `blocked` (Permission Protocol unreachable, a receipt that failed verification) | no outcome |
@@ -102,6 +102,6 @@ Known limits of the mapping:
 
 ## State, and a large log
 
-Counting never rereads the whole log. A state file beside the guard's other state, `heartbeat-state.json` next to the key directory (`~/.config/mcp-guard/` by default), mode 0600, keeps for each receipt log its byte offset, a hash of the last bytes counted, and per-day totals for the last 7 days; and for the install the last attempt time and a hash of the last accepted body per day. Counts and rule ids only. Each run reads only what was appended since the offset (at most 32 MB per run; the rest on the next run) and only complete lines. A log that was replaced, truncated or rewritten is recounted from its start, which gives the same totals as before for what it still holds. A missing or corrupt state file is rebuilt from the logs. A lock file beside it keeps parallel hook processes from sending twice or corrupting it.
+Counting never rereads the whole log. A state file beside the guard's other state, `heartbeat-state.json` next to the key directory (`~/.config/mcp-guard/` by default), mode 0600, keeps for each receipt log its byte offset, a hash of the last bytes counted, and per-day totals for the last 7 days (with counts per built-in rule id); and for the install the last attempt time and a hash of the last accepted body per day. Counts and built-in rule ids only: no custom rule id, argument, command, tool name or path. Each run reads only what was appended since the offset (at most 32 MB per run; the rest on the next run) and only complete lines. A log that was replaced, truncated or rewritten is recounted from its start, which gives the same totals as before for what it still holds. A missing or corrupt state file is rebuilt from the logs. A lock file beside it keeps parallel hook processes from sending twice or corrupting it.
 
 One install token is one install, so the totals of every receipt log the install has counted in the last 8 days (for example the hook's log in two projects) are added together.
