@@ -23,7 +23,7 @@ For Claude Code, Cursor, Codex and other coding agents whose tools run shell com
 | `guard-tamper-<tool>` | The same, from a file tool: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `write_file`, `edit_file`, `edit_block`, `move_file`, `delete_file` | `path`, `file_path`, `target_file`, `notebook_path`, `filename`, `source`, `destination` |
 | `guard-tamper-apply-patch` | A Codex `apply_patch` whose `*** Update/Add/Delete File:` or `*** Move to:` line names a guard file | `input` |
 | `destructive-sql` | `sql_destructive`: `DROP`, `TRUNCATE`, `DELETE`/`UPDATE` without `WHERE`, ... | `sql`, `query`, `statement`, `statements`, `sql_query` |
-| `destructive-shell` | `shell_destructive`: `rm -rf` outside the tree, force pushes and pushes to `main`, disk writes, SQL through `psql -c`, ... | shell arguments |
+| `destructive-shell` | `shell_destructive` except `git_push_protected`: `rm -rf` outside the tree, force pushes (`-f`, `--force`, `--force-with-lease`, `+refspec`), pushes that delete a branch or tag (`--delete`, `-d`, `:branch`, `--prune`), `--mirror` and `--all` pushes, disk writes, SQL through `psql -c`, ... | shell arguments |
 | `terraform-destroy` | `terraform_destroy` | shell arguments |
 | `cloud-delete` | `cloud_delete`: databases, volumes, buckets, snapshots, clusters, namespaces | shell arguments |
 | `production-target` | Any call whose arguments name a production target you listed (below) | shell arguments, `sql`, `query`, `statement`, `database`, `host`, `connection_string`, `project_id`, `context`, `namespace`, `branch` |
@@ -35,10 +35,15 @@ A command a detector cannot read (`eval`, `python -c`, `curl | sh`, a non-text a
 | Rule | What it records |
 |------|-----------------|
 | `secret-read` | `secret_read` over the shell arguments and `path`, `file_path`, `target_file`: `.env` files, cloud credentials, SSH keys, environment dumps, token printers |
+| `git-push-protected` | `shell_destructive`, kind `git_push_protected` only, over the shell arguments: a plain push to `main` or `master` (`git push origin main`, `git push origin HEAD:master`) |
 
-The rule has `observe: true`. When it matches, through the proxy or the Claude Code hook, the call proceeds, stderr says `OBSERVE: Matched rule "secret-read" (secret_read: secret_file) would hold "Bash"; not enforced (observe: true)`, and the receipts file gets an unsigned `{"observed": ...}` line with the rule id, detector, kind, tool, agent and input hash. Never the arguments, never the path that was read.
+Both rules have `observe: true`. When it matches, through the proxy or the Claude Code hook, the call proceeds, stderr says `OBSERVE: Matched rule "secret-read" (secret_read: secret_file) would hold "Bash"; not enforced (observe: true)`, and the receipts file gets an unsigned `{"observed": ...}` line with the rule id, detector, kind, tool, agent and input hash. Never the arguments, never the path that was read.
 
 It stays observed until you delete `observe: true` from the rule. Nothing switches it automatically.
+
+**Plain pushes to `main` or `master` (from 0.6.0).** The preset is meant to hold irreversible destruction. A plain push can be reverted, and an agent that pushes to `main` all day would otherwise need a signature for every push. So `destructive-shell` leaves that one kind out (`except_kinds: [git_push_protected]`) and `git-push-protected` records it. A force push, a push that deletes a branch or tag, `--mirror` and `--all` stay held by `destructive-shell` on any branch, and so does a push the detector cannot read (`git push origin $BRANCH`). A command that pushes to `main` and also does something the preset holds (`git push origin main && rm -rf ~/x`) is held. A branch you list under `targets.git_branches` is still held by `production-target`. To hold plain pushes to `main` and `master` again, delete `except_kinds: [git_push_protected]` and the comma before it from the `destructive-shell` rule; `git-push-protected` then never matches a call that reaches it, and you can delete it too.
+
+**Existing installs keep their behaviour.** `init` never rewrites an existing `pp.config.yaml` that loads, and an upgrade does not touch the policy files `init` wrote for MCP servers. A policy written by 0.5.x or earlier has no `except_kinds` on `destructive-shell` and keeps holding plain pushes to `main` and `master` until you edit it or write it again (move it aside and run `init --preset coding-agent`).
 
 ### `observe: true` on any rule
 

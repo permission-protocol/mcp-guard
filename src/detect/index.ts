@@ -5,20 +5,28 @@
 import { cloudDelete } from './cloud.js';
 import { guardTamper } from './guard-tamper.js';
 import { secretRead } from './secrets.js';
-import { shellDestructive } from './shell-destructive.js';
+import { shellDestructive, SHELL_DESTRUCTIVE_KINDS } from './shell-destructive.js';
 import { sqlDestructive } from './sql.js';
 import { terraformDestroy } from './terraform.js';
-import { unparseable, DETECTOR_NAMES, type DetectorName, type DetectorResult } from './types.js';
+import { unparseable, DETECTOR_NAMES, type DetectorName, type DetectorResult, type KindFilter } from './types.js';
 
-export { DETECTOR_NAMES, type DetectorName, type DetectorResult } from './types.js';
+export { DETECTOR_NAMES, type DetectorName, type DetectorResult, type KindFilter } from './types.js';
 
-export const DETECTORS: Record<DetectorName, (text: string) => DetectorResult> = {
+export const DETECTORS: Record<DetectorName, (text: string, filter?: KindFilter) => DetectorResult> = {
   sql_destructive: sqlDestructive,
   shell_destructive: shellDestructive,
   terraform_destroy: terraformDestroy,
   cloud_delete: cloudDelete,
   secret_read: secretRead,
   guard_tamper: guardTamper,
+};
+
+/**
+ * Detectors a rule can narrow by kind (`detect.kinds` / `detect.except_kinds`), with the
+ * kinds they can report. Only these; the loader refuses a kind filter anywhere else.
+ */
+export const FILTERABLE_KINDS: Partial<Record<DetectorName, readonly string[]>> = {
+  shell_destructive: SHELL_DESTRUCTIVE_KINDS,
 };
 
 export function isDetectorName(v: unknown): v is DetectorName {
@@ -32,12 +40,12 @@ const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
  * (absent, number, boolean, null). A list of strings is read as an argv (or, for SQL,
  * as statements). Any other shape cannot be read and fails safe.
  */
-export function detectValue(name: DetectorName, value: unknown): DetectorResult | null {
+export function detectValue(name: DetectorName, value: unknown, filter?: KindFilter): DetectorResult | null {
   if (value === undefined || value === null || typeof value === 'number' || typeof value === 'boolean') return null;
   const fn = DETECTORS[name];
-  if (typeof value === 'string') return fn(value);
+  if (typeof value === 'string') return fn(value, filter);
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
-    return fn(name === 'sql_destructive' ? value.join(';\n') : value.map(shellQuote).join(' '));
+    return fn(name === 'sql_destructive' ? value.join(';\n') : value.map(shellQuote).join(' '), filter);
   }
   return unparseable('non_text_argument');
 }

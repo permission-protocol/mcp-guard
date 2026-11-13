@@ -73,14 +73,14 @@ The hook sees Claude Code's `Bash`, `PowerShell`, `Write`, `Edit` and `NotebookE
 
 | Rule | Holds |
 |------|-------|
-| `destructive-shell` | `rm -rf` outside the working tree, force pushes and pushes to `main`, disk writes, destructive SQL through `psql -c` and similar |
+| `destructive-shell` | `rm -rf` outside the working tree, force pushes, pushes that delete a branch or tag, `--mirror` and `--all` pushes, disk writes, destructive SQL through `psql -c` and similar |
 | `destructive-sql` | `DROP`, `TRUNCATE`, `DELETE` / `UPDATE` without `WHERE`, in the SQL argument of an MCP database tool (`sql`, `query`, ...) |
 | `terraform-destroy` | `terraform destroy`, `apply -destroy`, `apply -auto-approve` without a saved plan |
 | `cloud-delete` | Cloud and Kubernetes deletes of databases, volumes, buckets, snapshots, clusters, namespaces |
 | `production-target` | Any call naming a production target you list under `targets:` (empty by default, so it matches nothing until you add names) |
 | `guard-tamper*` | Changes to the guard itself: its policy, receipt log, keys, install token, the hook entry and Claude Code settings files, killing it |
 
-Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
+Secret reads (`cat .env`, `printenv`, token printers) are recorded only (`secret-read` has `observe: true`) until you delete that line. From 0.6.0 a plain push to `main` or `master` (`git push origin main`) is recorded too (`git-push-protected`), not held; to hold it again, delete `except_kinds: [git_push_protected]` and the comma before it from the `destructive-shell` rule. A policy written by an earlier version is never rewritten by an upgrade, so it keeps holding plain pushes until you edit it or write it again. A command the detectors cannot read (`eval`, `python -c`, `curl | sh`) is held. Everything else runs, and Claude Code's own permission prompts still apply to it: the guard only adds restrictions.
 
 ## What it does not catch
 

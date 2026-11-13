@@ -81,8 +81,9 @@ function conditionsHold(rule: Rule, args: Record<string, unknown> | undefined, c
   }
   let effect: DetectedEffect | undefined;
   if (rule.detect) {
-    const detector = rule.detect.detector;
-    const r = firstFinding(rule.detect.args, (name) => detectValue(detector, args?.[name]));
+    const { detector, kinds, except_kinds: except } = rule.detect;
+    const filter = kinds || except ? { ...(kinds ? { only: kinds } : {}), ...(except ? { except } : {}) } : undefined;
+    const r = firstFinding(rule.detect.args, (name) => detectValue(detector, args?.[name], filter));
     if (!r) return { ok: false };
     effect = effectOf(detector, r);
   }

@@ -639,7 +639,7 @@ describe('mcp-guard init --preset coding-agent', () => {
       const hookPolicy = parseConfig(readFileSync(join(machine.project, 'pp.config.yaml'), 'utf-8'));
       assert.equal(hookPolicy.cloud?.api_url, fake.url);
       assert.ok(hookPolicy.rules.some((r) => r.id === 'terraform-destroy'));
-      assert.deepEqual(hookPolicy.rules.filter((r) => r.observe).map((r) => r.id), ['secret-read']);
+      assert.deepEqual(hookPolicy.rules.filter((r) => r.observe).map((r) => r.id), ['secret-read', 'git-push-protected']);
       // The wrapped server's policy is the preset too.
       const serverPolicy = parseConfig(readFileSync(join(machine.guardDir, 'policies', 'filesystem.yaml'), 'utf-8'));
       assert.ok(serverPolicy.rules.some((r) => r.id === 'destructive-shell'));
