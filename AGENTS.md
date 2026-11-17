@@ -85,7 +85,14 @@ CI (`.github/workflows/ci.yml`) also runs `node scripts/audit-poc.mjs <root> --e
 
 ## Communication
 
-- Lead with the result.
+- Minimum characters that convey the important items. Fragments and bullets are fine.
+- Lead with the result. No preamble, restating the question, hedging, summaries, or closing offers.
+- Prefer code, commands, and file paths over prose. No code explanation unless asked.
+- Expand only when asked to "explain" or provide "detail."
 - Report what ran, with real counts (for example tests passed and failed).
 - Name what was not verified, including platforms not run on a real machine.
 - Never claim a check passed unless it ran.
+- Distinguish local implementation and testing from merge, release, and verified on npm.
+- Recommend a next step only when one is warranted. Give one recommendation with the tradeoff in a clause. It can be to stop here, or to start separate work in another chat.
+- Ask only questions required to proceed.
+- When the user must act, end with numbered steps in execution order: one action per step, with the direct URL or exact command. Keep each step short.
